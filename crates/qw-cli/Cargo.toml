@@ -1,0 +1,25 @@
+[package]
+name = "qw-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qwen38 command line: info / serve / bench / gen"
+
+[[bin]]
+name = "qwen38"
+path = "src/main.rs"
+
+[dependencies]
+qw-metal.workspace = true
+qw-weights.workspace = true
+qw-model.workspace = true
+qw-engine.workspace = true
+qw-server.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+clap.workspace = true

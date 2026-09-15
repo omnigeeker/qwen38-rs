@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/qw-metal",
+    "crates/qw-weights",
+    "crates/qw-model",
+    "crates/qw-engine",
+    "crates/qw-server",
+    "crates/qw-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["omnigeeker"]
+repository = "https://github.com/omnigeeker/qwen38-rs"
+
+[workspace.dependencies]
+qw-metal = { path = "crates/qw-metal" }
+qw-weights = { path = "crates/qw-weights" }
+qw-model = { path = "crates/qw-model" }
+qw-engine = { path = "crates/qw-engine" }
+qw-server = { path = "crates/qw-server" }
+anyhow = "1"
+thiserror = "2"
+memmap2 = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+half = "2"
+rustc-hash = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+axum = "0.8"
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+inherits = "release"

@@ -1,0 +1,35 @@
+{
+  "comment": "Correctness gate suite. Kept deliberately short so the oracle is cheap to regenerate; every case must match mlx-lm token-for-token.",
+  "cases": [
+    {
+      "name": "short_greeting",
+      "prompt": "Hello!",
+      "max_tokens": 16
+    },
+    {
+      "name": "capital_qa",
+      "prompt": "The capital of France is",
+      "max_tokens": 16
+    },
+    {
+      "name": "code_snippet",
+      "prompt": "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n",
+      "max_tokens": 24
+    },
+    {
+      "name": "math_steps",
+      "prompt": "Compute 17 * 23 step by step.",
+      "max_tokens": 24
+    },
+    {
+      "name": "multilingual",
+      "prompt": "请用一句话解释什么是混合专家模型。",
+      "max_tokens": 16
+    },
+    {
+      "name": "long_context_marker",
+      "prompt": "Remember the code word BANANA-42. Now repeat the code word exactly:",
+      "max_tokens": 12
+    }
+  ]
+}

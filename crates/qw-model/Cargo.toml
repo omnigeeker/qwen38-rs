@@ -1,0 +1,17 @@
+[package]
+name = "qw-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Qwen3.8-27B architecture (hybrid linear/full attention) for the qwen38 engine"
+
+[dependencies]
+qw-metal.workspace = true
+qw-weights.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+half.workspace = true
+tracing.workspace = true

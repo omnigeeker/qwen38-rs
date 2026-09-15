@@ -1,0 +1,112 @@
+//! MSL kernel sources.  Compiled at runtime by `GpuDevice::pipeline`.
+//!
+//! Naming/ABI conventions used by every kernel in this file:
+//!   * weights are MLX-style affine quantisation: `w = q * scale + bias`
+//!     with `q` an unsigned integer in `0..2^bits`, packed little-endian into
+//!     `uint32` words (8 values per word for 4-bit), `group_size = 64`,
+//!     `scales`/`biases` in fp16 with one entry per group per row.
+//!   * activations are fp16, accumulators are fp32.
+
+/// Shared prelude injected in front of every kernel body.
+pub const COMMON: &str = r#"
+#include <metal_stdlib>
+#include <metal_simdgroup>
+using namespace metal;
+
+#define GROUP_SIZE 64
+#define Q4_WORDS_PER_GROUP 8
+
+// Contiguous 8-values-per-word affine 4-bit GEMV: one threadgroup per row,
+// 32 lanes cooperating over the row's groups.
+kernel void q4_gemv(
+    device const uint*   w      [[buffer(0)]],
+    device const half*   scales [[buffer(1)]],
+    device const half*   biases [[buffer(2)]],
+    device const half*   x      [[buffer(3)]],
+    device half*         y      [[buffer(4)]],
+    constant int&        K      [[buffer(5)]],
+    uint row  [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]])
+{
+    const int n_groups = K / GROUP_SIZE;
+    device const uint* wp = w      + (size_t)row * (size_t)(K / 8);
+    device const half* sp = scales + (size_t)row * (size_t)n_groups;
+    device const half* bp = biases + (size_t)row * (size_t)n_groups;
+
+    float acc = 0.0f;
+    for (int g = (int)lane; g < n_groups; g += 32) {
+        const float s = (float)sp[g];
+        const float b = (float)bp[g];
+        device const uint* gw = wp + g * Q4_WORDS_PER_GROUP;
+        device const half* gx = x + g * GROUP_SIZE;
+        #pragma unroll
+        for (int wi = 0; wi < Q4_WORDS_PER_GROUP; ++wi) {
+            const uint word = gw[wi];
+            const float4 x0 = float4(*(device const half4*)(gx + wi * 8 + 0));
+            const float4 x1 = float4(*(device const half4*)(gx + wi * 8 + 4));
+            float4 q0 = float4((float)( word        & 0xFu),
+                               (float)((word >>  4) & 0xFu),
+                               (float)((word >>  8) & 0xFu),
+                               (float)((word >> 12) & 0xFu));
+            float4 q1 = float4((float)((word >> 16) & 0xFu),
+                               (float)((word >> 20) & 0xFu),
+                               (float)((word >> 24) & 0xFu),
+                               (float)((word >> 28) & 0xFu));
+            acc += dot(q0 * s + b, x0) + dot(q1 * s + b, x1);
+        }
+    }
+    acc = simd_sum(acc);
+    if (lane == 0) {
+        y[row] = (half)acc;
+    }
+}
+
+// RMSNorm over the last dim, one threadgroup per row.
+kernel void rmsnorm(
+    device const half* x [[buffer(0)]],
+    device const half* w [[buffer(1)]],
+    device half*       y [[buffer(2)]],
+    constant int&      N [[buffer(3)]],
+    constant float&  eps [[buffer(4)]],
+    uint row  [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint nt   [[threads_per_threadgroup]])
+{
+    device const half* xr = x + (size_t)row * (size_t)N;
+    device half*       yr = y + (size_t)row * (size_t)N;
+    float ss = 0.0f;
+    for (int i = (int)lane; i < N; i += (int)nt) {
+        const float v = (float)xr[i];
+        ss += v * v;
+    }
+    ss = simd_sum(ss);
+    // broadcast the per-simdgroup partial sums through threadgroup memory
+    threadgroup float partial[32];
+    const uint sg = lane / 32;
+    const uint sl = lane % 32;
+    if (sl == 0) partial[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0.0f;
+    const uint nsg = (nt + 31) / 32;
+    for (uint i = 0; i < nsg; ++i) total += partial[i];
+    const float rstd = rsqrt(total / (float)N + eps);
+    for (int i = (int)lane; i < N; i += (int)nt) {
+        yr[i] = (half)((float)xr[i] * rstd * (float)w[i]);
+    }
+}
+
+// elementwise add (used as a bring-up sanity kernel + residual plumbing)
+kernel void ewise_add(
+    device const half* a [[buffer(0)]],
+    device const half* b [[buffer(1)]],
+    device half*       o [[buffer(2)]],
+    uint i [[thread_position_in_grid]])
+{
+    o[i] = (half)((float)a[i] + (float)b[i]);
+}
+"#;
+
+/// Kernel entry names.
+pub const K_Q4_GEMV: &str = "q4_gemv";
+pub const K_RMSNORM: &str = "rmsnorm";
+pub const K_EWISE_ADD: &str = "ewise_add";

@@ -1,0 +1,23 @@
+[package]
+name = "qw-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OpenAI- and Anthropic-compatible HTTP endpoints for the qwen38 engine"
+
+[dependencies]
+qw-engine.workspace = true
+qw-metal.workspace = true
+qw-weights.workspace = true
+qw-model.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+axum.workspace = true
+futures.workspace = true
+clap.workspace = true

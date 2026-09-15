@@ -1,0 +1,19 @@
+# Model weights & downloads (never commit)
+/models/
+/.cache/
+*.safetensors
+*.gguf
+*.bin
+
+# Local Rust toolchain (installed into the workspace to keep $HOME untouched)
+/.toolchain/
+
+# Build output
+/target/
+**/target/
+
+# Loop runtime artifacts
+/logs/
+/tmp/
+*.log
+.DS_Store
