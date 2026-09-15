@@ -73,11 +73,21 @@ def run(args):
         cache = model.make_cache()
         generated = []
         first_logits_topk = None
-        cur = mx.array([ids])
         t0 = time.time()
         logits = None
+        if args.stepwise:
+            # Feed the prompt one token at a time, exactly like a decode-only
+            # engine does.  mlx uses different kernels for a batched prefill
+            # (matmul over T tokens) than for a single-token step, so this is
+            # the only apples-to-apples comparison for our engine.
+            for tok in ids:
+                logits = model(mx.array([[tok]]), cache=cache)
+        else:
+            cur = mx.array([ids])
         for step in range(max_tokens):
-            logits = model(cur, cache=cache)
+            # step 0 of the stepwise path already has the prompt's logits.
+            if not (args.stepwise and step == 0):
+                logits = model(cur, cache=cache)
             last = logits[:, -1, :].astype(mx.float32)
             if step == 0:
                 top = mx.argsort(-last[0])[:8]
@@ -157,6 +167,11 @@ def main():
     ap.add_argument("--suite", default=DEFAULT_SUITE)
     ap.add_argument("--out", default="loop/artifacts/oracle.json")
     ap.add_argument("--dump-hidden", action="store_true")
+    ap.add_argument(
+        "--stepwise",
+        action="store_true",
+        help="run the prompt token-by-token (decode numerics) instead of one batched prefill",
+    )
     args = ap.parse_args()
     run(args)
 

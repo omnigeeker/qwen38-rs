@@ -2,6 +2,7 @@
 
 mod bench;
 mod check;
+mod gen;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -64,10 +65,22 @@ enum Cmd {
         model_dir: PathBuf,
         #[arg(long, default_value = "Hello!")]
         prompt: String,
-        #[arg(long, default_value_t = 64)]
+        #[arg(long, default_value_t = 16)]
         max_tokens: usize,
-        #[arg(long, default_value_t = true)]
-        greedy: bool,
+        #[arg(long, default_value_t = 4096)]
+        max_t: usize,
+        /// print the first-token top-N logits (oracle comparison)
+        #[arg(long, default_value_t = 0)]
+        dump_top: usize,
+        /// print per-layer residual-stream statistics
+        #[arg(long)]
+        dump_hidden: bool,
+        /// write every layer's hidden vector (f32, layer-major) to a file
+        #[arg(long)]
+        dump_vectors: Option<String>,
+        /// ignore EOS (throughput measurement)
+        #[arg(long)]
+        no_stop: bool,
     },
 }
 
@@ -97,8 +110,21 @@ fn main() -> Result<()> {
             model_dir,
             prompt,
             max_tokens,
-            greedy,
-        } => cmd_gen(model_dir, prompt, max_tokens, greedy),
+            max_t,
+            dump_top,
+            dump_hidden,
+            dump_vectors,
+            no_stop,
+        } => gen::run(gen::GenOpts {
+            model_dir: &model_dir,
+            prompt: &prompt,
+            max_tokens,
+            max_t,
+            dump_top,
+            dump_hidden,
+            dump_vectors,
+            stop_at_eos: !no_stop,
+        }),
     }
 }
 
@@ -206,13 +232,21 @@ fn cmd_serve(model_dir: PathBuf, port: u16, model_id: String) -> Result<()> {
     })
 }
 
-fn cmd_verify(_oracle: PathBuf, _model_dir: PathBuf) -> Result<()> {
-    // M0/M1 scope: there is no forward pass yet, so the honest gate is the
-    // real-weight kernel check plus config/coverage validation.
-    println!("verify: no forward pass yet (milestone M1) — running real-weight kernel check");
-    check::run(&PathBuf::from("models/Qwen3.8-27B-4bit"), None, 8)
-}
-
-fn cmd_gen(_model_dir: PathBuf, _prompt: String, _max_tokens: usize, _greedy: bool) -> Result<()> {
-    anyhow::bail!("gen: forward pass lands in milestone M1/M2 (see loop/LOOP.md)")
+fn cmd_verify(oracle: PathBuf, model_dir: PathBuf) -> Result<()> {
+    if !oracle.exists() {
+        println!(
+            "verify: no oracle at {} — running real-weight kernel check",
+            oracle.display()
+        );
+        return check::run(&model_dir, None, 8);
+    }
+    // Token-for-token parity against mlx-lm is the real correctness gate.
+    match gen::check_against_oracle(&model_dir, &oracle, 2048, None) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!("parity failed ({e}); falling back to the kernel-level check");
+            check::run(&model_dir, None, 8)?;
+            Err(e)
+        }
+    }
 }

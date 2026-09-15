@@ -97,13 +97,32 @@ x = decoder_layer_full_attn(x)          # mtp.layers.0.*, weights +1 shifted nor
 logits = lm_head(mtp.norm(x))
 ```
 
-## Norm convention
+## Norm convention — measured, not assumed
 
-All RMSNorm weights in this checkpoint family are stored **zero-centred** and must
-be shifted by `+1.0` on load (`sanitize()` in `qwen3_5.py` applies this when the
-checkpoint carries `mtp.*` or un-sanitised conv1d weights). Our loader must do the
-same for: `input_layernorm`, `post_attention_layernorm`, `model.norm`, `q_norm`,
-`k_norm`, `linear_attn.norm`, `mtp.*` norms.
+Metric check on the **actual** shards (mean / min / max of each norm vector):
+
+| tensor | repo | mean | min | verdict |
+|---|---|---|---|---|
+| `model.norm.weight` | 4-bit | +1.944 | 0.715 | use as stored |
+| `layers.0.input_layernorm.weight` | 4-bit | +0.967 | 0.867 | use as stored |
+| `layers.0.post_attention_layernorm.weight` | 4-bit | +0.783 | 0.004 | use as stored |
+| `layers.0.linear_attn.norm.weight` | 4-bit | +0.869 | 0.785 | use as stored |
+| `layers.3.self_attn.q_norm.weight` | 4-bit | +1.230 | 0.824 | use as stored |
+| `mtp.layers.0.input_layernorm.weight` | bf16 | +0.036 | -0.226 | **needs +1.0** |
+| `mtp.layers.0.post_attention_layernorm.weight` | bf16 | +0.206 | -0.162 | **needs +1.0** |
+| `mtp.layers.0.self_attn.q_norm.weight` | bf16 | +0.791 | -0.555 | **needs +1.0** |
+| `mtp.norm.weight` | bf16 | +1.252 | -0.225 | use as stored |
+
+Why: `sanitize()` shifts norm weights only when the checkpoint carries `mtp.*`
+keys or an un-sanitised conv1d. The MLX 4-bit export already ran sanitize (its
+`conv1d.weight` is `[10240, 4, 1]`, i.e. moved-axis, and `mtp.*` was stripped), so
+re-loading it shifts **nothing** — confirmed against the measured means above.
+The official bf16 repo still carries `mtp.*`, so its `input_layernorm`,
+`post_attention_layernorm` and `q_norm` **are** shifted by +1 on load, while
+`mtp.norm.weight` is *not* (it does not match any suffix in the reference's
+pattern list). We replicate the reference exactly; MTP only affects acceptance
+rate, never output correctness.
+
 
 ## Kernel status for M1
 

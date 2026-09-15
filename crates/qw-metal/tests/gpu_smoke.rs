@@ -78,14 +78,16 @@ fn q4_gemv_matches_dequantized_cpu_reference() {
     };
 
     let mut q = vec![0u8; rows * k];
-    let mut scales = vec![f16::ZERO; rows * n_groups];
-    let mut biases = vec![f16::ZERO; rows * n_groups];
+    // scales/biases are bf16 in the real checkpoint; store the high half of the
+    // f32 so the CPU side can reproduce the exact same value.
+    let mut scales = vec![0u16; rows * n_groups];
+    let mut biases = vec![0u16; rows * n_groups];
     for r in 0..rows {
         for g in 0..n_groups {
             let s = 0.01 + next() * 0.05;
             let b = -0.5 + next();
-            scales[r * n_groups + g] = f16::from_f32(s);
-            biases[r * n_groups + g] = f16::from_f32(b);
+            scales[r * n_groups + g] = (s.to_bits() >> 16) as u16;
+            biases[r * n_groups + g] = (b.to_bits() >> 16) as u16;
             for i in 0..64 {
                 q[r * k + g * 64 + i] = (next() * 16.0) as u8 & 0xF;
             }
@@ -100,8 +102,9 @@ fn q4_gemv_matches_dequantized_cpu_reference() {
         let mut acc = 0f32;
         for i in 0..k {
             let g = i / 64;
-            let w = q[r * k + i] as f32 * scales[r * n_groups + g].to_f32()
-                + biases[r * n_groups + g].to_f32();
+            let sf = f32::from_bits((scales[r * n_groups + g] as u32) << 16);
+            let bf = f32::from_bits((biases[r * n_groups + g] as u32) << 16);
+            let w = q[r * k + i] as f32 * sf + bf;
             acc += w * x[i].to_f32();
         }
         want[r] = acc;

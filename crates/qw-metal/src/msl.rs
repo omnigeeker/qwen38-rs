@@ -4,7 +4,10 @@
 //!   * weights are MLX-style affine quantisation: `w = q * scale + bias`
 //!     with `q` an unsigned integer in `0..2^bits`, packed little-endian into
 //!     `uint32` words (8 values per word for 4-bit), `group_size = 64`,
-//!     `scales`/`biases` in fp16 with one entry per group per row.
+//!     `scales`/`biases` one entry per group per row.
+//!   * **`scales`/`biases` are BF16** — the converter quantises bf16 weights, so
+//!     the side tensors keep bf16 (verified in the shard headers). They are read
+//!     as `ushort` and widened with `as_type<float>(bits << 16)`.
 //!   * activations are fp16, accumulators are fp32.
 
 /// Shared prelude injected in front of every kernel body.
@@ -20,8 +23,8 @@ using namespace metal;
 // 32 lanes cooperating over the row's groups.
 kernel void q4_gemv(
     device const uint*   w      [[buffer(0)]],
-    device const half*   scales [[buffer(1)]],
-    device const half*   biases [[buffer(2)]],
+    device const ushort* scales [[buffer(1)]],
+    device const ushort* biases [[buffer(2)]],
     device const half*   x      [[buffer(3)]],
     device half*         y      [[buffer(4)]],
     constant int&        K      [[buffer(5)]],
@@ -29,14 +32,14 @@ kernel void q4_gemv(
     uint lane [[thread_index_in_threadgroup]])
 {
     const int n_groups = K / GROUP_SIZE;
-    device const uint* wp = w      + (size_t)row * (size_t)(K / 8);
-    device const half* sp = scales + (size_t)row * (size_t)n_groups;
-    device const half* bp = biases + (size_t)row * (size_t)n_groups;
+    device const uint*   wp = w      + (size_t)row * (size_t)(K / 8);
+    device const ushort* sp = scales + (size_t)row * (size_t)n_groups;
+    device const ushort* bp = biases + (size_t)row * (size_t)n_groups;
 
     float acc = 0.0f;
     for (int g = (int)lane; g < n_groups; g += 32) {
-        const float s = (float)sp[g];
-        const float b = (float)bp[g];
+        const float s = as_type<float>((uint)sp[g] << 16);
+        const float b = as_type<float>((uint)bp[g] << 16);
         device const uint* gw = wp + g * Q4_WORDS_PER_GROUP;
         device const half* gx = x + g * GROUP_SIZE;
         #pragma unroll

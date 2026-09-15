@@ -17,6 +17,7 @@
 pub mod config;
 pub mod linear;
 pub mod naming;
+pub mod runner;
 
 pub use config::{ModelConfig, TextConfig};
 pub use linear::QLinear;

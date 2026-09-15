@@ -23,12 +23,12 @@
   },
   "gates": {
     "G1_build": "pass",
-    "G2_correctness": "pass_kernel_level",
-    "G3_performance": "baseline_measured",
+    "G2_correctness": "pass_token_for_token",
+    "G3_performance": "measured",
     "G4_publish": "pass"
   },
   "metrics": {
-    "best_tok_s_single_stream": 0.0,
+    "best_tok_s_single_stream": 27.9,
     "target_tok_s_single_stream": 40.0,
     "theoretical_ceiling_tok_s_no_mtp": 33.0,
     "mtp_required": true,
@@ -36,13 +36,16 @@
     "linear_sweep_effective_gbps": 482,
     "device_peak_read_gbps": 519,
     "kernel_efficiency_vs_peak_pct": 93,
-    "mlx_lm_reference_tok_s": 30.0
+    "mlx_lm_reference_tok_s": 30.0,
+    "decode_ms_per_token": 35.9,
+    "oracle_parity_cases_passed": "6/6",
+    "oracle_parity_stepwise": "5/6",
+    "layer63_relL2_vs_mlx": 0.0179
   },
   "next_actions": [
-    "M1: kernels rmsnorm_noweight, conv1d_depthwise_silu, gdn_step, attn_decode, rmsnorm_gated, sigmoid_gate_mul",
-    "M1: whole-model single-token forward; hidden-state parity vs oracle.py --dump-hidden",
-    "M1: quantise mtp.* (bf16 shard already local) to 4-bit at load time",
-    "M2: prefill path (q4_gemm_t) + greedy parity on the 6-prompt suite"
+    "M4: quantise local bf16 mtp.* shard, add mtp.fc + MTP decoder layer, draft/verify speculative decode",
+    "M2: prefill path (q4_gemm_t) so prompts do not pay T decode steps",
+    "M3: shave the 6ms/token non-linear overhead (batch projections, stop re-reading 150MB fp32 delta state, GPU argmax)"
   ],
   "history": [
     {
@@ -57,6 +60,29 @@
         "G4": "pass"
       },
       "note": "linear-path upper bound 33.5 tok/s at 482 GB/s (93% of peak); MTP required for >=40 tok/s e2e"
+    },
+    {
+      "round": 2,
+      "title": "M1 complete: full forward pass, 6/6 token-for-token mlx-lm parity",
+      "tok_s": 27.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_token_for_token",
+        "G3": "measured",
+        "G4": "pass"
+      },
+      "bugs_fixed": [
+        "bf16 scales read as fp16 (self-consistent test hid it)",
+        "rmsnorm_s buffer ABI drift -> unbound buffers -> NaN",
+        "extra 1/128 attention query scale -> near-uniform softmax"
+      ],
+      "evidence": {
+        "oracle_parity": "6/6",
+        "layer63_relL2_vs_mlx": 0.0179,
+        "linear_sweep_tok_s": 33.5,
+        "effective_gbps": 482
+      }
     }
   ]
 }

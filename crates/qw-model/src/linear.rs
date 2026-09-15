@@ -86,8 +86,9 @@ impl<'a> QLinear<'a> {
             bail!("x has {} elements, expected {}", x.len(), self.in_f);
         }
         let packed: &[u8] = self.weight.bytes();
-        let scales: &[half::f16] = self.scales.as_f16();
-        let biases: &[half::f16] = self.biases.as_f16();
+        // scales/biases are BF16 in this checkpoint (see qw-metal::msl docs)
+        let scales = self.scales.as_bf16_f32();
+        let biases = self.biases.as_bf16_f32();
         let words: &[u32] = unsafe {
             std::slice::from_raw_parts(
                 packed.as_ptr() as *const u32,
@@ -113,8 +114,7 @@ impl<'a> QLinear<'a> {
                 for v in 0..8 {
                     let idx = wi * 8 + v;
                     let q = ((word >> (4 * v)) & 0xF) as f32;
-                    let w = q * srow[idx / self.spec.group_size].to_f32()
-                        + brow[idx / self.spec.group_size].to_f32();
+                    let w = q * srow[idx / self.spec.group_size] + brow[idx / self.spec.group_size];
                     acc += w * xf[idx];
                 }
             }

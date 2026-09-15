@@ -17,6 +17,7 @@ pub mod buffer;
 pub mod device;
 pub mod kernel;
 pub mod msl;
+pub mod msl_ops;
 
 pub use buffer::{DType, GpuBuffer};
 pub use device::GpuDevice;
