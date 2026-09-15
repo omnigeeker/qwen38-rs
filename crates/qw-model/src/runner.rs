@@ -80,6 +80,9 @@ struct Layer {
 }
 
 /// Scratch buffers, all fp16 unless stated.
+/// Number of tokens a single forward pass can carry (see docs/PLAN_K2.md).
+pub const TILE: usize = 2;
+
 struct Scratch {
     x: GpuBuffer,
     h: GpuBuffer,
@@ -212,29 +215,35 @@ impl Qwen38 {
         }
         let vocab = cfg.vocab_size;
 
+        // Two-token tile (see docs/PLAN_K2.md).  Step 1 only *reserves* the
+        // space: every dispatch still addresses row 0, so nothing observable can
+        // change until the k=2 kernels are wired in.  `window` is deliberately
+        // not doubled - it is the 4-row convolution history shared across steps,
+        // not a per-token activation tile.
+        let tile = TILE;
         let scratch = Scratch {
-            x: dev.buffer(h * 2),
-            h: dev.buffer(h * 2),
-            qg: dev.buffer(nh * hd * 2 * 2),
-            pk: dev.buffer(nkv * hd * 2),
-            pv: dev.buffer(nkv * hd * 2),
-            q: dev.buffer(nh * hd * 2),
-            k: dev.buffer(nkv * hd * 2),
-            attn_out: dev.buffer(nh * hd * 2),
-            attn_gated: dev.buffer(nh * hd * 2),
-            proj_out: dev.buffer(h * 2),
-            z: dev.buffer(value_dim * 2),
-            a: dev.buffer(hv * 2),
-            b: dev.buffer(hv * 2),
+            x: dev.buffer(h * 2 * tile),
+            h: dev.buffer(h * 2 * tile),
+            qg: dev.buffer(nh * hd * 2 * 2 * tile),
+            pk: dev.buffer(nkv * hd * 2 * tile),
+            pv: dev.buffer(nkv * hd * 2 * tile),
+            q: dev.buffer(nh * hd * 2 * tile),
+            k: dev.buffer(nkv * hd * 2 * tile),
+            attn_out: dev.buffer(nh * hd * 2 * tile),
+            attn_gated: dev.buffer(nh * hd * 2 * tile),
+            proj_out: dev.buffer(h * 2 * tile),
+            z: dev.buffer(value_dim * 2 * tile),
+            a: dev.buffer(hv * 2 * tile),
+            b: dev.buffer(hv * 2 * tile),
             window: dev.buffer(conv_k * conv_dim * 2),
-            conv_out: dev.buffer(conv_dim * 2),
-            gdn_y: dev.buffer(value_dim * 2),
-            gdn_gated: dev.buffer(value_dim * 2),
-            mlp_gate: dev.buffer(cfg.intermediate_size * 2),
-            mlp_up: dev.buffer(cfg.intermediate_size * 2),
-            mlp_act: dev.buffer(cfg.intermediate_size * 2),
-            logits: dev.buffer(vocab * 2),
-            scores: dev.buffer(nh * max_t * 4),
+            conv_out: dev.buffer(conv_dim * 2 * tile),
+            gdn_y: dev.buffer(value_dim * 2 * tile),
+            gdn_gated: dev.buffer(value_dim * 2 * tile),
+            mlp_gate: dev.buffer(cfg.intermediate_size * 2 * tile),
+            mlp_up: dev.buffer(cfg.intermediate_size * 2 * tile),
+            mlp_act: dev.buffer(cfg.intermediate_size * 2 * tile),
+            logits: dev.buffer(vocab * 2 * tile),
+            scores: dev.buffer(nh * max_t * 4 * tile),
         };
 
         // MTP weights (bf16 repo) need the +1 norm shift; this export does not.

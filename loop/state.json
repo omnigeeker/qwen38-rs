@@ -56,9 +56,7 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "execute docs/PLAN_K2.md: step 1 (linear k=2 via K_Q4_GEMV_K2) + step 2 (non-linear looped twice with buf_offset), then verify 6/6 and measure forward2",
-    "step 2 fusion: one 2-row norm/gate kernel instead of two dispatches",
-    "then the MTP head (quantise bf16 mtp.*, mtp.fc + decoder layer) and M5 endpoints"
+    "PLAN_K2 step 2: switch the ~10 QLinear::encode call sites to encode_k(..., TILE) with msl::K_Q4_GEMV_K2, then step 3 (non-linear per-row with buf_offset), re-check 6/6 and compare a forward2 logit row against forward"
   ],
   "history": [
     {
@@ -377,6 +375,26 @@
         "tree": "clean"
       },
       "next": "PLAN_K2 step 1: double every scratch activation buffer (row r at r*rows*2) with no dispatch change; parity must stay 6/6"
+    },
+    {
+      "round": 15,
+      "title": "PLAN_K2 step 1 landed: two-token scratch tile reserved, parity 6/6, timing unchanged",
+      "tok_s": 27.82,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change_expected",
+        "G4": "pass"
+      },
+      "evidence": {
+        "parity": "6/6",
+        "ms_per_token": 35.95,
+        "tile": 2,
+        "buffers_doubled": 21,
+        "window_excluded": true
+      },
+      "next": "PLAN_K2 step 2: ~10 QLinear::encode sites to encode_k(..., TILE) with msl::K_Q4_GEMV_K2"
     }
   ]
 }
