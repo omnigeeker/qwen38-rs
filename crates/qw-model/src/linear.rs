@@ -75,6 +75,34 @@ impl<'a> QLinear<'a> {
         batch.encode(d);
     }
 
+    /// Encode `y = W x` for `k` tokens at once: `x` is `[k][in_f]`, `y` is
+    /// `[k][out_f]`.  The weights are read once and reused for every token,
+    /// which is what makes speculative verification bandwidth-free.
+    pub fn encode_k(
+        &self,
+        batch: &mut CommandBatch,
+        kernel: &Kernel,
+        x: &GpuBuffer,
+        y: &GpuBuffer,
+        k: usize,
+    ) {
+        let d = Dispatch::new(kernel, (self.out_f * 32, 1, 1), (32, 1, 1))
+            .buf_offset(0, self.weight.buf, self.weight.offset)
+            .buf_offset(1, self.scales.buf, self.scales.offset)
+            .buf_offset(2, self.biases.buf, self.biases.offset)
+            .buf(3, x)
+            .buf(4, y)
+            .scalar(5, self.in_f as i32)
+            .scalar(6, k as i32)
+            .scalar(7, self.out_f as i32);
+        batch.encode(d);
+    }
+
+    /// Compile (or fetch) the multi-token GEMV entry point.
+    pub fn kernel_k(batch: &mut CommandBatch) -> Result<Kernel> {
+        batch.kernel(msl::COMMON, msl::K_Q4_GEMV_K)
+    }
+
     /// Compile (or fetch) the GEMV entry point.
     pub fn kernel(batch: &mut CommandBatch) -> Result<Kernel> {
         batch.kernel(msl::COMMON, msl::K_Q4_GEMV)

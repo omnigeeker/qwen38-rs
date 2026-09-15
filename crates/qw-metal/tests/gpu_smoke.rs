@@ -250,3 +250,90 @@ fn rope_partial_matches_reference() {
         }
     }
 }
+
+/// The multi-token GEMV must produce, for every token, exactly what the
+/// single-token kernel produces — it only changes how often weights are read.
+#[test]
+fn q4_gemv_k_matches_single_token_kernel() {
+    let mut dev = GpuDevice::new().unwrap();
+    let (rows, k_in, k) = (48usize, 512usize, 3usize);
+    let n_groups = k_in / 64;
+    let mut rng: u64 = 0xdead_beef_1234_5678;
+    let mut next = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f32 / (1u64 << 53) as f32
+    };
+
+    let mut q = vec![0u8; rows * k_in];
+    let mut scales = vec![0u16; rows * n_groups];
+    let mut biases = vec![0u16; rows * n_groups];
+    for r in 0..rows {
+        for g in 0..n_groups {
+            scales[r * n_groups + g] = ((0.01 + next() * 0.05).to_bits() >> 16) as u16;
+            biases[r * n_groups + g] = ((-0.5 + next()).to_bits() >> 16) as u16;
+            for i in 0..64 {
+                q[r * k_in + g * 64 + i] = (next() * 16.0) as u8 & 0xF;
+            }
+        }
+    }
+    let packed = pack_q4(&q);
+    let xs: Vec<f16> = (0..k * k_in)
+        .map(|_| f16::from_f32(-1.0 + next() * 2.0))
+        .collect();
+
+    // single-token kernel, one call per token
+    let bw = dev.buffer_from_bytes(&packed);
+    let bs = dev.buffer_from_bytes(&scales);
+    let bb = dev.buffer_from_bytes(&biases);
+    let mut want = Vec::new();
+    for t in 0..k {
+        let bx = dev.buffer_from_bytes(&xs[t * k_in..(t + 1) * k_in]);
+        let by = dev.buffer(rows * 2);
+        let mut batch = dev.batch();
+        let kern = batch.kernel(msl::COMMON, msl::K_Q4_GEMV).unwrap();
+        batch.encode(
+            Dispatch::new(&kern, (rows * 32, 1, 1), (32, 1, 1))
+                .buf(0, &bw)
+                .buf(1, &bs)
+                .buf(2, &bb)
+                .buf(3, &bx)
+                .buf(4, &by)
+                .scalar(5, k_in as i32),
+        );
+        batch.finish(true);
+        let got: Vec<f16> = by.to_vec(0, rows);
+        want.push(got);
+    }
+
+    // multi-token kernel
+    let bx = dev.buffer_from_bytes(&xs);
+    let by = dev.buffer(k * rows * 2);
+    let mut batch = dev.batch();
+    let kern = batch.kernel(msl::COMMON, msl::K_Q4_GEMV_K).unwrap();
+    batch.encode(
+        Dispatch::new(&kern, (rows * 32, 1, 1), (32, 1, 1))
+            .buf(0, &bw)
+            .buf(1, &bs)
+            .buf(2, &bb)
+            .buf(3, &bx)
+            .buf(4, &by)
+            .scalar(5, k_in as i32)
+            .scalar(6, k as i32)
+            .scalar(7, rows as i32),
+    );
+    batch.finish(true);
+    let got: Vec<f16> = by.to_vec(0, k * rows);
+
+    for t in 0..k {
+        for r in 0..rows {
+            let a = got[t * rows + r].to_f32();
+            let b = want[t][r].to_f32();
+            assert!(
+                (a - b).abs() <= 1e-3 * b.abs().max(1.0),
+                "token {t} row {r}: multi={a} single={b}"
+            );
+        }
+    }
+}

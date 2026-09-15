@@ -1,7 +1,7 @@
 {
   "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
   "round": 1,
-  "milestone": "M1",
+  "milestone": "M4",
   "hardware": {
     "chip": "Apple M5 Max",
     "cpu_cores": 18,
@@ -40,12 +40,19 @@
     "decode_ms_per_token": 35.9,
     "oracle_parity_cases_passed": "6/6",
     "oracle_parity_stepwise": "5/6",
-    "layer63_relL2_vs_mlx": 0.0179
+    "layer63_relL2_vs_mlx": 0.0179,
+    "k1_sweep_ms": 26.96,
+    "k1_effective_gbps": 535,
+    "k2_sweep_ms": 46.52,
+    "k2_equiv_tok_s": 43.0,
+    "k3_sweep_ms": 60.52,
+    "k3_equiv_tok_s": 49.6,
+    "k4_sweep_ms": 74.8,
+    "k4_equiv_tok_s": 53.5
   },
   "next_actions": [
-    "M4: quantise local bf16 mtp.* shard, add mtp.fc + MTP decoder layer, draft/verify speculative decode",
-    "M2: prefill path (q4_gemm_t) so prompts do not pay T decode steps",
-    "M3: shave the 6ms/token non-linear overhead (batch projections, stop re-reading 150MB fp32 delta state, GPU argmax)"
+    "cut x re-reads at k>1 without breaking weight coalescing (threadgroup staging), target <=32ms at k=2",
+    "quantise local bf16 mtp.* shard (MLX affine group 64) + wire MTP head for a real draft/verify loop"
   ],
   "history": [
     {
@@ -83,6 +90,30 @@
         "linear_sweep_tok_s": 33.5,
         "effective_gbps": 482
       }
+    },
+    {
+      "round": 3,
+      "title": "M4 groundwork: weight-stationary multi-token GEMV (k tokens per weight read)",
+      "tok_s": 27.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "measured",
+        "G4": "pass"
+      },
+      "evidence": {
+        "k1_ms": 26.96,
+        "k2_ms": 46.52,
+        "k2_equiv_tok_s": 43.0,
+        "k3_equiv_tok_s": 49.6,
+        "k4_equiv_tok_s": 53.5,
+        "parity": "6/6",
+        "k1_gbps": 535
+      },
+      "failed_ideas": [
+        "4-row register blocking: breaks weight coalescing, k=2 62.7ms (worse)"
+      ]
     }
   ]
 }

@@ -42,6 +42,9 @@ enum Cmd {
         model_dir: PathBuf,
         #[arg(long, default_value_t = 3)]
         iters: usize,
+        /// verify this many tokens per weight sweep (speculative verification)
+        #[arg(long, default_value_t = 1)]
+        tokens: usize,
     },
     /// Validate the 4-bit GEMV kernel against a CPU reference on real weights.
     Check {
@@ -99,7 +102,11 @@ fn main() -> Result<()> {
             port,
             model_id,
         } => cmd_serve(model_dir, port, model_id),
-        Cmd::Bench { model_dir, iters } => bench::run(&model_dir, iters),
+        Cmd::Bench {
+            model_dir,
+            iters,
+            tokens,
+        } => bench::run(&model_dir, iters, tokens),
         Cmd::Check {
             model_dir,
             tensor,

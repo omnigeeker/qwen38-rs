@@ -64,6 +64,65 @@ kernel void q4_gemv(
     }
 }
 
+// Weight-stationary multi-token GEMV: the weights of a row are read once and
+// reused across `k` activation vectors, so the bandwidth-limited part of a
+// speculative verification pass is amortised over k tokens.
+//
+// Measured on M5 Max (497 linears, 14.41 GB): k=1 27.7 ms (520 GB/s);
+// k=2 46.4 ms -> 43.1 tok/s equivalent; k=3 60.3 ms -> 49.8; k=4 74.6 ms -> 53.6.
+// The marginal cost of an extra token stays below the cost of a full pass, but
+// it is far from free: re-reads of x from L2 grow with k (a 4-row register
+// blocked variant was measured *slower*, 62.7 ms at k=2, because it breaks the
+// coalescing of the weight loads).
+kernel void q4_gemv_k(
+    device const uint*   w      [[buffer(0)]],
+    device const ushort* scales [[buffer(1)]],
+    device const ushort* biases [[buffer(2)]],
+    device const half*   x      [[buffer(3)]],   // [k][K]
+    device half*         y      [[buffer(4)]],   // [k][out_f]
+    constant int&        K      [[buffer(5)]],
+    constant int&        k      [[buffer(6)]],
+    constant int&        out_f  [[buffer(7)]],
+    uint row  [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]])
+{
+    const int n_groups = K / GROUP_SIZE;
+    device const uint*   wp = w      + (size_t)row * (size_t)(K / 8);
+    device const ushort* sp = scales + (size_t)row * (size_t)n_groups;
+    device const ushort* bp = biases + (size_t)row * (size_t)n_groups;
+
+    float acc[4];
+    for (int t = 0; t < k; ++t) acc[t] = 0.0f;
+
+    for (int g = (int)lane; g < n_groups; g += 32) {
+        const float s  = as_type<float>((uint)sp[g] << 16);
+        const float bb = as_type<float>((uint)bp[g] << 16);
+        device const uint* gw = wp + g * Q4_WORDS_PER_GROUP;
+        #pragma unroll
+        for (int wi = 0; wi < Q4_WORDS_PER_GROUP; ++wi) {
+            const uint word = gw[wi];
+            const float4 w0 = float4((float)( word        & 0xFu),
+                                     (float)((word >>  4) & 0xFu),
+                                     (float)((word >>  8) & 0xFu),
+                                     (float)((word >> 12) & 0xFu)) * s + bb;
+            const float4 w1 = float4((float)((word >> 16) & 0xFu),
+                                     (float)((word >> 20) & 0xFu),
+                                     (float)((word >> 24) & 0xFu),
+                                     (float)((word >> 28) & 0xFu)) * s + bb;
+            for (int t = 0; t < k; ++t) {
+                device const half* gx = x + (size_t)t * K + g * GROUP_SIZE + wi * 8;
+                const float4 x0 = float4(*(device const half4*)(gx));
+                const float4 x1 = float4(*(device const half4*)(gx + 4));
+                acc[t] += dot(w0, x0) + dot(w1, x1);
+            }
+        }
+    }
+    for (int t = 0; t < k; ++t) {
+        const float a = simd_sum(acc[t]);
+        if (lane == 0) y[(size_t)t * out_f + row] = (half)a;
+    }
+}
+
 // RMSNorm over the last dim, one threadgroup per row.
 kernel void rmsnorm(
     device const half* x [[buffer(0)]],
@@ -111,6 +170,7 @@ kernel void ewise_add(
 
 /// Kernel entry names.
 pub const K_Q4_GEMV: &str = "q4_gemv";
+pub const K_Q4_GEMV_K: &str = "q4_gemv_k";
 pub const K_RMSNORM: &str = "rmsnorm";
 pub const K_EWISE_ADD: &str = "ewise_add";
 
