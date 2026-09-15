@@ -66,6 +66,14 @@ struct Gdn {
     state: GpuBuffer,
     /// `[conv_k - 1][conv_dim]` raw pre-conv rows
     conv_hist: GpuBuffer,
+    /// `TILE` per-row snapshots of `state` and `conv_hist`, taken only while
+    /// speculative verification is on.  A verify pass advances the recurrence
+    /// through every drafted token, so on a partial acceptance the state must be
+    /// committed for the longest accepted prefix; without these the only correct
+    /// recovery is a full re-run of the accepted row, which costs more than the
+    /// draft ever saves.
+    snap: GpuBuffer,
+    csnap: GpuBuffer,
 }
 
 enum Kind {
@@ -220,6 +228,8 @@ pub struct Qwen38 {
     /// round the residual stream through bf16 after every layer, matching the
     /// bf16 numerics of the mlx-lm reference (see docs/M1_NOTES.md)
     pub bf16_residual: bool,
+    /// take per-row recurrent snapshots during a verify pass (QW_SPEC=1)
+    pub spec_snap: bool,
 }
 
 const NT: usize = 256;
@@ -354,6 +364,8 @@ impl Qwen38 {
                     dt_bias: f32_buf(&dev, &tensor_f32(&store.handle(&layout.gdn_dt_bias(i))?)?),
                     state: dev.buffer(hv * dv * dk * 4),
                     conv_hist: dev.buffer((conv_k - 1) * conv_dim * 2),
+                    snap: dev.buffer(hv * dv * dk * 4 * TILE),
+                    csnap: dev.buffer((conv_k - 1) * conv_dim * 2 * TILE),
                 }))
             } else {
                 Kind::Full(Box::new(FullAttn {
@@ -435,6 +447,7 @@ impl Qwen38 {
             last_dispatches: 0,
             debug: None,
             bf16_residual: std::env::var("QW_BF16_ROUND").is_ok(),
+            spec_snap: std::env::var("QW_SPEC").is_ok(),
         };
         model.reset();
         Ok(model)
@@ -506,6 +519,42 @@ impl Qwen38 {
             zero(&m.k_cache);
             zero(&m.v_cache);
         }
+    }
+
+    /// Make the recurrent state match the longest accepted prefix of a verify
+    /// pass: `state`/`conv_hist` become what they were after row `row`
+    /// (0-based).  Row `TILE - 1` is already current and needs no copy.
+    pub fn commit_row(&mut self, row: usize) -> Result<()> {
+        if row + 1 >= TILE {
+            return Ok(());
+        }
+        let mut b = self.dev.batch();
+        for layer in &self.layers {
+            if let Kind::Gdn(g) = &layer.kind {
+                let sh = g.state.len_bytes() / 2;
+                let ch = g.conv_hist.len_bytes() / 2;
+                copy_dispatch(
+                    &mut b,
+                    &self.kernels.copy,
+                    &g.snap,
+                    row * sh,
+                    &g.state,
+                    0,
+                    sh,
+                );
+                copy_dispatch(
+                    &mut b,
+                    &self.kernels.copy,
+                    &g.csnap,
+                    row * ch,
+                    &g.conv_hist,
+                    0,
+                    ch,
+                );
+            }
+        }
+        b.finish(true);
+        Ok(())
     }
 
     /// Dequantise one embedding row on the host (10 KB) into the input buffer.
@@ -1178,6 +1227,31 @@ impl Qwen38 {
                                 .scalar(12, dv as i32),
                         );
                         b.barrier();
+                        if self.spec_snap {
+                            // state is fp32 but copy_off moves 2-byte units, so
+                            // count and offset in halves - the copy stays exact.
+                            let sh = g.state.len_bytes() / 2;
+                            let ch = g.conv_hist.len_bytes() / 2;
+                            copy_dispatch(
+                                &mut b,
+                                &kernels.copy,
+                                &g.state,
+                                0,
+                                &g.snap,
+                                row * sh,
+                                sh,
+                            );
+                            copy_dispatch(
+                                &mut b,
+                                &kernels.copy,
+                                &g.conv_hist,
+                                0,
+                                &g.csnap,
+                                row * ch,
+                                ch,
+                            );
+                            b.barrier();
+                        }
                         b.encode(
                             Dispatch::new(&kernels.rmsnorm_gated, (hv * NT, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.gdn_y, row * (value_dim * 2))

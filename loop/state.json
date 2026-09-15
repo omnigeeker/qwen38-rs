@@ -652,6 +652,26 @@
         "rows_per_lane": "R rows per lane (x fetched once per R weight rows): produced zeros and 5x slower; suspicions are acc[R][NK] spilling to thread-local memory and a collective called inside a guard; reverted"
       },
       "next": "retry rows-per-lane with R scalar accumulators and a fully literal unrolled nest (no acc[][] array); in parallel push MTP acceptance 56% -> 85% and cut the draft 5.5 ms -> 2.5 ms, since a k=2 pass already measures 40.7 tok/s"
+    },
+    {
+      "round": 27,
+      "title": "A full pass is 1282 dispatches of which only 497 are GEMVs; the linear sweep is already at 97% of peak (round 006). Implemented per-row recurrent snapshots + commit_row, the prerequisite for prefix-commit speculative decoding",
+      "tok_s": 24.6,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6_byte_identical",
+        "G3": "infrastructure",
+        "G4": "pass"
+      },
+      "evidence": {
+        "round_006_is_authoritative": "the k=2 linear sweep alone is 28.64 ms = 503 GB/s = 97% of peak (k=3 32.34, k=4 38.41); the GEMV was never the bottleneck and rounds 25-26 optimised the already-optimal part",
+        "dispatch_histogram": "QW_DISPATCH_HIST=1 prints per-entry counts; a k=1 pass is 1282 dispatches, only 497 GEMVs, with 257 rmsnorm + 128 ewise_add + 96 copy + 64 silu_mul forming a serial chain - the 20 ms outside the linears",
+        "barriers_are_free": "QW_BARRIER=none is correct (parity 6/6, identical tokens) but not faster; third independent confirmation that fence cost is not the issue",
+        "spec_needs_prefix_commit": "a verify pass advances the GDN recurrence through every drafted token, so partial acceptance leaves a wrong state; roll-back-and-rerun gives E=1.06 tokens/76.6 ms = 13.8 tok/s vs 24.6 plain - a net LOSS, so prefix commit is mandatory",
+        "implemented": "Gdn.snap/csnap hold TILE per-row snapshots taken in the per-row loop under QW_SPEC=1; commit_row(row) restores slot row; verified behaviour-neutral (parity 6/6 and byte-identical greedy output)"
+      },
+      "next": "wire draft->verify->accept (1 MTP draft + k=2 verify = up to 2 tokens/pass) on top of commit_row, then fuse the residual add into the preceding norm (-64..-128 dispatches), then attack MTP acceptance"
     }
   ]
 }

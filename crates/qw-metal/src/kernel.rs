@@ -84,6 +84,8 @@ pub struct CommandBatch<'d> {
     cb: metal::CommandBuffer,
     enc: Option<ComputeCommandEncoder>,
     count: usize,
+    /// Dispatches per entry point, printed when QW_DISPATCH_HIST is set.
+    hist: Vec<(String, usize)>,
 }
 
 impl<'d> CommandBatch<'d> {
@@ -94,6 +96,7 @@ impl<'d> CommandBatch<'d> {
             cb,
             enc: None,
             count: 0,
+            hist: Vec::new(),
         }
     }
 
@@ -123,6 +126,10 @@ impl<'d> CommandBatch<'d> {
             enc.set_bytes(*i as u64, bytes.len() as u64, bytes.as_ptr() as *const _);
         }
         enc.dispatch_threads(d.grid, d.threadgroup);
+        match self.hist.iter_mut().find(|(n, _)| n == &d.kernel.name) {
+            Some((_, c)) => *c += 1,
+            None => self.hist.push((d.kernel.name.clone(), 1)),
+        }
         self.count += 1;
         self
     }
@@ -141,6 +148,20 @@ impl<'d> CommandBatch<'d> {
 
     /// Commit and (optionally) block until the GPU is done.
     pub fn finish(mut self, wait: bool) {
+        // A full-model pass is a chain of ~1300 dispatches and the small
+        // elementwise ops dominate the count, so knowing who they are is the
+        // first step to fusing them.
+        if std::env::var_os("QW_DISPATCH_HIST").is_some() && self.count > 400 {
+            let mut v = std::mem::take(&mut self.hist);
+            v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+            eprintln!("dispatch histogram, {} total:", self.count);
+            for (n, c) in v.iter().take(24) {
+                eprintln!(
+                    "  {n:22} {c:5}  ({:.0}%)",
+                    100.0 * *c as f64 / self.count as f64
+                );
+            }
+        }
         if let Some(enc) = self.enc.take() {
             enc.end_encoding();
         }
