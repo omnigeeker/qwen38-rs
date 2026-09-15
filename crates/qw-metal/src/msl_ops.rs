@@ -174,6 +174,72 @@ kernel void conv1d_silu_ring(
     out[c] = (half)(acc / (1.0f + exp(-acc)));
 }
 
+// The same convolution for a whole tile of rows at once: row `r` uses slot
+// (slot0 + r).  The slots are consecutive because TILE <= ring, so one dispatch
+// covers what used to take TILE of them.
+kernel void conv1d_silu_ring_tile(
+    device const half*  window   [[buffer(0)]],
+    device const half*  w        [[buffer(1)]],
+    device half*        out      [[buffer(2)]],
+    constant int&       conv_dim [[buffer(3)]],
+    constant int&       slot0    [[buffer(4)]],
+    constant int&       ring     [[buffer(5)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const int c   = (int)(gid % (uint)conv_dim);
+    const int row = (int)(gid / (uint)conv_dim);
+    const int slot = (slot0 + row) & (ring - 1);
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int r = (slot + ring - 3 + j) & (ring - 1);
+        acc += (float)w[c * 4 + j] * (float)window[(size_t)r * conv_dim + c];
+    }
+    out[(size_t)row * conv_dim + c] = (half)(acc / (1.0f + exp(-acc)));
+}
+
+// Weightless rms norm for a whole tile: threadgroup (head, tile row).  The
+// per-row form needs a dispatch per row; this needs one for the tile.
+kernel void rmsnorm_nw_tile(
+    device const half* x [[buffer(0)]],
+    device half*       y [[buffer(1)]],
+    constant int&      D             [[buffer(2)]],
+    constant int&      in_head_stride [[buffer(3)]],
+    constant int&      in_row_stride  [[buffer(4)]],
+    constant int&      out_row_stride [[buffer(5)]],
+    constant float&    eps   [[buffer(6)]],
+    constant float&    scale [[buffer(7)]],
+    constant int&      HK    [[buffer(8)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint nt   [[threads_per_threadgroup]])
+{
+    // flattened (row, head): a 2-D grid cannot mix with scalar bindings in MSL
+    const int row  = (int)(tg / (uint)HK);
+    const int head = (int)(tg % (uint)HK);
+    device const half* xr = x + (size_t)row * (size_t)in_row_stride
+                              + (size_t)head * (size_t)in_head_stride;
+    device half*       yr = y + (size_t)row * (size_t)out_row_stride
+                              + (size_t)head * (size_t)D;
+    float ss = 0.0f;
+    for (int i = (int)lane; i < D; i += (int)nt) {
+        const float v = (float)xr[i];
+        ss += v * v;
+    }
+    ss = simd_sum(ss);
+    threadgroup float red[32];
+    const uint sg = lane / 32, sl = lane % 32;
+    if (sl == 0) red[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0.0f;
+    const uint nsg = (nt + 31) / 32;
+    for (uint i = 0; i < nsg; ++i) total += red[i];
+    const float rstd = rsqrt(total / (float)D + eps) * scale;
+    for (int i = (int)lane; i < D; i += (int)nt) {
+        yr[i] = (half)((float)xr[i] * rstd);
+    }
+}
+
 // One thread owns one (v-head, v-dim) row of the fp32 state matrix; the Dk loop
 // is fully serial per thread, which keeps the whole recurrence in registers.
 kernel void gdn_step(
@@ -350,6 +416,8 @@ pub const K_ATTN_SCORES_SOFTMAX: &str = "attn_scores_softmax";
 pub const K_ATTN_OUT: &str = "attn_out";
 pub const K_KV_APPEND: &str = "kv_append";
 pub const K_CONV1D_SILU_RING: &str = "conv1d_silu_ring";
+pub const K_CONV1D_SILU_RING_TILE: &str = "conv1d_silu_ring_tile";
+pub const K_RMSNORM_TILE: &str = "rmsnorm_nw_tile";
 pub const K_CONV1D_SILU: &str = "conv1d_silu";
 pub const K_GDN_STEP: &str = "gdn_step";
 pub const K_RMSNORM_WS: &str = "rmsnorm_s";

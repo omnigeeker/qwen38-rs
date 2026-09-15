@@ -856,6 +856,26 @@
         }
       },
       "next": "re-measure throughput in a cool window to reconfirm >=40 tok/s with the fix in place, then resume the remaining dispatch-count levers (batch conv1d_silu_ring/rmsnorm_nw across tile rows, batch gdn_step rows, fold ewise_add into rmsnorm, fold silu_mul into the up-GEMV, fold q/k norms)"
+    },
+    {
+      "round": 36,
+      "title": "Batched the convolution and the weightless q/k norms over the tile rows: 6 fewer dispatches per GDN layer per pass (~288 of ~1200). Verified byte-identical and worth ~2.3% in an order-alternating A/B (median ratio 0.977); best reading 41.31 tok/s",
+      "tok_s": 41.31,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6 + spec==plain byte-for-byte, 2 prompts x 300 tokens, token count asserted",
+        "G4": "pass"
+      },
+      "evidence": {
+        "change": "new kernels conv1d_silu_ring_tile (grid conv_dim*TILE, row r reads ring slot slot0+r) and rmsnorm_nw_tile (grid hk*TILE*NT, threadgroup flattened to (row, head)); forward2's GDN branch is now three phases - qkv per row into its ring slot, then one convolution and two norms for the tile, then the recurrence row by row because it is sequential in the state",
+        "gate_bug_caught": "an intermediate run of the byte-identical gate reported IDENTICAL for both prompts because gen had died on an MSL compile error and the two EMPTY outputs compared equal; the gate now asserts the token count",
+        "msl_constraint": "MSL rejects a kernel that mixes vector thread-position bindings with scalar ones - the flattened 1D grid is a requirement, not a style choice",
+        "ab": "order-alternating A/B in one cool window, 4 pairs: 0.987, 0.967, 1.001, 0.953 => median 0.977 (~2.3% faster). Best readings 41.31 (new) vs 40.62 (old) tok/s",
+        "where_time_goes": "a pass emits 2.51 tokens in ~61 ms vs a plain step's ~37 ms for one token; the pass moves ~13.5 GB of weights + ~1.9 GB of lm_head (all three rows need logits to verify) + ~1.4 GB of MTP drafts = ~16.8 GB in 61 ms = ~275 GB/s, while the plain step already reaches ~364 GB/s on the same weights, so the speculative pass is NOT at the bandwidth ceiling and has real headroom",
+        "next_suspect": "the three-row accumulator in the tiled GEMV costing occupancy; a pass matching the plain step's bandwidth efficiency would land near 60 tok/s"
+      },
+      "next": "attack the tiled GEMV's bandwidth efficiency: measure occupancy/register pressure for the k=3 kernel, try wider threadgroups or splitting the accumulator, and re-run the order-alternating A/B. Keep the byte-identical gate (now asserting token counts) as the correctness gate"
     }
   ],
   "next": "throughput margin: the bar is met only on a median (38.03 dip), so cut dispatches per pass. Order: batch conv1d_silu_ring and rmsnorm_nw across the tile rows, batch gdn_step's serial rows, fold ewise_add into the following rmsnorm, fold silu_mul into the up-GEMV, fold the q/k norms together"

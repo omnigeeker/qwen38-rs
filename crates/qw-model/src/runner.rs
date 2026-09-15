@@ -26,6 +26,8 @@ struct Kernels {
     rmsnorm: Kernel,
     rmsnorm_ws: Kernel,
     rmsnorm_nw: Kernel,
+    rmsnorm_tile: Kernel,
+    conv1d_ring_tile: Kernel,
     rmsnorm_gated: Kernel,
     rope: Kernel,
     silu_mul: Kernel,
@@ -417,6 +419,8 @@ impl Qwen38 {
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,
                 rmsnorm_ws: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS)?,
                 rmsnorm_nw: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_NW)?,
+                rmsnorm_tile: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_TILE)?,
+                conv1d_ring_tile: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_TILE)?,
                 rmsnorm_gated: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_GATED)?,
                 rope: b.kernel(msl::FUSED, msl::K_ROPE_PARTIAL)?,
                 silu_mul: b.kernel(msl::FUSED, msl::K_SILU_MUL)?,
@@ -1122,10 +1126,10 @@ impl Qwen38 {
                         .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.b, TILE);
                     g.in_a
                         .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.a, TILE);
+                    let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two();
+                    let slot0 = (t - 1).rem_euclid(conv_ring as i32) as usize;
+                    // Phase 1: every row's qkv row lands in its own ring slot.
                     for row in 0..TILE {
-                        // qkv projection writes straight into the conv window's ring slot
-                        let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two(); // power of two: the kernel masks
-                        let slot = (t - 1 + row as i32).rem_euclid(conv_ring as i32) as usize;
                         b.encode(
                             Dispatch::new(
                                 &kernels.q4_gemv,
@@ -1136,54 +1140,61 @@ impl Qwen38 {
                             .buf_offset(1, g.in_qkv.scales.buf, g.in_qkv.scales.offset)
                             .buf_offset(2, g.in_qkv.biases.buf, g.in_qkv.biases.offset)
                             .buf_offset(3, &scratch.h, row * (h * 2))
-                            .buf_offset(4, &g.window, slot * conv_dim * 2)
+                            .buf_offset(
+                                4,
+                                &g.window,
+                                ((slot0 + row) & (conv_ring - 1)) * conv_dim * 2,
+                            )
                             .scalar(5, g.in_qkv.in_f as i32),
                         );
                         b.barrier();
-                        b.encode(
-                            Dispatch::new(&kernels.conv1d_ring, (conv_dim, 1, 1), (NT, 1, 1))
-                                .buf(0, &g.window)
-                                .buf(1, &g.conv_w)
-                                .buf_offset(2, &scratch.conv_out, row * (conv_dim * 2))
-                                .scalar(3, conv_dim as i32)
-                                .scalar(4, slot as i32)
-                                .scalar(5, conv_ring as i32),
-                        );
-                        b.barrier();
-                        let inv = 1.0f32 / (dk as f32).sqrt();
-                        // q = inv^2 * rms_norm(q), k = inv * rms_norm(k)  (no weight)
-                        // rmsnorm_s ABI: 0=x 1=w(optional) 2=y 3=D 4=in_stride 5=eps 6=scale 7=has_weight
-                        b.encode(
-                            Dispatch::new(&kernels.rmsnorm_nw, (hk * NT, 1, 1), (NT, 1, 1))
-                                .buf_offset(0, &scratch.conv_out, row * (conv_dim * 2))
-                                .buf_offset(1, &scratch.conv_out, row * (conv_dim * 2))
-                                .buf_offset(2, &scratch.q, row * (nh * hd * 2))
-                                .scalar(3, dk as i32)
-                                .scalar(4, dk as i32)
-                                .scalar(5, 1e-6f32)
-                                .scalar(6, inv * inv)
-                                .scalar(7, 0),
-                        );
-                        b.encode(
-                            Dispatch::new(&kernels.rmsnorm_nw, (hk * NT, 1, 1), (NT, 1, 1))
-                                .buf_offset(
-                                    0,
-                                    &scratch.conv_out,
-                                    row * (conv_dim * 2) + (key_dim * 2),
-                                )
-                                .buf_offset(
-                                    1,
-                                    &scratch.conv_out,
-                                    row * (conv_dim * 2) + (key_dim * 2),
-                                )
-                                .buf_offset(2, &scratch.k, row * (key_dim * 2))
-                                .scalar(3, dk as i32)
-                                .scalar(4, dk as i32)
-                                .scalar(5, 1e-6f32)
-                                .scalar(6, inv)
-                                .scalar(7, 0),
-                        );
-                        b.barrier();
+                    }
+                    // Phase 2: one convolution, then one pair of norms, for the
+                    // whole tile instead of one dispatch each per row.  The gdn
+                    // recurrence itself stays row by row because it is sequential.
+                    b.encode(
+                        Dispatch::new(
+                            &kernels.conv1d_ring_tile,
+                            (conv_dim * TILE, 1, 1),
+                            (NT, 1, 1),
+                        )
+                        .buf(0, &g.window)
+                        .buf(1, &g.conv_w)
+                        .buf(2, &scratch.conv_out)
+                        .scalar(3, conv_dim as i32)
+                        .scalar(4, slot0 as i32)
+                        .scalar(5, conv_ring as i32),
+                    );
+                    b.barrier();
+                    let inv = 1.0f32 / (dk as f32).sqrt();
+                    // q = inv^2 * rms_norm(q), k = inv * rms_norm(k)  (no weight)
+                    b.encode(
+                        Dispatch::new(&kernels.rmsnorm_tile, (hk * TILE * NT, 1, 1), (NT, 1, 1))
+                            .buf(0, &scratch.conv_out)
+                            .buf(1, &scratch.q)
+                            .scalar(2, dk as i32)
+                            .scalar(3, dk as i32)
+                            .scalar(4, conv_dim as i32)
+                            .scalar(5, (nh * hd) as i32)
+                            .scalar(6, 1e-6f32)
+                            .scalar(7, inv * inv)
+                            .scalar(8, hk as i32),
+                    );
+                    b.encode(
+                        Dispatch::new(&kernels.rmsnorm_tile, (hk * TILE * NT, 1, 1), (NT, 1, 1))
+                            .buf_offset(0, &scratch.conv_out, key_dim * 2)
+                            .buf(1, &scratch.k)
+                            .scalar(2, dk as i32)
+                            .scalar(3, dk as i32)
+                            .scalar(4, conv_dim as i32)
+                            .scalar(5, key_dim as i32)
+                            .scalar(6, 1e-6f32)
+                            .scalar(7, inv)
+                            .scalar(8, hk as i32),
+                    );
+                    b.barrier();
+                    // Phase 3: the recurrence itself, one row at a time.
+                    for row in 0..TILE {
                         b.encode(
                             Dispatch::new(&kernels.gdn, (hv * dv, 1, 1), (dv, 1, 1))
                                 .buf_offset(0, &scratch.q, row * (nh * hd * 2))
