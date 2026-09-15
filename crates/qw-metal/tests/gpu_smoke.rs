@@ -147,3 +147,103 @@ fn unified_memory_budget_check() {
     );
     assert!(recommended > 40 * 1024 * 1024 * 1024);
 }
+
+#[test]
+fn silu_mul_matches_fp32_reference() {
+    let mut dev = GpuDevice::new().unwrap();
+    let n = 512usize;
+    let gate: Vec<f16> = (0..n)
+        .map(|i| f16::from_f32((i as f32 - 256.0) * 0.05))
+        .collect();
+    let up: Vec<f16> = (0..n)
+        .map(|i| f16::from_f32((i as f32 * 0.01).sin()))
+        .collect();
+    let bg = dev.buffer_from_bytes(&gate);
+    let bu = dev.buffer_from_bytes(&up);
+    let bo = dev.buffer(n * 2);
+    let k = {
+        let mut b = dev.batch();
+        b.kernel(msl::FUSED, msl::K_SILU_MUL).unwrap()
+    };
+    {
+        let mut b = dev.batch();
+        b.encode(
+            Dispatch::new(&k, (n, 1, 1), (64, 1, 1))
+                .buf(0, &bg)
+                .buf(1, &bu)
+                .buf(2, &bo),
+        );
+        b.finish(true);
+    }
+    let out: Vec<f16> = bo.to_vec(0, n);
+    for i in 0..n {
+        let g = gate[i].to_f32();
+        let want = f16::from_f32((g / (1.0 + (-g as f64).exp() as f32)) * up[i].to_f32()).to_f32();
+        assert!(
+            (out[i].to_f32() - want).abs() <= 1e-2 * want.abs().max(1.0),
+            "i={i} {} vs {want}",
+            out[i].to_f32()
+        );
+    }
+}
+
+#[test]
+fn rope_partial_matches_reference() {
+    let mut dev = GpuDevice::new().unwrap();
+    let (heads, hd, rot) = (4usize, 16usize, 8usize);
+    let base = 1e7f32;
+    let pos = 37i32;
+    let x: Vec<f16> = (0..heads * hd)
+        .map(|i| f16::from_f32(((i * 7) % 23) as f32 * 0.1 - 1.0))
+        .collect();
+    let bx = dev.buffer_from_bytes(&x);
+    let by = dev.buffer(heads * hd * 2);
+    let k = {
+        let mut b = dev.batch();
+        b.kernel(msl::FUSED, msl::K_ROPE_PARTIAL).unwrap()
+    };
+    {
+        let mut b = dev.batch();
+        b.encode(
+            Dispatch::new(&k, (heads * 32, 1, 1), (32, 1, 1))
+                .buf(0, &bx)
+                .buf(1, &by)
+                .scalar(2, heads as i32)
+                .scalar(3, hd as i32)
+                .scalar(4, rot as i32)
+                .scalar(5, base)
+                .scalar(6, pos),
+        );
+        b.finish(true);
+    }
+    let out: Vec<f16> = by.to_vec(0, heads * hd);
+    let half_rot = rot / 2;
+    for h in 0..heads {
+        for i in 0..hd {
+            let got = out[h * hd + i].to_f32();
+            if i >= rot {
+                assert!(
+                    (got - x[h * hd + i].to_f32()).abs() < 1e-3,
+                    "tail must pass through"
+                );
+                continue;
+            }
+            let (a, bq) = if i < half_rot {
+                (x[h * hd + i].to_f32(), x[h * hd + i + half_rot].to_f32())
+            } else {
+                (x[h * hd + i - half_rot].to_f32(), x[h * hd + i].to_f32())
+            };
+            let theta = base.powf(-2.0 * ((i % half_rot) as f32) / rot as f32);
+            let ang = pos as f32 * theta;
+            let want = if i < half_rot {
+                a * ang.cos() - bq * ang.sin()
+            } else {
+                a * ang.sin() + bq * ang.cos()
+            };
+            assert!(
+                (got - want).abs() <= 2e-2 * want.abs().max(1.0),
+                "h={h} i={i}: {got} vs {want}"
+            );
+        }
+    }
+}

@@ -110,3 +110,60 @@ kernel void ewise_add(
 pub const K_Q4_GEMV: &str = "q4_gemv";
 pub const K_RMSNORM: &str = "rmsnorm";
 pub const K_EWISE_ADD: &str = "ewise_add";
+
+/// Extra kernels: MLP activation and partial RoPE.
+pub const FUSED: &str = r#"
+#include <metal_stdlib>
+#include <metal_simdgroup>
+using namespace metal;
+
+// SwiGLU with the reference's fp32 intermediate precision:
+//   out = silu(gate) * up     (silu and the product both in fp32)
+kernel void silu_mul(
+    device const half* gate [[buffer(0)]],
+    device const half* up   [[buffer(1)]],
+    device half*       out  [[buffer(2)]],
+    uint i [[thread_position_in_grid]])
+{
+    const float g = (float)gate[i];
+    const float s = g / (1.0f + exp(-g));
+    out[i] = (half)(s * (float)up[i]);
+}
+
+// Partial RoPE, non-traditional (half-split) pairing:
+//   pairs are (i, i + rot_dim/2), angle = pos * base^(-2i/rot_dim)
+//   the tail [rot_dim, head_dim) is copied through untouched.
+kernel void rope_partial(
+    device const half* x    [[buffer(0)]],
+    device half*       y    [[buffer(1)]],
+    constant int&      n_heads   [[buffer(2)]],
+    constant int&      head_dim  [[buffer(3)]],
+    constant int&      rot_dim   [[buffer(4)]],
+    constant float&    base      [[buffer(5)]],
+    constant int&      pos       [[buffer(6)]],
+    uint h    [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint nt   [[threads_per_threadgroup]])
+{
+    const int half_rot = rot_dim / 2;
+    device const half* xr = x + (size_t)h * (size_t)head_dim;
+    device half*       yr = y + (size_t)h * (size_t)head_dim;
+
+    for (int i = (int)lane; i < head_dim; i += (int)nt) {
+        yr[i] = xr[i];
+    }
+    for (int i = (int)lane; i < half_rot; i += (int)nt) {
+        const float theta = pow((float)base, -2.0f * (float)i / (float)rot_dim);
+        const float angle = (float)pos * theta;
+        const float c = cos(angle);
+        const float s = sin(angle);
+        const float a = (float)xr[i];
+        const float b = (float)xr[i + half_rot];
+        yr[i]            = (half)(a * c - b * s);
+        yr[i + half_rot] = (half)(a * s + b * c);
+    }
+}
+"#;
+
+pub const K_SILU_MUL: &str = "silu_mul";
+pub const K_ROPE_PARTIAL: &str = "rope_partial";

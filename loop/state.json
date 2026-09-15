@@ -1,7 +1,7 @@
 {
   "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
   "round": 1,
-  "milestone": "M0",
+  "milestone": "M1",
   "hardware": {
     "chip": "Apple M5 Max",
     "cpu_cores": 18,
@@ -18,7 +18,8 @@
     "params_b": 27.78,
     "quant": "affine 4-bit, group_size=64",
     "lm_weight_bytes": 15090000000,
-    "mtp_weights_in_export": false
+    "mtp_weights_in_export": false,
+    "mtp_bf16_shard": "models/Qwen3.8-27B-bf16-mtp/model-00018-of-00018.safetensors (15 tensors, BF16, 3.4GB, downloaded)"
   },
   "gates": {
     "G1_build": "pass",
@@ -38,9 +39,9 @@
     "mlx_lm_reference_tok_s": 30.0
   },
   "next_actions": [
-    "M1: implement kernels silu_mul, rope, attn_decode (GQA+KV cache), gdn_step (conv1d+fp32 state)",
-    "M1: single-token forward for all 64 layers, hidden-state parity vs oracle.py --dump-hidden",
-    "M1: quantise and load the bf16 mtp.* shard (download already staged in models/Qwen3.8-27B-bf16-mtp)",
+    "M1: kernels rmsnorm_noweight, conv1d_depthwise_silu, gdn_step, attn_decode, rmsnorm_gated, sigmoid_gate_mul",
+    "M1: whole-model single-token forward; hidden-state parity vs oracle.py --dump-hidden",
+    "M1: quantise mtp.* (bf16 shard already local) to 4-bit at load time",
     "M2: prefill path (q4_gemm_t) + greedy parity on the 6-prompt suite"
   ],
   "history": [
