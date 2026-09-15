@@ -876,6 +876,27 @@
         "next_suspect": "the three-row accumulator in the tiled GEMV costing occupancy; a pass matching the plain step's bandwidth efficiency would land near 60 tok/s"
       },
       "next": "attack the tiled GEMV's bandwidth efficiency: measure occupancy/register pressure for the k=3 kernel, try wider threadgroups or splitting the accumulator, and re-run the order-alternating A/B. Keep the byte-identical gate (now asserting token counts) as the correctness gate"
+    },
+    {
+      "round": 37,
+      "title": "GDN qkv projection converted to one tiled launch into a qkv_cur staging buffer, with the convolution reading in-flight rows from it and each layer copying its own rows to the ring. Bit-identical (same group walk/order/simd_sum as k=1) and worth ~2.2% in an order-alternating A/B; best 24.15 ms/token (~41.4 tok/s)",
+      "tok_s": 41.4,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6 + spec==plain byte-for-byte, 2 prompts x 300 tokens, length asserted",
+        "G4": "pass"
+      },
+      "evidence": {
+        "change": "in_qkv is projected once per pass with the k=3 kernel into qkv_cur[TILE][conv_dim] instead of once per row into the ring (3x the weight reads, ~3 GB/pass, 19% of traffic). The tile convolution reads rows with pos >= pos0 from qkv_cur and older ones from the ring; each layer then memcpys its own TILE rows into their ring slots",
+        "why_safe": "Q4_GEMV_KS is bit-identical per row to the k=1 kernel - same g = lane; g < n_groups; g += 32 walk, same Q4_WORDS_PER_GROUP unpack order, same simd_sum(acc[t]) per row - so a tile launch performs exactly the operations in exactly the order three k=1 launches would",
+        "bug_i_wrote": "the first version copied accepted rows into the ring at end-of-pass from spec_step. WRONG because qkv_cur is one scratch buffer shared by every layer: by then it holds the last layer's rows, so every other layer's ring got that layer's data. Diverged at token 4, the same signature as round 035's ring bug; the byte-identical gate caught it in one run. The copy now happens inside each layer's own block right after its convolution",
+        "why_not_acceptance_dependent": "k is only known after the logits are read, i.e. after the whole forward is encoded, so the copy cannot be restricted to the k+1 surviving rows. Copying all TILE rows is what the old per-row projection did and the ring is wide enough to absorb it",
+        "ab": "order-alternating A/B, 4 pairs, one cool window: 0.981, 0.976, 1.020, 0.955 => median paired ratio 0.978 (~2.2%)",
+        "implication": "far less than the ~2 GB of saved traffic implies, so the pass is issue-bound in the tiled GEMV rather than bandwidth-bound",
+        "next_candidates": "the attention layer's per-row kv_append, attn_scores, attn_out and gate_mul - 4 per row, 12 per attention layer, ~190 per pass"
+      },
+      "next": "batch the attention layer's per-row launches (kv_append, attn_scores, attn_out, gate_mul) over the tile rows the same way the convolution and norms were batched, then re-run oracle parity, the byte-identical gate with length assertions, and the order-alternating A/B"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B"

@@ -124,6 +124,8 @@ struct Scratch {
     logits: GpuBuffer,
     /// fp32 `[n_heads][max_t]`
     scores: GpuBuffer,
+    /// `[TILE][conv_dim]` raw pre-conv rows of the pass in flight
+    qkv_cur: GpuBuffer,
 }
 
 /// The multi-token-prediction head: one `fc` that fuses the embedding of the
@@ -352,6 +354,7 @@ impl Qwen38 {
             mlp_act: dev.buffer(cfg.intermediate_size * 2 * tile),
             logits: dev.buffer(vocab * 2 * tile),
             scores: dev.buffer(nh * max_t * 4 * tile),
+            qkv_cur: dev.buffer(conv_dim * 2 * tile),
         };
 
         // MTP weights (bf16 repo) need the +1 norm shift; this export does not.
@@ -1128,27 +1131,19 @@ impl Qwen38 {
                         .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.a, TILE);
                     let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two();
                     let slot0 = (t - 1).rem_euclid(conv_ring as i32) as usize;
-                    // Phase 1: every row's qkv row lands in its own ring slot.
-                    for row in 0..TILE {
-                        b.encode(
-                            Dispatch::new(
-                                &kernels.q4_gemv,
-                                ((key_dim * 2 + value_dim) * 32, 1, 1),
-                                (32, 1, 1),
-                            )
-                            .buf_offset(0, g.in_qkv.weight.buf, g.in_qkv.weight.offset)
-                            .buf_offset(1, g.in_qkv.scales.buf, g.in_qkv.scales.offset)
-                            .buf_offset(2, g.in_qkv.biases.buf, g.in_qkv.biases.offset)
-                            .buf_offset(3, &scratch.h, row * (h * 2))
-                            .buf_offset(
-                                4,
-                                &g.window,
-                                ((slot0 + row) & (conv_ring - 1)) * conv_dim * 2,
-                            )
-                            .scalar(5, g.in_qkv.in_f as i32),
-                        );
-                        b.barrier();
-                    }
+                    // Phase 1: project all TILE rows in one launch into the staging
+                    // buffer.  The tiled kernel walks the same groups in the same
+                    // order and reduces each row with the same simd_sum as the k=1
+                    // kernel, so every row is bit-identical to its own launch - but
+                    // the weights are read once instead of TILE times.
+                    g.in_qkv.encode_k(
+                        &mut b,
+                        &kernels.q4_gemv_tile,
+                        &scratch.h,
+                        &scratch.qkv_cur,
+                        TILE,
+                    );
+                    b.barrier();
                     // Phase 2: one convolution, then one pair of norms, for the
                     // whole tile instead of one dispatch each per row.  The gdn
                     // recurrence itself stays row by row because it is sequential.
@@ -1163,8 +1158,28 @@ impl Qwen38 {
                         .buf(2, &scratch.conv_out)
                         .scalar(3, conv_dim as i32)
                         .scalar(4, slot0 as i32)
-                        .scalar(5, conv_ring as i32),
+                        .scalar(5, conv_ring as i32)
+                        .buf(6, &scratch.qkv_cur)
+                        .scalar(7, t - 1),
                     );
+                    b.barrier();
+                    // Keep the ring current for the next pass with all TILE rows,
+                    // exactly as the old per-row projection did.  Writing the
+                    // rejected rows too is safe: the ring is wider than the window,
+                    // so three rows written ahead cannot reach the rows the next
+                    // pass still reads.  The copy has to happen here rather than at
+                    // the end of the pass because qkv_cur is shared by every layer.
+                    for row in 0..TILE {
+                        copy_dispatch(
+                            &mut b,
+                            &kernels.copy,
+                            &scratch.qkv_cur,
+                            row * conv_dim,
+                            &g.window,
+                            ((slot0 + row) & (conv_ring - 1)) * conv_dim,
+                            conv_dim,
+                        );
+                    }
                     b.barrier();
                     let inv = 1.0f32 / (dk as f32).sqrt();
                     // q = inv^2 * rms_norm(q), k = inv * rms_norm(k)  (no weight)

@@ -184,16 +184,23 @@ kernel void conv1d_silu_ring_tile(
     constant int&       conv_dim [[buffer(3)]],
     constant int&       slot0    [[buffer(4)]],
     constant int&       ring     [[buffer(5)]],
+    device const half*  cur      [[buffer(6)]],
+    constant int&       pos0     [[buffer(7)]],
     uint gid [[thread_position_in_grid]])
 {
     const int c   = (int)(gid % (uint)conv_dim);
     const int row = (int)(gid / (uint)conv_dim);
-    const int slot = (slot0 + row) & (ring - 1);
     float acc = 0.0f;
     #pragma unroll
     for (int j = 0; j < 4; ++j) {
-        const int r = (slot + ring - 3 + j) & (ring - 1);
-        acc += (float)w[c * 4 + j] * (float)window[(size_t)r * conv_dim + c];
+        // Rows of this pass are still in the staging buffer; older ones are in the
+        // ring.  Reading the current row from `cur` is what lets the projection be
+        // a single tiled launch instead of one launch per row.
+        const int pos = pos0 + row - 3 + j;
+        device const half* src = (pos >= pos0)
+            ? cur + (size_t)(pos - pos0) * conv_dim + c
+            : window + (size_t)(pos & (ring - 1)) * conv_dim + c;
+        acc += (float)w[c * 4 + j] * (float)(*src);
     }
     out[(size_t)row * conv_dim + c] = (half)(acc / (1.0f + exp(-acc)));
 }
