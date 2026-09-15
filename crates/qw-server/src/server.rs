@@ -348,9 +348,12 @@ async fn messages(State(st): State<Arc<AppState>>, Json(req): Json<MessagesReque
         return not_ready_anthropic("engine is still loading the 4-bit weights");
     };
     let messages = to_messages(&req.to_chat_messages());
-    let max_tokens = 256usize;
+    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, 1024);
     let id = format!("msg_{}", now_secs());
     let rx = engine.submit(Prompt::Chat(messages), max_tokens);
+    if req.stream.unwrap_or(false) {
+        return anthropic_sse(rx, id, st.model_id.clone(), 0);
+    }
     let (text, n) = match collect(rx).await {
         Ok(v) => v,
         Err(e) => return error_anthropic(&e),

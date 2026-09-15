@@ -107,12 +107,11 @@ fn run_job(
         model.set_token(*id)?;
         model.forward(p)?;
     }
-    let mut pos = ids.len();
     // Decoding one id at a time mangles multi-byte characters that straddle two
     // tokens, so decode the running prefix and emit only what is new.
     let mut all: Vec<u32> = Vec::new();
     let mut sent_len = 0usize;
-    for _ in 0..max_tokens {
+    for pos in ids.len()..(ids.len() + max_tokens) {
         let next = model.argmax();
         if tok.is_eos(next) {
             break;
@@ -120,15 +119,20 @@ fn run_job(
         all.push(next);
         let full = tok.decode(&all, true).unwrap_or_default();
         if full.len() > sent_len && full.is_char_boundary(sent_len) {
-            let piece = full[sent_len..].to_string();
-            sent_len = full.len();
-            if pieces.send(Ok(piece)).is_err() {
-                break;
+            // Hold back a trailing U+FFFD: the tokenizer emits a replacement
+            // character when a multi-byte character is split across a token
+            // boundary, and the remaining bytes only arrive with the next token.
+            let piece = &full[sent_len..];
+            let cut = piece.trim_end_matches('\u{FFFD}').len();
+            if cut > 0 {
+                sent_len += cut;
+                if pieces.send(Ok(piece[..cut].to_string())).is_err() {
+                    break;
+                }
             }
         }
         model.set_token(next)?;
         model.forward(pos)?;
-        pos += 1;
     }
     Ok(())
 }
