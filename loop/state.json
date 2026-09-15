@@ -755,6 +755,25 @@
         "caveat": "the first run after a build reports 36.8 tok/s; the target is met in a normal thermal state but not with margin, and the box throttles hard under sustained load"
       },
       "next": "TILE=4 (3.18 tokens/pass, ~45 tok/s if the marginal row stays near 8 ms) for margin; generalise the spec loop over TILE rows first, then attack the marginal row's 5 GDN + 3 attention dispatches per layer"
+    },
+    {
+      "round": 32,
+      "title": "spec loop generalised over TILE (draft chain + longest-agreed-prefix acceptance); found and fixed that dropping the draft cache-completion costs 6 points of acceptance (77.6% -> 71.2%) - the chained drafts after the first were cached from a stale hidden. TILE stays 3, the configuration with a verified 40.5 tok/s",
+      "tok_s": 40.68,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6_byte_identical",
+        "G4": "pass"
+      },
+      "evidence": {
+        "generalisation": "one loop over TILE rows: draft TILE-1 tokens chained, forward TILE rows, take the longest prefix of drafts the target agrees with (k), emit them, commit_row(k) unless row TILE-1 is current, promote_hidden(k)",
+        "tile4": "built and verified on top of it: 2.91 tokens/pass, parity 6/6, byte-identical - but not comparable on throughput because the box throttled mid-comparison (the same binary reported 36.75 then 24.74 tok/s), so the committed configuration stays TILE=3",
+        "the_regression": "dropping mtp_step(d[k-1], pos+k, false) looked safe because the draft had already written that k/v entry - but from row 0, which still held the hidden of pos while d[i] sits at pos+1+i; every chained draft after the first was cached one or two positions off",
+        "measured_regression": "acceptance 77.6% -> 71.2%, tokens/pass 2.53 -> 2.40 without it; restoring it (promote row k-1, re-append d[k-1] at pos+k) returns both to the hand-written values",
+        "lesson": "this kind of 'surely redundant' costs acceptance rather than correctness, so the oracle and byte-identical gates would never have caught it"
+      },
+      "next": "re-measure TILE=3 vs TILE=4 in a clean thermal window (TILE=4 needs a one-line change now); then attack the marginal row: 5 GDN dispatches + 3 attention dispatches per layer per row"
     }
   ]
 }
