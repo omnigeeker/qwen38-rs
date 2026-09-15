@@ -504,6 +504,26 @@
         "check": "QW_K2_CHECK=1 env var"
       },
       "next": "fix the Full arm row strides (qg/scores/attn_out/attn_gated are the only strides GDN layers never touch), then re-run QW_K2_CHECK=1"
+    },
+    {
+      "round": 20,
+      "title": "fixed the missing 'scores' row stride: forward2 row 0 is now bit-exact; row 1 and a state/ordering clue remain",
+      "tok_s": 27.8,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "root_cause": "scores stride nh*max_t*4 was missing from the row-stride table; both rows wrote the same softmax block",
+        "layer3": "49.90625 vs 49.90625 (was 48.62500)",
+        "row0_max_diff": 0.0,
+        "row1_max_diff": 8.7119,
+        "clue": "the FIRST forward2 call after reset is bit-exact, the SECOND is not -> reset() leakage or an out-of-bounds row-1 write"
+      },
+      "next": "run the self-pair case first to separate state leakage from layout; audit the three row-1 offsets that add a legacy offset (conv_out + 2*key_dim*2, the two rmsnorm_nw conv_out reads, the gdn value slice)"
     }
   ]
 }

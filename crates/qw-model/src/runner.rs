@@ -928,7 +928,7 @@ impl Qwen38 {
                             Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.q, row * (nh * hd * 2))
                                 .buf(1, &a.k_cache)
-                                .buf(2, &scratch.scores)
+                                .buf_offset(2, &scratch.scores, row * (nh * (max_t as usize) * 4))
                                 .scalar(3, t + row as i32)
                                 .scalar(4, max_t)
                                 .scalar(5, nh as i32)
@@ -941,7 +941,7 @@ impl Qwen38 {
                     for row in 0..TILE {
                         b.encode(
                             Dispatch::new(&kernels.attn_out, (nh * hd, 1, 1), (hd, 1, 1))
-                                .buf(0, &scratch.scores)
+                                .buf_offset(0, &scratch.scores, row * (nh * (max_t as usize) * 4))
                                 .buf(1, &a.v_cache)
                                 .buf_offset(2, &scratch.attn_out, row * (nh * hd * 2))
                                 .scalar(3, t + row as i32)
@@ -1198,12 +1198,11 @@ impl Qwen38 {
         Ok(())
     }
 
-    /// Peek at one row of the input tile (debug aid for the two-row path).
+    /// Peek at row 1 of the input tile (debug aid for the two-row path).
     pub fn peek_row1(&self, n: usize) -> Vec<f32> {
-        let h = self.cfg.hidden_size;
         self.scratch
             .x
-            .to_vec::<f16>(h, n)
+            .to_vec::<f16>(self.cfg.hidden_size, n)
             .iter()
             .map(|v| v.to_f32())
             .collect()
