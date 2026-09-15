@@ -56,7 +56,9 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "PLAN_K2: split the layer body into four k=2 projected groups (qkv, o_proj, gate/up, down) separated by per-row non-linear segments; verify 6/6 and compare forward2 row-1 logits against forward"
+    "build forward2: row-wrap the per-row segments, projections via encode_k(..., TILE) with K_Q4_GEMV_K2, GDN branch left per-row (window layout), lm_head k=2 for both rows",
+    "add row-stride to rmsnorm/rmsnorm_ws/silu_mul/ewise_add/gate_mul and two query positions to attn_scores/attn_out - this is what removes the second dispatch per op",
+    "MTP head: quantise bf16 mtp.* (MLX affine group 64), mtp.fc + one decoder layer"
   ],
   "history": [
     {
@@ -452,6 +454,31 @@
         "sse": "text_only adapter"
       },
       "next": "PLAN_K2 step 2/3: split each layer body into linear (k=2) and per-row non-linear segments, per the segment table in round-017.md"
+    },
+    {
+      "round": 18,
+      "title": "read the whole layer body and re-priced the k=2 plan: batching the arithmetic is not enough, the per-row dispatches must be fused too (PLAN_K2 v2)",
+      "tok_s": 27.8,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "W_ms": 26.87,
+        "W2_ms": 28.68,
+        "N_ms": 9.08,
+        "dispatches_per_token": 1282,
+        "projection": {
+          "forward2_only": 38.6,
+          "plus_lm_head_k2": 43.4,
+          "plus_nonlinear_fusion": 48.9
+        },
+        "gdn_window_blocker": "in_proj_qkv writes the shared 4-row window; needs a 5th row to wrap rows syntactically"
+      },
+      "next": "build forward2 (row-wrapped body, projections k=2), then lm_head/two-row logits, then 2-row non-linear kernels (step 3), then MTP"
     }
   ]
 }
