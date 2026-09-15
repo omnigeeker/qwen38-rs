@@ -672,6 +672,27 @@
         "implemented": "Gdn.snap/csnap hold TILE per-row snapshots taken in the per-row loop under QW_SPEC=1; commit_row(row) restores slot row; verified behaviour-neutral (parity 6/6 and byte-identical greedy output)"
       },
       "next": "wire draft->verify->accept (1 MTP draft + k=2 verify = up to 2 tokens/pass) on top of commit_row, then fuse the residual add into the preceding norm (-64..-128 dispatches), then attack MTP acceptance"
+    },
+    {
+      "round": 28,
+      "title": "Speculative decoding wired end to end on top of commit_row: +34% decode (24.06 -> 32.29 tok/s), 84.6-94.1% acceptance, 1.85-1.94 tokens/pass, output byte-identical to greedy",
+      "tok_s": 32.29,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6_byte_identical",
+        "G3": "win_+34%",
+        "G4": "pass"
+      },
+      "evidence": {
+        "spec_loop": "QW_SPEC=1: draft via MTP, verify both rows with forward2, emit draft + row1 bonus on acceptance (promote row1 hidden, complete head cache) or commit_row(0) and emit row 0 on rejection",
+        "throughput": "clean interleaved measurement 32.29 tok/s vs 24.06 plain = +34% (30.97 vs 41.56 ms/token)",
+        "acceptance": "84.6-94.1% of drafts accepted, 1.85-1.94 tokens per pass; CORRECTION: the offline QW_MTP_CHECK harness reports 56.2% and has been steering the plan - the in-loop number is what matters and it is much higher",
+        "correctness": "speculative output byte-identical to plain greedy on 3 prompts x 64 tokens plus parity 6/6; guaranteed because forward2 rows are bit-exact against sequential k=1 (d=0.0000)",
+        "gap_to_target": "at 1.85-1.94 tokens/pass, 40 tok/s needs a 45-48 ms pass; a clean k=2 pass is 49-55 ms of which 28.6 ms is the linear sweep at 97% of peak, ~20 ms the 1282-dispatch chain and ~6 ms drafting",
+        "thermal": "under sustained load the box throttles 2x (plain decode 53->85 ms/token in one session); only interleaved pairs are comparable"
+      },
+      "next": "cut the pass to 45 ms: fuse the residual add into the preceding norm (-64..-128 dispatches), trim the draft cost paid once per pass, then add a third verified row via forward3 (q4_gemv_k3 already exists)"
     }
   ]
 }

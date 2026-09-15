@@ -1370,6 +1370,26 @@ impl Qwen38 {
         Ok(())
     }
 
+    /// After a two-row verify pass the hidden state for the last processed
+    /// position sits in row 1 of the tile, but the MTP head reads row 0, so a
+    /// speculative loop that consumed both rows must promote it before drafting
+    /// the next token.  Rows are disjoint, so one dispatch is enough.
+    pub fn promote_row1_hidden(&mut self) -> Result<()> {
+        let h = self.cfg.hidden_size;
+        let mut b = self.dev.batch();
+        copy_dispatch(
+            &mut b,
+            &self.kernels.copy,
+            &self.scratch.h,
+            h,
+            &self.scratch.h,
+            0,
+            h,
+        );
+        b.finish(true);
+        Ok(())
+    }
+
     /// Peek at row 1 of the input tile (debug aid for the two-row path).
     pub fn peek_row1(&self, n: usize) -> Vec<f32> {
         self.scratch

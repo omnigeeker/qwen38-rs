@@ -117,6 +117,10 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     eprintln!("prompt ids: {ids:?}");
 
     let debug = std::env::var("QW_DEBUG").is_ok();
+    // Speculative decoding needs the draft head's own k/v cache to cover the
+    // prompt, and it can only be advanced while each position's hidden state is
+    // still in the tile, so the warm-up rides along with the prefill.
+    let spec = std::env::var("QW_SPEC").is_ok() && model.has_mtp();
     let t0 = Instant::now();
     for (p, id) in ids.iter().enumerate() {
         model.set_token(*id)?;
@@ -127,6 +131,9 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             );
         }
         model.forward(p)?;
+        if spec && p + 1 < ids.len() {
+            model.mtp_step(ids[p + 1], p + 1, false)?;
+        }
         if debug {
             eprintln!("  [dbg] probe lm_head alone: {:?}", model.probe_lm_head()?);
             eprintln!(
@@ -275,15 +282,65 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     }
 
     let mut out: Vec<u32> = Vec::new();
+    let mut drafts = 0usize;
+    let mut hits = 0usize;
     let t1 = Instant::now();
-    for pos in ids.len()..ids.len() + opts.max_tokens {
-        let next = model.argmax();
-        out.push(next);
-        if opts.stop_at_eos && tok.is_eos(next) {
-            break;
+    if spec {
+        // `next` is a token the decoder has already settled (position `pos`) but
+        // not yet emitted; the pass verifies a draft for `pos + 1` and, when the
+        // draft is right, hands back the token for `pos + 2` for free from row 1.
+        let mut pos = ids.len();
+        let mut next = model.argmax();
+        while out.len() < opts.max_tokens {
+            out.push(next);
+            if opts.stop_at_eos && tok.is_eos(next) {
+                break;
+            }
+            let d = Qwen38::argmax_of(&model.mtp_step(next, pos, true)?);
+            model.set_tokens(&[next, d])?;
+            model.forward2(pos)?;
+            let r0 = Qwen38::argmax_of(&model.logits_row(0));
+            let r1 = Qwen38::argmax_of(&model.logits_row(1));
+            drafts += 1;
+            if d == r0 {
+                // Two tokens verified: the recurrence already covers both rows.
+                hits += 1;
+                out.push(d);
+                // Complete the head's own cache for the token just verified, using
+                // row 0 (the hidden of `pos`), before row 1 is promoted over it.
+                model.mtp_step(d, pos + 1, false)?;
+                model.promote_row1_hidden()?;
+                pos += 2;
+                next = r1;
+            } else {
+                // Only row 0 is real; commit the recurrence as of that row so the
+                // rejected draft leaves no trace.
+                model.commit_row(0)?;
+                pos += 1;
+                next = r0;
+            }
         }
-        model.set_token(next)?;
-        model.forward(pos)?;
+        // a two-token step can overshoot the requested length
+        out.truncate(opts.max_tokens);
+        eprintln!(
+            "spec: {hits}/{drafts} drafts accepted ({:.1}%), {:.2} tokens/pass",
+            if drafts == 0 {
+                0.0
+            } else {
+                100.0 * hits as f64 / drafts as f64
+            },
+            out.len() as f64 / drafts.max(1) as f64
+        );
+    } else {
+        for pos in ids.len()..ids.len() + opts.max_tokens {
+            let next = model.argmax();
+            out.push(next);
+            if opts.stop_at_eos && tok.is_eos(next) {
+                break;
+            }
+            model.set_token(next)?;
+            model.forward(pos)?;
+        }
     }
     let dt = t1.elapsed();
 
