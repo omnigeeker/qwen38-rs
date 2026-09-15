@@ -56,8 +56,8 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "attribute the 8.9ms/token between full-attention and delta-net layers with a skip-measurement (timing only)",
-    "start the k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms, amortising the per-token fixed costs"
+    "re-land the binding cache with invalidation on every pipeline switch; verify 6/6 then measure",
+    "k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms"
   ],
   "history": [
     {
@@ -235,6 +235,28 @@
         "encoder teardown as the 8.9ms: refuted by measurement (barrier change is neutral)"
       ],
       "reverted": "in-encoder barrier kept out of tree: neutral perf, clippy -D warnings, ordering-semantics risk"
+    },
+    {
+      "round": 9,
+      "title": "binding cache attempt: built, ran, but 0/6 parity and 3.7ms/token - bindings are invalidated by a pipeline switch",
+      "tok_s": 27.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6_after_revert",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "parity_broken": "0/6",
+        "timing_broken_ms": 3.7,
+        "restored_ms": 35.85,
+        "restored_parity": "6/6"
+      },
+      "failed_ideas": [
+        "caching encoder buffer bindings without invalidating them on set_compute_pipeline_state"
+      ],
+      "next": "re-land with cache invalidation on pipeline switch (argument table is per pipeline state)"
     }
   ]
 }
