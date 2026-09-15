@@ -56,8 +56,8 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "re-land the binding cache with invalidation on every pipeline switch; verify 6/6 then measure",
-    "k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms"
+    "start the k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms",
+    "reduce dispatch count (fuse norms into consumers, drop redundant barriers) - the 8.9ms is GPU-side dispatch + real non-linear work"
   ],
   "history": [
     {
@@ -257,6 +257,31 @@
         "caching encoder buffer bindings without invalidating them on set_compute_pipeline_state"
       ],
       "next": "re-land with cache invalidation on pipeline switch (argument table is per pipeline state)"
+    },
+    {
+      "round": 10,
+      "title": "binding cache re-landed correctly (6/6) but neutral: three driver-side hypotheses dead, the 8.9ms is GPU-side dispatch+work",
+      "tok_s": 27.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "after_ms": [
+          35.95,
+          36.0
+        ],
+        "baseline_ms": 35.85,
+        "parity": "6/6",
+        "diagnosis_confirmed": "pipeline-switch invalidation was the round-9 bug"
+      },
+      "failed_ideas": [
+        "binding-call reduction: neutral because consecutive dispatches switch pipeline"
+      ],
+      "next": "fewer dispatches (fusion) or the k=2 path which amortises all per-token fixed cost"
     }
   ]
 }
