@@ -836,9 +836,27 @@
         },
         "method": "QW_NO_ACCEPT=1 (force k=0) made the rejection path the only path and turned a rare corruption into divergence at token 4; QW_TILE_CHECK proves the tiled arithmetic is bit-exact (max|dlogit|=0.0). Together they separate wrong arithmetic from wrong state",
         "tile4": "built and tested: correct but strictly worse - acceptance 75.5%->55.6%, tokens/pass 2.51->2.67, materially higher pass cost. TILE=3 stays",
-        "thermal": "box throttled from back-to-back model loads (plain decode 87 ms/token vs 24.6 ms in round 031); spec/plain ratio 1.38x unchanged; absolute numbers to be re-measured in a cool window"
+        "thermal": "box throttled from back-to-back model loads (plain decode 87 ms/token vs 24.6 ms in round 031); spec/plain ratio 1.38x unchanged; absolute numbers to be re-measured in a cool window",
+        "cool_window": {
+          "spec": [
+            40.65,
+            38.03,
+            40.49
+          ],
+          "plain": 26.94,
+          "note": "ring fix is performance-neutral (reproduces round 031's 40.68/40.54) but one run in three read 38.03, so >=40 is met on a median and not robustly - this is why the goal stays open"
+        },
+        "endpoint_reverified": {
+          "models": "ok",
+          "openai_nonstream": "chat.completion + usage",
+          "anthropic_nonstream": "message + end_turn + usage",
+          "openai_sse": "11 data chunks",
+          "anthropic_sse": "message_start/content_block_start/9 deltas/content_block_stop/message_stop",
+          "note": "server drives spec_step and now calls enable_spec_snap, so it serves the verified sequence"
+        }
       },
       "next": "re-measure throughput in a cool window to reconfirm >=40 tok/s with the fix in place, then resume the remaining dispatch-count levers (batch conv1d_silu_ring/rmsnorm_nw across tile rows, batch gdn_step rows, fold ewise_add into rmsnorm, fold silu_mul into the up-GEMV, fold q/k norms)"
     }
-  ]
+  ],
+  "next": "throughput margin: the bar is met only on a median (38.03 dip), so cut dispatches per pass. Order: batch conv1d_silu_ring and rmsnorm_nw across the tile rows, batch gdn_step's serial rows, fold ewise_add into the following rmsnorm, fold silu_mul into the up-GEMV, fold the q/k norms together"
 }

@@ -54,3 +54,33 @@ wrong", and here it was unambiguously the state.
 * The box is heavily throttled from back-to-back model loads right now (plain decode reads
   87 ms/token against 24.6 ms in round 031's window), so absolute throughput is being
   re-measured in a cool window; the spec/plain ratio is 1.38x, unchanged.
+
+## Cool-window re-measurement (after the fix)
+
+The box was left to idle for five minutes, then three speculative runs and one plain run:
+
+```
+spec run 1: decode 40.65 tok/s (24.60 ms/token)
+spec run 2: decode 38.03 tok/s (26.29 ms/token)
+spec run 3: decode 40.49 tok/s (24.70 ms/token)
+plain    : decode 26.94 tok/s (37.11 ms/token)
+```
+
+So the ring fix is performance-neutral - it reproduces round 031's 40.68 / 40.54 - while the
+output is now provably the plain path's.  **But one run in three came in at 38.03, below the
+40 target, so the bar is met on a median, not robustly.**  That is the reason the goal stays
+open: the remaining throughput work is about margin, not about reaching 40 once.
+
+## Endpoint re-verified on the corrected build
+
+```
+/v1/models              {"object":"list","data":[{"id":"qwen3.8-27b-fp4",...}]}
+OpenAI non-stream       object=chat.completion finish=stop usage={completion_tokens:8, prompt_tokens:15, total_tokens:23}
+Anthropic non-stream    type=message stop_reason=end_turn usage={input_tokens:15, output_tokens:8}
+OpenAI SSE              11 `data:` chunks
+Anthropic SSE           message_start, content_block_start, 9x content_block_delta, content_block_stop, message_stop
+```
+
+The server drives `spec_step` and now also calls `enable_spec_snap()`, so its output is the
+same verified sequence the CLI produces rather than the unrecovered-state sequence it was
+serving before this round.
