@@ -1682,6 +1682,15 @@ impl Qwen38 {
     }
 
     /// Index of the largest logit (host side).
+    /// Speculative decoding rewinds the recurrent state after a rejected draft,
+    /// which needs the per-row snapshots.  Every front end that calls
+    /// `spec_step` has to switch this on: it used to be tied to the `QW_SPEC`
+    /// environment variable, which the server never sets, so `commit_row` was a
+    /// silent no-op there and each rejected draft stayed in the GDN state.
+    pub fn enable_spec_snap(&mut self) {
+        self.spec_snap = true;
+    }
+
     /// One speculative step, shared by every front end.
     ///
     /// `next` is a token already settled at `pos` but not yet emitted.  The step
@@ -1722,6 +1731,12 @@ impl Qwen38 {
         let mut k = 0usize;
         while k < TILE - 1 && d[k] == r[k] {
             k += 1;
+        }
+        // Diagnostic: force the pass to accept nothing.  The emitted sequence then
+        // has to match the plain path exactly, which bisects the acceptance
+        // machinery against the shared forward.
+        if std::env::var("QW_NO_ACCEPT").is_ok() {
+            k = 0;
         }
         out.extend(d.iter().take(k));
         // Row `TILE - 1` is already current and needs no rewind.

@@ -152,6 +152,77 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
         mtp_check(&mut model, &ids, 32)?;
     }
 
+    if std::env::var("QW_TILE_CHECK").is_ok() {
+        // The short-prefix check says nothing about a cache with hundreds of
+        // entries in it, which is where the spec and plain paths were seen to
+        // part.  Walk TILE rows greedily with the sequential path, then replay
+        // the same tokens through the tiled path from a fresh prefill and compare
+        // the logits row by row.
+        let amax = |v: &[f32]| -> u32 {
+            let mut bi = 0usize;
+            let mut bv = f32::NEG_INFINITY;
+            for (i, x) in v.iter().enumerate() {
+                if *x > bv {
+                    bv = *x;
+                    bi = i;
+                }
+            }
+            bi as u32
+        };
+        let md = |a: &[f32], b: &[f32]| -> f32 {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0f32, f32::max)
+        };
+        // Depth matters: walk `n` tokens greedily first so the caches are as full
+        // as they were when the two paths were seen to part.
+        let n: usize = std::env::var("QW_TILE_CHECK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200);
+        let mut p = ids.len();
+        let mut gen: Vec<u32> = Vec::new();
+        for _ in 0..n {
+            let t = model.argmax();
+            gen.push(t);
+            model.set_token(t)?;
+            model.forward(p)?;
+            p += 1;
+        }
+        let mut toks = Vec::new();
+        let mut refs: Vec<Vec<f32>> = Vec::new();
+        for r in 0..TILE {
+            let next = model.argmax();
+            toks.push(next);
+            model.set_token(next)?;
+            model.forward(p + r)?;
+            refs.push(model.logits());
+        }
+        println!("tilecheck: prefix {p} rows {TILE} tokens {toks:?}");
+        model.reset();
+        for (i, id) in ids.iter().enumerate() {
+            model.set_token(*id)?;
+            model.forward(i)?;
+        }
+        for (i, id) in gen.iter().enumerate() {
+            model.set_token(*id)?;
+            model.forward(ids.len() + i)?;
+        }
+        model.set_tokens(&toks)?;
+        model.forward2(p)?;
+        for (r, want) in refs.iter().enumerate() {
+            let got = model.logits_row(r);
+            println!(
+                "tilecheck: row {r} max|dlogit|={:.6e} argmax {} vs {}",
+                md(want, &got),
+                amax(&got),
+                amax(want)
+            );
+        }
+        return Ok(());
+    }
+
     if std::env::var("QW_K2_CHECK").is_ok() {
         let amax = |v: &[f32]| -> u32 {
             let mut bi = 0usize;
@@ -287,6 +358,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     let mut passes = 0usize;
     let t1 = Instant::now();
     if spec {
+        model.enable_spec_snap();
         // `next` is a token the decoder has already settled (position `pos`) but
         // not yet emitted; the pass verifies a draft for `pos + 1` and, when the
         // draft is right, hands back the token for `pos + 2` for free from row 1.

@@ -116,6 +116,9 @@ fn run_job(
     // each token's predecessor exactly as the CLI does, or every draft is garbage
     // and speculation only costs time.
     let spec = model.has_mtp() && std::env::var("QW_NO_SPEC").is_err();
+    if spec {
+        model.enable_spec_snap();
+    }
     for (p, id) in ids.iter().enumerate() {
         model.set_token(*id)?;
         model.forward(p)?;

@@ -794,6 +794,25 @@
         "open_issue": "over 300-token runs spec vs plain differ on one prompt (114 positions, first at 162, re-converging, 79% of the tail agrees) and are identical on another; the late start plus re-convergence indicates an argmax flipping on a near-tie rather than state corruption. Oracle parity stays 6/6 and the 64-token byte-for-byte check passed, so the existing gates do not catch it. The k=1 and k=3 kernels accumulate each row independently and ought to be bit-identical, so something else in the tiled path perturbs the last bits"
       },
       "next": "find what perturbs the last bits in the tiled path (top priority - it is the only threat to the correctness constraint); then re-measure TILE=3 vs TILE=4 in a clean thermal window"
+    },
+    {
+      "round": 34,
+      "title": "spec_snap was tied to the QW_SPEC env var, which the server never sets, so commit_row was a silent no-op there - now an explicit enable_spec_snap() called by both front ends. Proved with a new long-prefix harness that the tiled forward is bit-exact (max|dlogit| = 0.0 at prefixes 37/101/237)",
+      "tok_s": 40.68,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "oracle 6/6, rejection-path divergence narrowed",
+        "G4": "pass"
+      },
+      "evidence": {
+        "fixed_bug": "spec_snap: std::env::var(\"QW_SPEC\").is_ok() at model load; the CLI sets QW_SPEC so snapshots were on there, but the server never does, so commit_row (which rewinds the recurrent state after a rejected draft) was a no-op in the endpoint and every rejected draft stayed in the GDN state. Now model.enable_spec_snap() called explicitly by both front ends",
+        "tile_is_exact": "new QW_TILE_CHECK=<depth> walks <depth> tokens sequentially then replays the same prefix through the tiled path from a fresh prefill: max|dlogit| = 0.000000e0 at prefixes 37, 101 and 237, so the k=3 GEMV and the per-row GDN/attention loops reproduce sequential evaluation exactly. The old QW_K2_CHECK only ever tested a two-token prefix",
+        "mlx_reference": "a fresh 200-token stepwise mlx-lm reference shows both Rust paths leaving it at index 103 in the same place and re-converging two tokens later - a near-tie flip, identical for both paths, so the 16-token oracle gate is simply too short to see it",
+        "narrowed_bug": "plain vs spec differ at 14 positions (first 162, re-converging) but with QW_NO_ACCEPT=1 (k forced to 0) they differ at 190 of 200 positions permanently from token 4 - so the rejection path does not rewind something a later forward reads. The ring window, k/v caches and GDN recurrence were each checked by hand and each appears position-indexed and self-correcting",
+        "next_method": "stop reasoning and dump the buffers: snapshot the GDN state, the window rings and a layer's k/v cache after a rejected pass in both paths and diff them"
+      },
+      "next": "instrument the k=0 path: dump GDN state, window rings and a layer's k/v cache after a rejected pass in both paths and diff; keep the endpoint's QW_NO_SPEC=1 escape hatch until it is fixed"
     }
   ]
 }
