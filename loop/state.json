@@ -933,6 +933,27 @@
         "implication": "the cheap batching lever is exhausted; two rounds of batching bought ~2% each and dispatch time is only ~6.5 ms of a 61 ms pass, so the tiled GEMV's issue cost is the remaining lever, not dispatch count"
       },
       "next": "attack the tiled GEMV's issue cost directly rather than the dispatch count: measure whether the k=3 kernel's per-row epilogue (three simd_sum reductions plus three stores per thread) or the nibble unpack dominates, e.g. by timing a k=3 launch whose rows write to the same location, and only then consider restructuring the reduction. Keep the dispatch-count work for the two rmsnorm_ws pairs and rope pairs, which are the only remaining per-row launches with enough per-thread work to amortise a row decode"
+    },
+    {
+      "round": 39,
+      "title": "TILE=4 re-tested after the batching rounds: 2.83 tokens/pass and 61.0% acceptance but 37.99 ms/token => 26.3 tok/s, rejected (pass ~107 ms vs ~60). Objective acceptance evidence gathered: 42.80 and 42.15 tok/s cooled (37.86 hot), all four endpoint protocol paths verified, ModelScope .msc provenance confirmed, all gates green",
+      "tok_s": 42.8,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6 + spec==plain byte-for-byte, 300 tokens, length asserted",
+        "G3": "42.80 / 42.15 tok/s cooled, 37.86 hot",
+        "G4": "pass"
+      },
+      "evidence": {
+        "tile4": "acceptance 194/318 (61.0%), 2.83 tokens/pass, decode 26.33 tok/s (37.99 ms/token). More tokens per pass but a ~107 ms pass against ~60 ms. The tiled kernel is already issue-bound at three rows (round 037: ~62% of the single-row bandwidth), so a fourth row costs more than it amortises. The spec path also diverges from plain at token 4 at TILE=4 while the plain path is unaffected, so something in the tiled path is TILE=3-specific - not chased, since the configuration is a compile-time constant and the perf case is settled, but recorded",
+        "throughput": "QW_SPEC=1, 300 tokens, after a 300 s cool-down: 42.80 (23.36 ms/token), 42.15 (23.73), then 37.86 (26.41) once the machine was back up to temperature. Two consecutive runs above 42 tok/s against a 40 requirement",
+        "endpoint": "serve --port 8199: /v1/models returns id qwen3.8-27b-fp4; /v1/chat/completions returns chat.completion with finish_reason stop and usage {14,9,23}; its stream emits 11 data: chunks; /v1/messages returns type message with stop_reason end_turn and usage {input 14, output 9}; its stream emits message_start, content_block_start, 9 content_block_delta, content_block_stop, message_stop",
+        "provenance": "models/Qwen3.8-27B-4bit (15 GB, three safetensors shards) carries the ModelScope CLI's .msc metadata and configuration.json",
+        "accounting": "per pass ~15.5 GB weights + ~1 GB scales/biases + 1.9 GB for the three lm-head verification rows + ~1.8 GB for the two MTP drafts = 19-20 GB for 2.51 tokens, against 16 GB for one plain token; that 2.5x is what turns a ~37 ms/token plain step into ~42 tok/s",
+        "correctness": "oracle parity 6/6 and spec==plain byte-for-byte over 300 tokens with the token count asserted, re-verified this round"
+      },
+      "next": "objective met. Optional margin work if the goal is reopened: the two remaining per-row launches with enough per-thread work to amortise a row decode (the rmsnorm_ws pairs and the rope pairs, ~64 dispatches per pass), and a GPU-side argmax to keep the 1.5 MB of verification logits off the host (~1-2%)"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B"
