@@ -20,6 +20,9 @@ use crate::naming::WeightLayout;
 /// Every kernel the forward pass needs, compiled once at load time.
 struct Kernels {
     q4_gemv: Kernel,
+    /// Compile-time k=2 specialisation (round 6): the runtime-k kernel spills
+    /// its accumulators to thread-local memory.
+    q4_gemv_k2: Kernel,
     rmsnorm: Kernel,
     rmsnorm_ws: Kernel,
     rmsnorm_nw: Kernel,
@@ -294,6 +297,7 @@ impl Qwen38 {
             let mut b = dev.batch();
             Kernels {
                 q4_gemv: b.kernel(msl::COMMON, msl::K_Q4_GEMV)?,
+                q4_gemv_k2: b.kernel(msl::COMMON, msl::K_Q4_GEMV_K2)?,
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,
                 rmsnorm_ws: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS)?,
                 rmsnorm_nw: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_NW)?,
@@ -400,7 +404,7 @@ impl Qwen38 {
     }
 
     /// Dequantise one embedding row on the host (10 KB) into the input buffer.
-    pub fn set_token(&self, token: u32) -> Result<()> {
+    fn embed_row(&self, token: u32) -> Result<Vec<f16>> {
         let h = self.cfg.hidden_size;
         let groups = h / 64;
         let words_per_row = h / 8;
@@ -427,7 +431,22 @@ impl Qwen38 {
                 vals[idx] = q * scales[idx / 64] + biases[idx / 64];
             }
         }
-        let out: Vec<f16> = vals.iter().map(|v| f16::from_f32(*v)).collect();
+        Ok(vals.iter().map(|v| f16::from_f32(*v)).collect())
+    }
+
+    /// Embed one token per row of the input tile (`x`).
+    pub fn set_tokens(&self, tokens: &[u32]) -> Result<()> {
+        let mut out: Vec<f16> = Vec::with_capacity(tokens.len() * self.cfg.hidden_size);
+        for t in tokens {
+            out.extend_from_slice(&self.embed_row(*t)?);
+        }
+        self.scratch.x.copy_from(&out);
+        Ok(())
+    }
+
+    /// Embed a single token into row 0 (the single-token entry point).
+    pub fn set_token(&self, token: u32) -> Result<()> {
+        let out = self.embed_row(token)?;
         self.scratch.x.copy_from(&out);
         Ok(())
     }
@@ -773,6 +792,401 @@ impl Qwen38 {
         b.finish(true);
         Ok(())
     }
+
+    /// Two-token forward: row 0 is position `pos`, row 1 is `pos + 1`.
+    ///
+    /// The projections run once over both rows (`TILE` wide, using the
+    /// compile-time k=2 kernels); every per-row operation is issued once per
+    /// row with a `row * ROW_BYTES` buffer offset.  The gated-delta-net branch
+    /// stays per-row inside a single loop because its `in_proj_qkv` writes into
+    /// the shared four-row convolution window.
+    pub fn forward2(&mut self, pos: usize) -> Result<()> {
+        let Self {
+            cfg,
+            dev,
+            layers,
+            scratch,
+            kernels,
+            lm_head,
+            final_norm,
+            debug,
+            bf16_residual,
+            ..
+        } = self;
+        let h = cfg.hidden_size;
+        let nh = cfg.num_attention_heads;
+        let nkv = cfg.num_key_value_heads;
+        let hd = cfg.head_dim;
+        let hk = cfg.linear_num_key_heads;
+        let hv = cfg.linear_num_value_heads;
+        let dk = cfg.linear_key_head_dim;
+        let dv = cfg.linear_value_head_dim;
+        let key_dim = hk * dk;
+        let value_dim = hv * dv;
+        let conv_dim = key_dim * 2 + value_dim;
+        let rot_dim = cfg.rotary_dim() as i32;
+        let eps = cfg.rms_norm_eps;
+        let scale = 1.0f32 / (hd as f32).sqrt();
+        let t = (pos + 1) as i32;
+        let max_t = self.max_t as i32;
+
+        let mut b = CommandBatch::new(dev);
+
+        for (i, layer) in layers.iter().enumerate() {
+             for row in 0..TILE {
+
+                // ---- pre-norm ----
+                b.encode(
+                    Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                        .buf_offset(0, &scratch.x, row * (h * 2))
+                        .buf(1, &layer.input_norm)
+                        .buf_offset(2, &scratch.h, row * (h * 2))
+                        .scalar(3, h as i32)
+                        .scalar(4, eps),
+                );
+             }
+            b.barrier();
+            match &layer.kind {
+                Kind::Full(a) => {
+
+                    // q (with output gate), k, v projections
+                    a.q.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.qg, TILE, );
+                    b.barrier();
+                    a.k.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pk, TILE, );
+                    a.v.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pv, TILE, );
+                    b.barrier();
+                    for row in 0..TILE {
+                        // q_norm: heads live at stride 2*hd inside the q_proj output
+                        // (each head emits [query | gate]).  Unlike the delta net
+                        // there is NO extra query scale here — the reference only
+                        // applies `scale = head_dim**-0.5` inside SDPA.
+                        b.encode(
+                            Dispatch::new(&kernels.rmsnorm_ws, (nh * NT, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.qg, row * (nh * hd * 4))
+                                .buf(1, &a.q_norm)
+                                .buf_offset(2, &scratch.q, row * (nh * hd * 2))
+                                .scalar(3, hd as i32)
+                                .scalar(4, (2 * hd) as i32)
+                                .scalar(5, eps)
+                                .scalar(6, 1.0f32)
+                                .scalar(7, 1),
+                        );
+                    }
+                    b.barrier();
+                    for row in 0..TILE {
+                        b.encode(
+                            Dispatch::new(&kernels.rmsnorm_ws, (nkv * NT, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.pk, row * (nkv * hd * 2))
+                                .buf(1, &a.k_norm)
+                                .buf_offset(2, &scratch.k, row * (nkv * hd * 2))
+                                .scalar(3, hd as i32)
+                                .scalar(4, hd as i32)
+                                .scalar(5, eps)
+                                .scalar(6, 1.0f32)
+                                .scalar(7, 1),
+                        );
+                    }
+                    b.barrier();
+                    for row in 0..TILE {
+                        // partial RoPE (non-traditional pairing)
+                        b.encode(
+                            Dispatch::new(&kernels.rope, (nh * 64, 1, 1), (64, 1, 1))
+                                .buf_offset(0, &scratch.q, row * (nh * hd * 2))
+                                .buf_offset(1, &scratch.q, row * (nh * hd * 2))
+                                .scalar(2, nh as i32)
+                                .scalar(3, hd as i32)
+                                .scalar(4, rot_dim)
+                                .scalar(5, cfg.rope_theta() as f32)
+                                .scalar(6, (pos + row) as i32),
+                        );
+                        b.encode(
+                            Dispatch::new(&kernels.rope, (nkv * 64, 1, 1), (64, 1, 1))
+                                .buf_offset(0, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(1, &scratch.k, row * (nkv * hd * 2))
+                                .scalar(2, nkv as i32)
+                                .scalar(3, hd as i32)
+                                .scalar(4, rot_dim)
+                                .scalar(5, cfg.rope_theta() as f32)
+                                .scalar(6, (pos + row) as i32),
+                        );
+                    }
+                    b.barrier();
+                    for row in 0..TILE {
+                        b.encode(
+                            Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(1, &scratch.pv, row * (nkv * hd * 2))
+                                .buf(2, &a.k_cache)
+                                .buf(3, &a.v_cache)
+                                .scalar(4, (pos + row) as i32)
+                                .scalar(5, max_t)
+                                .scalar(6, nkv as i32)
+                                .scalar(7, hd as i32),
+                        );
+                    }
+                    b.barrier();
+                    for row in 0..TILE {
+                        b.encode(
+                            Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.q, row * (nh * hd * 2))
+                                .buf(1, &a.k_cache)
+                                .buf(2, &scratch.scores)
+                                .scalar(3, t + row as i32)
+                                .scalar(4, max_t)
+                                .scalar(5, nh as i32)
+                                .scalar(6, nkv as i32)
+                                .scalar(7, hd as i32)
+                                .scalar(8, scale),
+                        );
+                    }
+                    b.barrier();
+                    for row in 0..TILE {
+                        b.encode(
+                            Dispatch::new(&kernels.attn_out, (nh * hd, 1, 1), (hd, 1, 1))
+                                .buf(0, &scratch.scores)
+                                .buf(1, &a.v_cache)
+                                .buf_offset(2, &scratch.attn_out, row * (nh * hd * 2))
+                                .scalar(3, t + row as i32)
+                                .scalar(4, max_t)
+                                .scalar(5, nh as i32)
+                                .scalar(6, nkv as i32)
+                                .scalar(7, hd as i32),
+                        );
+                    }
+                    b.barrier();
+                    for row in 0..TILE {
+                        // out * sigmoid(gate) where gate sits after each head's query
+                        b.encode(
+                            Dispatch::new(&kernels.gate_mul, (nh * hd, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.attn_out, row * (nh * hd * 2))
+                                .buf_offset(1, &scratch.qg, row * (nh * hd * 4))
+                                .buf_offset(2, &scratch.attn_gated, row * (nh * hd * 2))
+                                .scalar(3, hd as i32),
+                        );
+                    }
+                    b.barrier();
+                    a.o.encode_k(
+                        &mut b,
+                        &kernels.q4_gemv_k2,
+                        &scratch.attn_gated,
+                        &scratch.proj_out, TILE, );
+                }
+                Kind::Gdn(g) => {
+                    g.in_z
+                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.z, TILE, );
+                    g.in_b
+                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.b, TILE, );
+                    g.in_a
+                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.a, TILE, );
+                     for row in 0..TILE {
+
+                        // qkv projection writes straight into the conv window's last row
+                        b.encode(
+                            Dispatch::new(
+                                &kernels.q4_gemv,
+                                ((key_dim * 2 + value_dim) * 32, 1, 1),
+                                (32, 1, 1),
+                            )
+                            .buf_offset(0, g.in_qkv.weight.buf, g.in_qkv.weight.offset)
+                            .buf_offset(1, g.in_qkv.scales.buf, g.in_qkv.scales.offset)
+                            .buf_offset(2, g.in_qkv.biases.buf, g.in_qkv.biases.offset)
+                            .buf_offset(3, &scratch.h, row * (h * 2))
+                            .buf_offset(4, &scratch.window, 3 * conv_dim * 2)
+                            .scalar(5, g.in_qkv.in_f as i32),
+                        );
+                        b.barrier();
+                        copy_dispatch(
+                            &mut b,
+                            &kernels.copy,
+                            &g.conv_hist,
+                            0,
+                            &scratch.window,
+                            0,
+                            3 * conv_dim,
+                        );
+                        b.barrier();
+                        b.encode(
+                            Dispatch::new(&kernels.conv1d, (conv_dim, 1, 1), (NT, 1, 1))
+                                .buf(0, &scratch.window)
+                                .buf(1, &g.conv_w)
+                                .buf_offset(2, &scratch.conv_out, row * (conv_dim * 2))
+                                .scalar(3, conv_dim as i32),
+                        );
+                        b.encode(
+                            Dispatch::new(&kernels.copy, (3 * conv_dim, 1, 1), (NT, 1, 1))
+                                .buf(0, &scratch.window)
+                                .buf(1, &g.conv_hist)
+                                .scalar(2, (3 * conv_dim) as i32)
+                                .scalar(3, conv_dim as i32)
+                                .scalar(4, 0),
+                        );
+                        b.barrier();
+                        let inv = 1.0f32 / (dk as f32).sqrt();
+                        // q = inv^2 * rms_norm(q), k = inv * rms_norm(k)  (no weight)
+                        // rmsnorm_s ABI: 0=x 1=w(optional) 2=y 3=D 4=in_stride 5=eps 6=scale 7=has_weight
+                        b.encode(
+                            Dispatch::new(&kernels.rmsnorm_nw, (hk * NT, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.conv_out, row * (conv_dim * 2) + (0))
+                                .buf_offset(1, &scratch.conv_out, row * (conv_dim * 2) + (0))
+                                .buf_offset(2, &scratch.q, row * (nh * hd * 2))
+                                .scalar(3, dk as i32)
+                                .scalar(4, dk as i32)
+                                .scalar(5, 1e-6f32)
+                                .scalar(6, inv * inv)
+                                .scalar(7, 0),
+                        );
+                        b.encode(
+                            Dispatch::new(&kernels.rmsnorm_nw, (hk * NT, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.conv_out, row * (conv_dim * 2) + (key_dim * 2))
+                                .buf_offset(1, &scratch.conv_out, row * (conv_dim * 2) + (key_dim * 2))
+                                .buf_offset(2, &scratch.k, row * (nkv * hd * 2))
+                                .scalar(3, dk as i32)
+                                .scalar(4, dk as i32)
+                                .scalar(5, 1e-6f32)
+                                .scalar(6, inv)
+                                .scalar(7, 0),
+                        );
+                        b.barrier();
+                        b.encode(
+                            Dispatch::new(&kernels.gdn, (hv * dv, 1, 1), (dv, 1, 1))
+                                .buf_offset(0, &scratch.q, row * (nh * hd * 2))
+                                .buf_offset(1, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(2, &scratch.conv_out, row * (conv_dim * 2) + (2 * key_dim * 2))
+                                .buf_offset(3, &scratch.a, row * (hv * 2))
+                                .buf_offset(4, &scratch.b, row * (hv * 2))
+                                .buf(5, &g.a_log)
+                                .buf(6, &g.dt_bias)
+                                .buf(7, &g.state)
+                                .buf_offset(8, &scratch.gdn_y, row * (value_dim * 2))
+                                .scalar(9, hk as i32)
+                                .scalar(10, hv as i32)
+                                .scalar(11, dk as i32)
+                                .scalar(12, dv as i32),
+                        );
+                        b.barrier();
+                        b.encode(
+                            Dispatch::new(&kernels.rmsnorm_gated, (hv * NT, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &scratch.gdn_y, row * (value_dim * 2))
+                                .buf(1, &g.norm_w)
+                                .buf_offset(2, &scratch.z, row * (value_dim * 2))
+                                .buf_offset(3, &scratch.gdn_gated, row * (value_dim * 2))
+                                .scalar(4, dv as i32)
+                                .scalar(5, eps),
+                        );
+                        b.barrier();
+                     }
+                    g.out_proj.encode_k(
+                        &mut b,
+                        &kernels.q4_gemv_k2,
+                        &scratch.gdn_gated,
+                        &scratch.proj_out, TILE, );
+                }
+            }
+            b.barrier();
+            for row in 0..TILE {
+                // residual
+                b.encode(
+                    Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
+                        .buf_offset(0, &scratch.x, row * (h * 2))
+                        .buf_offset(1, &scratch.proj_out, row * (h * 2))
+                        .buf_offset(2, &scratch.x, row * (h * 2)),
+                );
+            }
+            b.barrier();
+             for row in 0..TILE {
+
+                // ---- MLP ----
+                b.encode(
+                    Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                        .buf_offset(0, &scratch.x, row * (h * 2))
+                        .buf(1, &layer.post_norm)
+                        .buf_offset(2, &scratch.h, row * (h * 2))
+                        .scalar(3, h as i32)
+                        .scalar(4, eps),
+                );
+             }
+            b.barrier();
+            layer
+                .gate
+                .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.mlp_gate, TILE, );
+            layer
+                .up
+                .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.mlp_up, TILE, );
+            b.barrier();
+            for row in 0..TILE {
+                b.encode(
+                    Dispatch::new(&kernels.silu_mul, (cfg.intermediate_size, 1, 1), (NT, 1, 1))
+                        .buf_offset(0, &scratch.mlp_gate, row * (cfg.intermediate_size * 2))
+                        .buf_offset(1, &scratch.mlp_up, row * (cfg.intermediate_size * 2))
+                        .buf_offset(2, &scratch.mlp_act, row * (cfg.intermediate_size * 2)),
+                );
+            }
+            b.barrier();
+            layer.down.encode_k(
+                &mut b,
+                &kernels.q4_gemv_k2,
+                &scratch.mlp_act,
+                &scratch.proj_out, TILE, );
+            b.barrier();
+            for row in 0..TILE {
+                b.encode(
+                    Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
+                        .buf_offset(0, &scratch.x, row * (h * 2))
+                        .buf_offset(1, &scratch.proj_out, row * (h * 2))
+                        .buf_offset(2, &scratch.x, row * (h * 2)),
+                );
+            }
+            b.barrier();
+            for row in 0..TILE {
+                if *bf16_residual {
+                    b.encode(
+                        Dispatch::new(&kernels.round_bf16, (h, 1, 1), (NT, 1, 1))
+                            .buf_offset(0, &scratch.x, row * (h * 2))
+                            .buf_offset(1, &scratch.x, row * (h * 2)),
+                    );
+                    b.barrier();
+                }
+                if let Some(dbg) = debug.as_ref() {
+                    copy_dispatch(&mut b, &kernels.copy, &scratch.x, 0, dbg, i * h, h);
+                    b.barrier();
+                }
+            }
+        }
+        // final norm + lm head for both rows
+        for row in 0..TILE {
+            b.encode(
+                Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                    .buf_offset(0, &scratch.x, row * h * 2)
+                    .buf(1, final_norm)
+                    .buf_offset(2, &scratch.h, row * h * 2)
+                    .scalar(3, h as i32)
+                    .scalar(4, eps),
+            );
+        }
+        b.barrier();
+        lm_head.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.logits, TILE);
+        self.last_dispatches = b.dispatches();
+        b.finish(true);
+        Ok(())
+    }
+
+    /// Peek at one row of the input tile (debug aid for the two-row path).
+    pub fn peek_row1(&self, n: usize) -> Vec<f32> {
+        let h = self.cfg.hidden_size;
+        self.scratch
+            .x
+            .to_vec::<f16>(h, n)
+            .iter()
+            .map(|v| v.to_f32())
+            .collect()
+    }
+
+    /// Logits of one row of the last two-token forward, copied to the host.
+    pub fn logits_row(&self, row: usize) -> Vec<f32> {
+        let v: Vec<f16> = self.scratch.logits.to_vec(row * self.vocab, self.vocab);
+        v.iter().map(|x| x.to_f32()).collect()
+    }
+
 
     /// Logits of the last `forward` call, copied to the host.
     pub fn logits(&self) -> Vec<f32> {

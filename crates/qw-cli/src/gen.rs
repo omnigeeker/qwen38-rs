@@ -62,6 +62,85 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     }
     let prefill = t0.elapsed();
 
+    if std::env::var("QW_K2_CHECK").is_ok() {
+        let argmax_of = |v: &[f32]| -> u32 {
+            let mut bi = 0usize;
+            let mut bv = f32::NEG_INFINITY;
+            for (i, x) in v.iter().enumerate() {
+                if *x > bv {
+                    bv = *x;
+                    bi = i;
+                }
+            }
+            bi as u32
+        };
+        let t0 = ids[0];
+        // sanity: set_tokens must put the same embedding in row 0 as set_token
+        model.reset();
+        model.set_token(t0)?;
+        let x1 = model.peek("x", 8);
+        model.reset();
+        model.set_tokens(&[t0, t0])?;
+        let x2 = model.peek("x", 8);
+        let x3 = model.peek_row1(8);
+        println!("k2check: x(set_token)={x1:?}");
+        println!("k2check: x(set_tokens row0)={x2:?} row1={x3:?}");
+        // reference: two ordinary single-token forwards
+        model.enable_debug();
+        model.reset();
+        model.set_token(t0)?;
+        model.forward(0)?;
+        let ref0 = model.logits();
+        let ref_dbg = model.debug_stats();
+        let t1 = argmax_of(&ref0);
+        model.set_token(t1)?;
+        model.forward(1)?;
+        let ref1 = model.logits();
+        // same two tokens in one two-row pass
+        model.reset();
+        model.set_tokens(&[t0, t1])?;
+        model.forward2(0)?;
+        let got_dbg = model.debug_stats();
+        for i in 0..4 {
+            println!(
+                "k2check: layer {i} ref absmax={:.5} got absmax={:.5}",
+                ref_dbg[i].2, got_dbg[i].2
+            );
+        }
+        let got0 = model.logits_row(0);
+        let got1 = model.logits_row(1);
+        // isolate cross-row interference: both rows the same token, row 0 must
+        // then reproduce the single-token forward exactly
+        model.reset();
+        model.set_tokens(&[t0, t0])?;
+        model.forward2(0)?;
+        let self0 = model.logits_row(0);
+        let md = |a: &[f32], b: &[f32]| -> f32 {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0f32, f32::max)
+        };
+        println!(
+            "k2check: row0 argmax ref={} got={} max|d|={:.4} | row1 argmax ref={} got={} max|d|={:.4}",
+            argmax_of(&ref0),
+            argmax_of(&got0),
+            md(&ref0, &got0),
+            argmax_of(&ref1),
+            argmax_of(&got1),
+            md(&ref1, &got1)
+        );
+        let ok = argmax_of(&ref0) == argmax_of(&got0) && argmax_of(&ref1) == argmax_of(&got1);
+        println!(
+            "k2check: self-pair row0 argmax ref={} got={} max|d|={:.4}",
+            argmax_of(&ref0),
+            argmax_of(&self0),
+            md(&ref0, &self0)
+        );
+        println!("k2check: {}", if ok { "PASS" } else { "FAIL" });
+        return if ok { Ok(()) } else { anyhow::bail!("k2 check failed") };
+    }
+
     if let Some(path) = &opts.dump_vectors {
         model.write_vectors(std::path::Path::new(path))?;
         eprintln!("wrote {path}");

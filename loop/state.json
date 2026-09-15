@@ -479,6 +479,31 @@
         "gdn_window_blocker": "in_proj_qkv writes the shared 4-row window; needs a 5th row to wrap rows syntactically"
       },
       "next": "build forward2 (row-wrapped body, projections k=2), then lm_head/two-row logits, then 2-row non-linear kernels (step 3), then MTP"
+    },
+    {
+      "round": 19,
+      "title": "forward2 generated and compiling: GDN layers 0-2 bit-exact, divergence localised to the first full-attention layer",
+      "tok_s": 27.8,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "forward2": "written (mechanical transform of forward)",
+        "kernels": "q4_gemv_k2 added",
+        "layers_0_2": "exact",
+        "layer_3": "ref 49.90625 vs got 48.62500",
+        "suspects": [
+          "qg stride nh*hd*4",
+          "scores stride nh*max_t*4",
+          "attn_* stride nh*hd*2"
+        ],
+        "check": "QW_K2_CHECK=1 env var"
+      },
+      "next": "fix the Full arm row strides (qg/scores/attn_out/attn_gated are the only strides GDN layers never touch), then re-run QW_K2_CHECK=1"
     }
   ]
 }
