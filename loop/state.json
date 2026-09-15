@@ -56,7 +56,8 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "PLAN_K2 step 2: switch the ~10 QLinear::encode call sites to encode_k(..., TILE) with msl::K_Q4_GEMV_K2, then step 3 (non-linear per-row with buf_offset), re-check 6/6 and compare a forward2 logit row against forward"
+    "M5 polish: route anthropic_sse, honour Anthropic max_tokens/stream, report prompt_tokens, hold back trailing U+FFFD",
+    "PLAN_K2 step 2: ~10 QLinear::encode sites to encode_k(..., TILE) with msl::K_Q4_GEMV_K2"
   ],
   "history": [
     {
@@ -395,6 +396,36 @@
         "window_excluded": true
       },
       "next": "PLAN_K2 step 2: ~10 QLinear::encode sites to encode_k(..., TILE) with msl::K_Q4_GEMV_K2"
+    },
+    {
+      "round": 16,
+      "title": "M5 landed: endpoint live on OpenAI chat/completions (streaming + non-streaming) and Anthropic messages",
+      "tok_s": 27.8,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "health": "ok",
+        "engine_ready_s": 2.1,
+        "endpoint": "127.0.0.1:43191",
+        "routes": [
+          "/health",
+          "/v1/models",
+          "/v1/chat/completions",
+          "/v1/completions",
+          "/v1/messages"
+        ],
+        "streaming": "data: ... [DONE] verified",
+        "files": [
+          "crates/qw-server/src/engine.rs",
+          "crates/qw-server/src/server.rs"
+        ]
+      },
+      "next": "Anthropic streaming + request max_tokens/stream, prompt_tokens in usage, hold back trailing U+FFFD, then PLAN_K2 step 2"
     }
   ]
 }

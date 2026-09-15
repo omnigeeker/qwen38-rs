@@ -1,15 +1,24 @@
 //! HTTP surface: OpenAI (`/v1/chat/completions`, `/v1/completions`, `/v1/models`)
-//! and Anthropic (`/v1/messages`).
+//! and Anthropic (`/v1/messages`), both served by the same local engine.
 
 use crate::anthropic::{ErrorEnvelope, MessagesRequest};
-use crate::openai::{ApiError, ChatCompletionRequest, CompletionRequest, ModelCard, ModelList};
+use crate::engine::{Engine, Prompt};
+use crate::openai::{
+    ApiError, ChatCompletionRequest, CompletionRequest, Content, ModelCard, ModelList,
+};
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
+use futures::stream::{self, StreamExt};
+use qw_engine::tokenizer::Message;
+use std::convert::Infallible;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -18,6 +27,7 @@ pub struct AppState {
     pub model_dir: String,
     /// Set once the Metal engine is loaded; endpoints report 503 until then.
     pub ready: bool,
+    engine: Option<Engine>,
 }
 
 impl AppState {
@@ -26,7 +36,15 @@ impl AppState {
             model_id: model_id.into(),
             model_dir: model_dir.into(),
             ready: false,
+            engine: None,
         }
+    }
+
+    /// Attach a loaded engine.  This is what flips `/health` to `ok`.
+    pub fn with_engine(mut self, engine: Engine) -> Self {
+        self.engine = Some(engine);
+        self.ready = true;
+        self
     }
 }
 
@@ -66,6 +84,22 @@ fn not_ready_anthropic(msg: &str) -> Response {
         .into_response()
 }
 
+fn error_openai(msg: &str, kind: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiError::new(msg, "engine_error", kind)),
+    )
+        .into_response()
+}
+
+fn error_anthropic(msg: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorEnvelope::new("api_error", msg)),
+    )
+        .into_response()
+}
+
 pub fn build_router(state: AppState) -> Router {
     let shared = Arc::new(state);
     Router::new()
@@ -98,30 +132,238 @@ async fn list_models(State(st): State<Arc<AppState>>) -> Json<ModelList> {
     })
 }
 
+/// OpenAI message roles mapped onto the chat template's message type.
+fn to_messages(msgs: &[crate::openai::ChatMessage]) -> Vec<Message> {
+    msgs.iter()
+        .map(|m| {
+            let text = m.content.as_ref().map(Content::as_text).unwrap_or_default();
+            match m.role.as_str() {
+                "system" => Message::system(text),
+                "assistant" => Message::assistant(text),
+                _ => Message::user(text),
+            }
+        })
+        .collect()
+}
+
+/// `data: ...` chunks in OpenAI's wire format, terminated by `data: [DONE]`.
+fn openai_sse(
+    rx: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    id: String,
+    model: String,
+    created: u64,
+) -> Response {
+    let id_c = id.clone();
+    let model_c = model.clone();
+    let body = stream::unfold((rx, true), move |(mut rx, first)| {
+        let id = id_c.clone();
+        let model = model_c.clone();
+        async move {
+            match rx.recv().await {
+                Some(Ok(piece)) => {
+                    let delta = if first {
+                        serde_json::json!({ "role": "assistant", "content": piece })
+                    } else {
+                        serde_json::json!({ "content": piece })
+                    };
+                    let chunk = serde_json::json!({
+                        "id": id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": null}],
+                    });
+                    let ev: Result<Event, Infallible> =
+                        Ok(Event::default().data(chunk.to_string()));
+                    Some((ev, (rx, false)))
+                }
+                Some(Err(e)) => {
+                    let chunk = serde_json::json!({
+                        "error": {"message": e, "type": "engine_error"}
+                    });
+                    let ev: Result<Event, Infallible> =
+                        Ok(Event::default().data(chunk.to_string()));
+                    Some((ev, (rx, false)))
+                }
+                None => None,
+            }
+        }
+    })
+    .chain(stream::iter(vec![
+        Ok(Event::default().data(
+            serde_json::json!({
+                "id": id, "object": "chat.completion.chunk",
+                "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            })
+            .to_string(),
+        )),
+        Ok(Event::default().data("[DONE]")),
+    ]));
+    Sse::new(body).into_response()
+}
+
+/// Anthropic's event stream: `message_start`, then deltas, then `message_stop`.
+fn anthropic_sse(
+    rx: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    id: String,
+    model: String,
+    input_tokens: usize,
+) -> Response {
+    let start = serde_json::json!({
+        "type": "message_start",
+        "message": {
+            "id": id, "type": "message", "role": "assistant", "model": model,
+            "content": [], "stop_reason": serde_json::Value::Null, "stop_sequence": serde_json::Value::Null,
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+        }
+    });
+    let block_start = serde_json::json!({
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "text", "text": ""}
+    });
+    let head: Vec<Result<Event, Infallible>> = vec![
+        Ok(Event::default()
+            .event("message_start")
+            .data(start.to_string())),
+        Ok(Event::default()
+            .event("content_block_start")
+            .data(block_start.to_string())),
+    ];
+    let body = stream::iter(head)
+        .chain(stream::unfold(rx, move |mut rx| async move {
+            match rx.recv().await {
+                Some(Ok(piece)) => {
+                    let ev = serde_json::json!({
+                        "type": "content_block_delta", "index": 0,
+                        "delta": {"type": "text_delta", "text": piece}
+                    });
+                    let item: Result<Event, Infallible> = Ok(Event::default()
+                        .event("content_block_delta")
+                        .data(ev.to_string()));
+                    Some((item, rx))
+                }
+                Some(Err(e)) => {
+                    let ev = serde_json::json!({
+                        "type": "error", "error": {"type": "api_error", "message": e}
+                    });
+                    let item: Result<Event, Infallible> =
+                        Ok(Event::default().event("error").data(ev.to_string()));
+                    Some((item, rx))
+                }
+                None => None,
+            }
+        }))
+        .chain(stream::iter(vec![
+            Ok(Event::default()
+                .event("content_block_stop")
+                .data(serde_json::json!({"type": "content_block_stop", "index": 0}).to_string())),
+            Ok(Event::default()
+                .event("message_stop")
+                .data(serde_json::json!({"type": "message_stop"}).to_string())),
+        ]));
+    Sse::new(body).into_response()
+}
+
+async fn collect(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+) -> Result<(String, usize), String> {
+    let mut text = String::new();
+    let mut n = 0usize;
+    while let Some(item) = rx.recv().await {
+        match item {
+            Ok(piece) => {
+                text.push_str(&piece);
+                n += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((text, n))
+}
+
 async fn chat_completions(
     State(st): State<Arc<AppState>>,
-    Json(_req): Json<ChatCompletionRequest>,
+    Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
-    if !st.ready {
+    let Some(engine) = st.engine.clone() else {
         return not_ready_openai("engine is still loading the 4-bit weights");
+    };
+    let messages = to_messages(&req.messages);
+    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, 1024);
+    let id = format!("chatcmpl-{}", now_secs());
+    let created = now_secs();
+    let rx = engine.submit(Prompt::Chat(messages), max_tokens);
+    if req.stream.unwrap_or(false) {
+        return openai_sse(rx, id, st.model_id.clone(), created);
     }
-    not_ready_openai("generation backend not wired yet")
+    let (text, n) = match collect(rx).await {
+        Ok(v) => v,
+        Err(e) => return error_openai(&e, "generation_failed"),
+    };
+    Json(serde_json::json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": st.model_id,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": n, "total_tokens": n},
+    }))
+    .into_response()
 }
 
 async fn completions(
     State(st): State<Arc<AppState>>,
-    Json(_req): Json<CompletionRequest>,
+    Json(req): Json<CompletionRequest>,
 ) -> Response {
-    if !st.ready {
+    let Some(engine) = st.engine.clone() else {
         return not_ready_openai("engine is still loading the 4-bit weights");
+    };
+    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, 1024);
+    let id = format!("cmpl-{}", now_secs());
+    let created = now_secs();
+    let rx = engine.submit(Prompt::Text(req.prompt), max_tokens);
+    if req.stream.unwrap_or(false) {
+        return openai_sse(rx, id, st.model_id.clone(), created);
     }
-    not_ready_openai("generation backend not wired yet")
+    let (text, n) = match collect(rx).await {
+        Ok(v) => v,
+        Err(e) => return error_openai(&e, "generation_failed"),
+    };
+    Json(serde_json::json!({
+        "id": id,
+        "object": "text_completion",
+        "created": created,
+        "model": st.model_id,
+        "choices": [{"index": 0, "text": text, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": n, "total_tokens": n},
+    }))
+    .into_response()
 }
 
 async fn messages(State(st): State<Arc<AppState>>, Json(req): Json<MessagesRequest>) -> Response {
-    if !st.ready {
+    let Some(engine) = st.engine.clone() else {
         return not_ready_anthropic("engine is still loading the 4-bit weights");
-    }
-    let _ = req.to_chat_messages();
-    not_ready_anthropic("generation backend not wired yet")
+    };
+    let messages = to_messages(&req.to_chat_messages());
+    let max_tokens = 256usize;
+    let id = format!("msg_{}", now_secs());
+    let rx = engine.submit(Prompt::Chat(messages), max_tokens);
+    let (text, n) = match collect(rx).await {
+        Ok(v) => v,
+        Err(e) => return error_anthropic(&e),
+    };
+    Json(serde_json::json!({
+        "id": id,
+        "type": "message",
+        "role": "assistant",
+        "model": st.model_id,
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {"input_tokens": 0, "output_tokens": n},
+    }))
+    .into_response()
 }

@@ -5,6 +5,7 @@
 //! before the model backend is wired in (`backend` feature).
 
 pub mod anthropic;
+pub mod engine;
 pub mod openai;
 pub mod server;
 

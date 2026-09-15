@@ -235,9 +235,14 @@ fn cmd_info(model_dir: &std::path::Path) -> Result<()> {
 }
 
 fn cmd_serve(model_dir: PathBuf, port: u16, model_id: String) -> Result<()> {
+    eprintln!("loading engine from {} ...", model_dir.display());
+    let t0 = std::time::Instant::now();
+    let engine = qw_server::engine::Engine::spawn(model_dir.clone(), 4096)?;
+    eprintln!("engine ready in {:.1}s", t0.elapsed().as_secs_f32());
+    let label = model_dir.to_string_lossy().to_string();
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let state = qw_server::AppState::new(model_id, model_dir.to_string_lossy().to_string());
+        let state = qw_server::AppState::new(model_id, label).with_engine(engine);
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         qw_server::serve(state, addr).await
     })
