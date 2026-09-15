@@ -48,10 +48,15 @@
     "k3_sweep_ms": 60.52,
     "k3_equiv_tok_s": 49.6,
     "k4_sweep_ms": 74.8,
-    "k4_equiv_tok_s": 53.5
+    "k4_equiv_tok_s": 53.5,
+    "k2_specialised_ms": 28.64,
+    "k2_specialised_tok_s": 69.8,
+    "k3_specialised_tok_s": 92.8,
+    "k4_specialised_tok_s": 104.1,
+    "k2_effective_gbps": 503
   },
   "next_actions": [
-    "write q4_gemm_t: tiled 4-bit GEMM over a tile of T tokens (T=8..32), x staged in threadgroup memory, fp32 accumulate; target 27-28ms per weight pass at T=8; verify token-by-token against the k=1 GEMV. Needed for M2 prefill regardless."
+    "quantise the local bf16 mtp.* shard (MLX affine group 64), wire the MTP head, measure a real draft/verify loop at k=2"
   ],
   "history": [
     {
@@ -162,6 +167,28 @@
         "x hoist to registers: 36-40% worse",
         "uint4 weight loads: wash"
       ]
+    },
+    {
+      "round": 6,
+      "title": "runtime-k accumulators were spilling to local memory; compile-time-k specialisation makes the 2nd token nearly free",
+      "tok_s": 27.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "big_win",
+        "G4": "pass"
+      },
+      "evidence": {
+        "k2_runtime_ms": 46.63,
+        "k2_specialised_ms": 28.64,
+        "k3_specialised_ms": 32.34,
+        "k4_specialised_ms": 38.41,
+        "k2_equiv_tok_s": 69.8,
+        "k2_effective_gbps": 503,
+        "parity": "6/6",
+        "tests": 39
+      }
     }
   ]
 }

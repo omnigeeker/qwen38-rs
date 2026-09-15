@@ -71,7 +71,15 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             let mut batch = dev.batch();
             let kernel = if k == 1 {
                 QLinear::kernel(&mut batch)?
-            } else if rows >= 1 {
+            } else if rows == 1 {
+                let name = match k {
+                    2 => qw_metal::msl::K_Q4_GEMV_K2,
+                    3 => qw_metal::msl::K_Q4_GEMV_K3,
+                    4 => qw_metal::msl::K_Q4_GEMV_K4,
+                    _ => qw_metal::msl::K_Q4_GEMV_K,
+                };
+                batch.kernel(qw_metal::msl::COMMON, name)?
+            } else if rows == 2 {
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_KR)?
             } else {
                 QLinear::kernel_k(&mut batch)?
