@@ -913,6 +913,26 @@
         "operational_rule": "do not issue GPU gates in the same process window as a build-and-test sweep"
       },
       "next": "reproduce the intermittent parity failure deliberately: loop verify many times while recording the failing case identity and the load average, and if it reappears under contention, add a GPU completion/error check after the gate's forwards so a device fault surfaces as an error instead of a wrong token"
+    },
+    {
+      "round": 38,
+      "title": "Contention experiment: 5 verify runs under load 3.7-6.8 all read 6/6, so the round-037 anomaly did not reproduce (1 in ~19 runs, still open). Also found and then measured-away a batching idea: kv_append/gate_mul batch over the tile byte-identically once k's row stride (key_dim) is distinguished from v's (nkv*hd), but run 5.7% SLOWER because the flattened row decode costs an integer division per thread in kernels that only do a couple of loads. No code change",
+      "tok_s": 41.4,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6 + spec==plain byte-for-byte on the restored tree",
+        "G4": "pass"
+      },
+      "evidence": {
+        "contention_experiment": "30 verify runs in a loop with full output per run and loadavg per run; the 5 that completed on the unmodified binary (load 3.7-6.8) all read 6/6. The loop was then contaminated by a rebuild and killed",
+        "plain_path_stable_under_load": "idle plain vs loaded plain: 0 differences over 300 tokens with a concurrent generation running, so the plain decode path is not fragile",
+        "latent_trap": "scratch.k is shared by two branches whose rows differ in width: the GDN branch defines key_dim = hk*dk while the attention branch's k projection is nkv*hd. The attention dispatch used the local key_dim as the row offset while scratch.pv used nkv*hd, so any refactor that treats the two names as the same number reads the wrong row - and the symptom is a spec-vs-plain divergence at a drifting token index, not obvious corruption. This cost most of the round",
+        "batched_but_slower": "with both strides explicit, kv_append and gate_mul batch over the tile correctly and byte-identically, removing 4 launches per attention layer (64 per pass). Measured 1.041 and 1.073 paired ratios => 5.7% slower, reverted",
+        "why_slower": "batching requires the row to be decoded from the flattened index - one integer division per thread - while gate_mul does one load, one exp and one store, and kv_append two loads and two stores. The division costs more than the launch it removes, the opposite of the convolution and norms in rounds 036-037 where each thread does enough work to hide the decode",
+        "implication": "the cheap batching lever is exhausted; two rounds of batching bought ~2% each and dispatch time is only ~6.5 ms of a 61 ms pass, so the tiled GEMV's issue cost is the remaining lever, not dispatch count"
+      },
+      "next": "attack the tiled GEMV's issue cost directly rather than the dispatch count: measure whether the k=3 kernel's per-row epilogue (three simd_sum reductions plus three stores per thread) or the nibble unpack dominates, e.g. by timing a k=3 launch whose rows write to the same location, and only then consider restructuring the reduction. Keep the dispatch-count work for the two rmsnorm_ws pairs and rope pairs, which are the only remaining per-row launches with enough per-thread work to amortise a row decode"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B"
