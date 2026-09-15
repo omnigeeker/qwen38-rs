@@ -129,19 +129,29 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
                 );
             }
         }
-        // per-pass cost at a fixed position: same number of weight sweeps each
-        let t = std::time::Instant::now();
-        for _ in 0..20 {
-            model.set_token(t0)?;
-            model.forward(0)?;
+        model.set_token(t0)?;
+        model.forward(0)?;
+        println!("k2check: dispatches k=1 = {}", model.last_dispatches());
+        model.set_tokens(&[t0, t1])?;
+        model.forward2(0)?;
+        println!("k2check: dispatches k=2 = {}", model.last_dispatches());
+        // per-pass cost at a fixed position, interleaved so thermal drift hits
+        // both variants equally; the minimum is the least polluted sample
+        let (mut k1, mut k2) = (f64::MAX, f64::MAX);
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            for _ in 0..10 {
+                model.set_token(t0)?;
+                model.forward(0)?;
+            }
+            k1 = k1.min(t.elapsed().as_secs_f64() / 10.0);
+            let t = std::time::Instant::now();
+            for _ in 0..10 {
+                model.set_tokens(&[t0, t1])?;
+                model.forward2(0)?;
+            }
+            k2 = k2.min(t.elapsed().as_secs_f64() / 10.0);
         }
-        let k1 = t.elapsed().as_secs_f64() / 20.0;
-        let t = std::time::Instant::now();
-        for _ in 0..20 {
-            model.set_tokens(&[t0, t1])?;
-            model.forward2(0)?;
-        }
-        let k2 = t.elapsed().as_secs_f64() / 20.0;
         println!(
             "k2check: one weight sweep  k=1 {:.2} ms ({:.1} tok/s) | k=2 {:.2} ms ({:.2} ms/token, {:.1} tok/s)",
             k1 * 1e3,

@@ -833,17 +833,15 @@ impl Qwen38 {
         let mut b = CommandBatch::new(dev);
 
         for (i, layer) in layers.iter().enumerate() {
-            for row in 0..TILE {
-                // ---- pre-norm ----
-                b.encode(
-                    Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
-                        .buf_offset(0, &scratch.x, row * (h * 2))
-                        .buf(1, &layer.input_norm)
-                        .buf_offset(2, &scratch.h, row * (h * 2))
-                        .scalar(3, h as i32)
-                        .scalar(4, eps),
-                );
-            }
+            // ---- pre-norm ----
+            b.encode(
+                Dispatch::new(&kernels.rmsnorm, (TILE * (NT), 1, 1), (NT, 1, 1))
+                    .buf(0, &scratch.x)
+                    .buf(1, &layer.input_norm)
+                    .buf(2, &scratch.h)
+                    .scalar(3, h as i32)
+                    .scalar(4, eps),
+            );
             b.barrier();
             match &layer.kind {
                 Kind::Full(a) => {
@@ -1096,27 +1094,24 @@ impl Qwen38 {
                 }
             }
             b.barrier();
-            for row in 0..TILE {
-                // residual
-                b.encode(
-                    Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
-                        .buf_offset(0, &scratch.x, row * (h * 2))
-                        .buf_offset(1, &scratch.proj_out, row * (h * 2))
-                        .buf_offset(2, &scratch.x, row * (h * 2)),
-                );
-            }
+            // residual
+            b.encode(
+                Dispatch::new(&kernels.ewise_add, (TILE * (h), 1, 1), (NT, 1, 1))
+                    .buf(0, &scratch.x)
+                    .buf(1, &scratch.proj_out)
+                    .buf(2, &scratch.x),
+            );
             b.barrier();
-            for row in 0..TILE {
-                // ---- MLP ----
-                b.encode(
-                    Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
-                        .buf_offset(0, &scratch.x, row * (h * 2))
-                        .buf(1, &layer.post_norm)
-                        .buf_offset(2, &scratch.h, row * (h * 2))
-                        .scalar(3, h as i32)
-                        .scalar(4, eps),
-                );
-            }
+
+            // ---- MLP ----
+            b.encode(
+                Dispatch::new(&kernels.rmsnorm, (TILE * (NT), 1, 1), (NT, 1, 1))
+                    .buf(0, &scratch.x)
+                    .buf(1, &layer.post_norm)
+                    .buf(2, &scratch.h)
+                    .scalar(3, h as i32)
+                    .scalar(4, eps),
+            );
             b.barrier();
             layer.gate.encode_k(
                 &mut b,
@@ -1133,14 +1128,16 @@ impl Qwen38 {
                 TILE,
             );
             b.barrier();
-            for row in 0..TILE {
-                b.encode(
-                    Dispatch::new(&kernels.silu_mul, (cfg.intermediate_size, 1, 1), (NT, 1, 1))
-                        .buf_offset(0, &scratch.mlp_gate, row * (cfg.intermediate_size * 2))
-                        .buf_offset(1, &scratch.mlp_up, row * (cfg.intermediate_size * 2))
-                        .buf_offset(2, &scratch.mlp_act, row * (cfg.intermediate_size * 2)),
-                );
-            }
+            b.encode(
+                Dispatch::new(
+                    &kernels.silu_mul,
+                    (TILE * (cfg.intermediate_size), 1, 1),
+                    (NT, 1, 1),
+                )
+                .buf(0, &scratch.mlp_gate)
+                .buf(1, &scratch.mlp_up)
+                .buf(2, &scratch.mlp_act),
+            );
             b.barrier();
             layer.down.encode_k(
                 &mut b,
@@ -1150,14 +1147,12 @@ impl Qwen38 {
                 TILE,
             );
             b.barrier();
-            for row in 0..TILE {
-                b.encode(
-                    Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
-                        .buf_offset(0, &scratch.x, row * (h * 2))
-                        .buf_offset(1, &scratch.proj_out, row * (h * 2))
-                        .buf_offset(2, &scratch.x, row * (h * 2)),
-                );
-            }
+            b.encode(
+                Dispatch::new(&kernels.ewise_add, (TILE * (h), 1, 1), (NT, 1, 1))
+                    .buf(0, &scratch.x)
+                    .buf(1, &scratch.proj_out)
+                    .buf(2, &scratch.x),
+            );
             b.barrier();
             for row in 0..TILE {
                 if *bf16_residual {
@@ -1174,17 +1169,15 @@ impl Qwen38 {
                 }
             }
         }
-        // final norm + lm head for both rows
-        for row in 0..TILE {
-            b.encode(
-                Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
-                    .buf_offset(0, &scratch.x, row * h * 2)
-                    .buf(1, final_norm)
-                    .buf_offset(2, &scratch.h, row * h * 2)
-                    .scalar(3, h as i32)
-                    .scalar(4, eps),
-            );
-        }
+        // final norm for both rows in one dispatch, then the head
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm, (TILE * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.x)
+                .buf(1, final_norm)
+                .buf(2, &scratch.h)
+                .scalar(3, h as i32)
+                .scalar(4, eps),
+        );
         b.barrier();
         lm_head.encode_k(
             &mut b,
@@ -1206,14 +1199,6 @@ impl Qwen38 {
             .iter()
             .map(|v| v.to_f32())
             .collect()
-    }
-
-    /// Read one embedding row straight from the weight buffer, on the host.
-    /// Used to detect GPU writes that land outside their buffer.
-    pub fn embed_probe(&self, token: u32) -> Vec<f32> {
-        self.embed_row(token)
-            .map(|v| v.iter().map(|x| x.to_f32()).collect())
-            .unwrap_or_default()
     }
 
     /// FNV checksum of layer 0's input-norm weight (diagnostic only).
