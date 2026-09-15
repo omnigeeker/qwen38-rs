@@ -56,3 +56,24 @@ memory-bound.  Two rounds of batching have now bought ~2% each; the remaining pe
 launches in a pass are the attention layer's `kv_append`, `attn_scores`, `attn_out` and
 `gate_mul` (4 per row, 12 per attention layer, ~190 per pass), and those are the next
 candidates.
+
+## One unresolved observation
+
+While checking the clippy fix, a single `verify` run reported `parity: 5/6` - with `spec` and
+`plain` still byte-identical over 300 tokens on that same build, and with the change in
+question (`(t - 1) as i32` to `t - 1`, where `t` is already `i32`, and the removal of two
+struct fields that nothing read) incapable of altering arithmetic.  It has not reproduced:
+six runs on that binary and the previous one, then ten more runs, all report 6/6, and the
+failing case was not captured because the reporting run only grepped the summary line.
+
+What is notable is the context of that one run: it was the last command of a shell invocation
+that had just run `cargo build`, `cargo fmt`, `cargo clippy` and `cargo test --workspace` -
+and the workspace tests load and run the model on the same GPU.  Every other gate run in this
+project has been issued on an otherwise idle machine.  So the leading hypothesis is resource
+contention with a failure mode that is not validated (device buffers are written without
+error checking), not a numerical difference, and the operational rule that falls out of it is
+that GPU gates should not share a process window with a build-and-test sweep.  This is flagged
+for the next round rather than closed: an intermittent parity failure in a gate that the whole
+correctness argument rests on deserves a real reproduction attempt, and the cheapest next step
+is to loop `verify` many times while recording the failing case's identity and the load
+average.
