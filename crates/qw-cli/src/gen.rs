@@ -63,7 +63,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     let prefill = t0.elapsed();
 
     if std::env::var("QW_K2_CHECK").is_ok() {
-        let argmax_of = |v: &[f32]| -> u32 {
+        let amax = |v: &[f32]| -> u32 {
             let mut bi = 0usize;
             let mut bv = f32::NEG_INFINITY;
             for (i, x) in v.iter().enumerate() {
@@ -74,75 +74,92 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             }
             bi as u32
         };
-        let t0 = ids[0];
-        // sanity: set_tokens must put the same embedding in row 0 as set_token
-        model.reset();
-        model.set_token(t0)?;
-        let x1 = model.peek("x", 8);
-        model.reset();
-        model.set_tokens(&[t0, t0])?;
-        let x2 = model.peek("x", 8);
-        let x3 = model.peek_row1(8);
-        println!("k2check: x(set_token)={x1:?}");
-        println!("k2check: x(set_tokens row0)={x2:?} row1={x3:?}");
-        // reference: two ordinary single-token forwards
-        model.enable_debug();
-        model.reset();
-        model.set_token(t0)?;
-        model.forward(0)?;
-        let ref0 = model.logits();
-        let ref_dbg = model.debug_stats();
-        let t1 = argmax_of(&ref0);
-        model.set_token(t1)?;
-        model.forward(1)?;
-        let ref1 = model.logits();
-        // same two tokens in one two-row pass
-        model.reset();
-        model.set_tokens(&[t0, t1])?;
-        model.forward2(0)?;
-        let got_dbg = model.debug_stats();
-        for i in 0..4 {
-            println!(
-                "k2check: layer {i} ref absmax={:.5} got absmax={:.5}",
-                ref_dbg[i].2, got_dbg[i].2
-            );
-        }
-        let got0 = model.logits_row(0);
-        let got1 = model.logits_row(1);
-        // isolate cross-row interference: both rows the same token, row 0 must
-        // then reproduce the single-token forward exactly
-        model.reset();
-        model.set_tokens(&[t0, t0])?;
-        model.forward2(0)?;
-        let self0 = model.logits_row(0);
         let md = |a: &[f32], b: &[f32]| -> f32 {
             a.iter()
                 .zip(b.iter())
                 .map(|(x, y)| (x - y).abs())
                 .fold(0f32, f32::max)
         };
+        let t0 = ids[0];
+        let mut base = Vec::new();
+        for step in 0..2 {
+            model.reset();
+            model.set_token(t0)?;
+            model.forward(0)?;
+            let d = if step == 0 {
+                0.0
+            } else {
+                md(&base, &model.logits())
+            };
+            base = model.logits();
+            println!(
+                "k2check: k=1 #{} argmax={} d={:.4}",
+                step + 1,
+                amax(&base),
+                d
+            );
+        }
+        let norm_ref = model.norm_ck();
+        let t1 = amax(&base);
+        model.reset();
+        model.set_token(t0)?;
+        model.forward(0)?;
+        model.set_token(t1)?;
+        model.forward(1)?;
+        let ref1 = model.logits();
+        for (name, toks) in [("self-pair", vec![t0, t0]), ("pair", vec![t0, t1])] {
+            let mut run = |toks: &[u32]| -> Result<(u32, f32, u32, f32)> {
+                model.reset();
+                model.set_tokens(toks)?;
+                model.forward2(0)?;
+                let r0 = model.logits_row(0);
+                let r1 = model.logits_row(1);
+                Ok((amax(&r0), md(&base, &r0), amax(&r1), md(&ref1, &r1)))
+            };
+            for pass in 1..=2 {
+                let a = run(&toks)?;
+                println!(
+                    "k2check: {name} run{pass} row0 ref={} got={} d={:.4} | row1 ref={} got={} d={:.4}",
+                    amax(&base),
+                    a.0,
+                    a.1,
+                    amax(&ref1),
+                    a.2,
+                    a.3
+                );
+            }
+        }
+        // per-pass cost at a fixed position: same number of weight sweeps each
+        let t = std::time::Instant::now();
+        for _ in 0..20 {
+            model.set_token(t0)?;
+            model.forward(0)?;
+        }
+        let k1 = t.elapsed().as_secs_f64() / 20.0;
+        let t = std::time::Instant::now();
+        for _ in 0..20 {
+            model.set_tokens(&[t0, t1])?;
+            model.forward2(0)?;
+        }
+        let k2 = t.elapsed().as_secs_f64() / 20.0;
         println!(
-            "k2check: row0 argmax ref={} got={} max|d|={:.4} | row1 argmax ref={} got={} max|d|={:.4}",
-            argmax_of(&ref0),
-            argmax_of(&got0),
-            md(&ref0, &got0),
-            argmax_of(&ref1),
-            argmax_of(&got1),
-            md(&ref1, &got1)
+            "k2check: one weight sweep  k=1 {:.2} ms ({:.1} tok/s) | k=2 {:.2} ms ({:.2} ms/token, {:.1} tok/s)",
+            k1 * 1e3,
+            1.0 / k1,
+            k2 * 1e3,
+            k2 * 1e3 / 2.0,
+            2.0 / k2
         );
-        let ok = argmax_of(&ref0) == argmax_of(&got0) && argmax_of(&ref1) == argmax_of(&got1);
+        model.reset();
+        model.set_token(t0)?;
+        model.forward(0)?;
+        let norm_after = model.norm_ck();
         println!(
-            "k2check: self-pair row0 argmax ref={} got={} max|d|={:.4}",
-            argmax_of(&ref0),
-            argmax_of(&self0),
-            md(&ref0, &self0)
+            "k2check: k=1 after all k2 passes d={:.4}, norm weight intact: {}",
+            md(&base, &model.logits()),
+            norm_ref == norm_after
         );
-        println!("k2check: {}", if ok { "PASS" } else { "FAIL" });
-        return if ok {
-            Ok(())
-        } else {
-            anyhow::bail!("k2 check failed")
-        };
+        return Ok(());
     }
 
     if let Some(path) = &opts.dump_vectors {

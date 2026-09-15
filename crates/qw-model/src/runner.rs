@@ -231,7 +231,7 @@ impl Qwen38 {
             pk: dev.buffer(nkv * hd * 2 * tile),
             pv: dev.buffer(nkv * hd * 2 * tile),
             q: dev.buffer(nh * hd * 2 * tile),
-            k: dev.buffer(nkv * hd * 2 * tile),
+            k: dev.buffer(key_dim * 2 * tile),
             attn_out: dev.buffer(nh * hd * 2 * tile),
             attn_gated: dev.buffer(nh * hd * 2 * tile),
             proj_out: dev.buffer(h * 2 * tile),
@@ -876,7 +876,7 @@ impl Qwen38 {
                             Dispatch::new(&kernels.rmsnorm_ws, (nkv * NT, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.pk, row * (nkv * hd * 2))
                                 .buf(1, &a.k_norm)
-                                .buf_offset(2, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(2, &scratch.k, row * (key_dim * 2))
                                 .scalar(3, hd as i32)
                                 .scalar(4, hd as i32)
                                 .scalar(5, eps)
@@ -899,8 +899,8 @@ impl Qwen38 {
                         );
                         b.encode(
                             Dispatch::new(&kernels.rope, (nkv * 64, 1, 1), (64, 1, 1))
-                                .buf_offset(0, &scratch.k, row * (nkv * hd * 2))
-                                .buf_offset(1, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(0, &scratch.k, row * (key_dim * 2))
+                                .buf_offset(1, &scratch.k, row * (key_dim * 2))
                                 .scalar(2, nkv as i32)
                                 .scalar(3, hd as i32)
                                 .scalar(4, rot_dim)
@@ -912,7 +912,7 @@ impl Qwen38 {
                     for row in 0..TILE {
                         b.encode(
                             Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
-                                .buf_offset(0, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(0, &scratch.k, row * (key_dim * 2))
                                 .buf_offset(1, &scratch.pv, row * (nkv * hd * 2))
                                 .buf(2, &a.k_cache)
                                 .buf(3, &a.v_cache)
@@ -1046,7 +1046,7 @@ impl Qwen38 {
                                     &scratch.conv_out,
                                     row * (conv_dim * 2) + (key_dim * 2),
                                 )
-                                .buf_offset(2, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(2, &scratch.k, row * (key_dim * 2))
                                 .scalar(3, dk as i32)
                                 .scalar(4, dk as i32)
                                 .scalar(5, 1e-6f32)
@@ -1057,7 +1057,7 @@ impl Qwen38 {
                         b.encode(
                             Dispatch::new(&kernels.gdn, (hv * dv, 1, 1), (dv, 1, 1))
                                 .buf_offset(0, &scratch.q, row * (nh * hd * 2))
-                                .buf_offset(1, &scratch.k, row * (nkv * hd * 2))
+                                .buf_offset(1, &scratch.k, row * (key_dim * 2))
                                 .buf_offset(
                                     2,
                                     &scratch.conv_out,
@@ -1206,6 +1206,26 @@ impl Qwen38 {
             .iter()
             .map(|v| v.to_f32())
             .collect()
+    }
+
+    /// Read one embedding row straight from the weight buffer, on the host.
+    /// Used to detect GPU writes that land outside their buffer.
+    pub fn embed_probe(&self, token: u32) -> Vec<f32> {
+        self.embed_row(token)
+            .map(|v| v.iter().map(|x| x.to_f32()).collect())
+            .unwrap_or_default()
+    }
+
+    /// FNV checksum of layer 0's input-norm weight (diagnostic only).
+    pub fn norm_ck(&self) -> u64 {
+        let b = &self.layers[0].input_norm;
+        let n = b.len_bytes().min(4096);
+        let bytes = b.to_vec::<u8>(0, n);
+        let mut h: u64 = 1469598103934665603;
+        for x in &bytes {
+            h = (h ^ *x as u64).wrapping_mul(1099511628211);
+        }
+        h
     }
 
     /// Logits of one row of the last two-token forward, copied to the host.

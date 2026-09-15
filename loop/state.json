@@ -524,6 +524,30 @@
         "clue": "the FIRST forward2 call after reset is bit-exact, the SECOND is not -> reset() leakage or an out-of-bounds row-1 write"
       },
       "next": "run the self-pair case first to separate state leakage from layout; audit the three row-1 offsets that add a legacy offset (conv_out + 2*key_dim*2, the two rmsnorm_nw conv_out reads, the gdn value slice)"
+    },
+    {
+      "round": 21,
+      "title": "fixed the shared k-buffer stride: forward2 is bit-exact for both rows and one weight sweep buys two tokens (40.0 tok/s)",
+      "tok_s": 40.0,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "improves",
+        "G4": "pass"
+      },
+      "evidence": {
+        "root_cause": "scratch.k was strided/sized as the full-attention kv buffer (nkv*hd=1024) but the delta-net arm writes key_dim=2048 elements per row, so row 1 wrote 2048 bytes past the end into layer 0's input_norm weight",
+        "found_by": "FNV checksums of every buffer a pass touches (probe_dirty) + a weight checksum (norm_ck) + a per-layer bisect (QW_K2_STOP)",
+        "row0_max_diff": 0.0,
+        "row1_max_diff": 0.0,
+        "residue": "none (norm weight intact after all passes)",
+        "k1_ms": 39.85,
+        "k2_ms": 50.03,
+        "k2_tok_s": 40.0,
+        "thermal_note": "k=1 now measures 24-25 tok/s vs 27.8 recorded in round 18 on unchanged code; two consecutive runs differ by 4%"
+      },
+      "next": "quantise the local bf16 mtp.* shard to MLX affine 4-bit and wire the MTP draft head (mtp.fc + one decoder layer) into a draft/verify decode loop that uses forward2"
     }
   ]
 }

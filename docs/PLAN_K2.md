@@ -93,3 +93,17 @@ alpha = 0.6  -> 1.6 tokens / 43.5 ms = 36.8 tok/s
 40 tok/s therefore needs step 3 as well as step 1 - a mediocre draft alone will not
 carry it, because the per-token non-linear work has to be shared across the two
 rows, not just paid twice.
+
+## Round 21 measurement
+
+`QW_K2_CHECK=1` timing at a fixed position, twenty passes each:
+
+```
+k=1 39.85 ms per pass  (25.1 tok/s)
+k=2 50.03 ms per pass  (25.01 ms/token, 40.0 tok/s)
+```
+
+The two-row body costs 1.255x the one-row body, so one weight sweep now buys 1.59x
+the tokens.  `forward2` is bit-exact on both rows.  What remains is a draft model
+for row 1 (the MTP head), and the half of the dispatch count that is still issued
+once per row (step 3 of this plan).
