@@ -1360,6 +1360,13 @@ impl Qwen38 {
         // cat = [ norm(embed) | norm(hidden) ] (or the reverse, see QW_MTP_SWAP)
         let eb = dev.buffer_from_bytes(&e);
         let swap = std::env::var("QW_MTP_SWAP").is_ok();
+        // The head consumes the decoder's *post*-final-norm hidden state (what
+        // vLLM hands its MTP module).  QW_MTP_PRENORM=1 selects the pre-norm
+        // residual instead, which costs ~22 points of acceptance.
+        let postnorm = std::env::var("QW_MTP_PRENORM").is_err();
+        // Ablation switch for bringing the head up: "attn" and/or "mlp" drop
+        // that sub-block's contribution to the MTP residual stream.
+        let skip = std::env::var("QW_MTP_SKIP").unwrap_or_default();
         let (e_off, h_off) = if swap { (h, 0usize) } else { (0usize, h) };
         let mut b = CommandBatch::new(dev);
         copy_dispatch(&mut b, &kernels.copy, &eb, 0, &m.cat, e_off, h);
@@ -1374,7 +1381,7 @@ impl Qwen38 {
         );
         b.encode(
             Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
-                .buf(0, &scratch.x)
+                .buf(0, if postnorm { &scratch.h } else { &scratch.x })
                 .buf(1, &m.pre_norm_h)
                 .buf_offset(2, &m.cat, h_off * 2)
                 .scalar(3, h as i32)
@@ -1495,13 +1502,15 @@ impl Qwen38 {
             &scratch.proj_out,
         );
         b.barrier();
-        b.encode(
-            Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
-                .buf(0, &m.hid)
-                .buf(1, &scratch.proj_out)
-                .buf(2, &m.hid),
-        );
-        b.barrier();
+        if !skip.contains("attn") {
+            b.encode(
+                Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
+                    .buf(0, &m.hid)
+                    .buf(1, &scratch.proj_out)
+                    .buf(2, &m.hid),
+            );
+            b.barrier();
+        }
         b.encode(
             Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
                 .buf(0, &m.hid)
@@ -1529,12 +1538,14 @@ impl Qwen38 {
             &scratch.proj_out,
         );
         b.barrier();
-        b.encode(
-            Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
-                .buf(0, &m.hid)
-                .buf(1, &scratch.proj_out)
-                .buf(2, &m.hid),
-        );
+        if !skip.contains("mlp") {
+            b.encode(
+                Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
+                    .buf(0, &m.hid)
+                    .buf(1, &scratch.proj_out)
+                    .buf(2, &m.hid),
+            );
+        }
         if want_logits {
             b.barrier();
             b.encode(

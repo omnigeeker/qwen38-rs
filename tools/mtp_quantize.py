@@ -48,9 +48,12 @@ def shift(name: str) -> float:
     values are visibly negative, which no RMSNorm weight is.  `mtp.norm` is the
     exception: its raw values already sit around 1.
     """
+    mode = os.environ.get("QW_MTP_SHIFT", "default")
     if name == "mtp.norm.weight":
-        return 0.0
+        return 1.0 if mode == "norm_shifted" else 0.0
     if "norm" in name:
+        if mode == "layer_unshifted" and name.startswith("mtp.layers."):
+            return 0.0
         return 1.0
     return 0.0
 

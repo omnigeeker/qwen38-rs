@@ -592,6 +592,27 @@
         "decoder_regression": "none: parity 6/6, forward2 bit-exact, k=2 49.17 ms = 40.7 tok/s"
       },
       "next": "raise MTP acceptance (hidden input pre- vs post-final-norm, whether the head should read the decoder's cache, per-norm shift audit) and cut its ~7 ms/token cost; then wire draft/verify with per-row state snapshots and TILE=3/4"
+    },
+    {
+      "round": 24,
+      "title": "MTP acceptance 34.4% -> 56.2%: the head consumes the decoder's post-final-norm hidden; norm-shift rule verified by ablation",
+      "tok_s": 40.7,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "reference": "curl (bash has network) fetched vLLM's qwen3_next_mtp.py/qwen3_5_mtp.py; structure and concat order match this implementation",
+        "ablation": "full 34.4% | no-attn 3.1% | no-mlp 3.1% | neither 0% -> the layer works, both sub-blocks carry signal",
+        "root_cause": "the head consumes the decoder's post-final-norm hidden, not the residual stream: 34.4% -> 56.2%; the head's residual scale also became sane (-31..20 vs -244..229)",
+        "shift_rule": "layer norms unshifted = 0.0%; shifting mtp.norm as well = no change",
+        "insensitive": "QW_MTP_OFF in {0,-1,+1} and QW_MTP_SWAP change nothing - open question",
+        "decoder_regression": "none: parity 6/6, forward2 bit-exact"
+      },
+      "next": "cut the per-token dispatch cost (1282 dispatches ~ 13 ms of the 40 ms pass) and the head's ~5.5-7 ms per draft, then TILE=3/4, then wire draft/verify with per-row GDN state snapshots"
     }
   ]
 }

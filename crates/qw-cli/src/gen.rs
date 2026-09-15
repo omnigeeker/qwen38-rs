@@ -24,7 +24,15 @@ pub struct GenOpts<'a> {
 /// How often does the MTP head's top-1 draft equal the token the decoder really
 /// picks?  That acceptance rate is what speculative decoding runs on, so it is
 /// the only number that says whether the head is wired up correctly.
+fn mtp_pos_off() -> i64 {
+    std::env::var("QW_MTP_OFF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
 fn mtp_check(model: &mut Qwen38, ids: &[u32], steps: usize) -> Result<()> {
+    let off = mtp_pos_off();
     if !model.has_mtp() {
         println!("mtp check: head not loaded (set QW_MTP_DIR)");
         return Ok(());
@@ -40,7 +48,8 @@ fn mtp_check(model: &mut Qwen38, ids: &[u32], steps: usize) -> Result<()> {
         model.set_token(*id)?;
         model.forward(p)?;
         if p + 1 < n {
-            model.mtp_step(ids[p + 1], p + 1, false)?;
+            let mpos = (p as i64 + 1 + off).max(0) as usize;
+            model.mtp_step(ids[p + 1], mpos, false)?;
         }
     }
     println!(
@@ -54,7 +63,7 @@ fn mtp_check(model: &mut Qwen38, ids: &[u32], steps: usize) -> Result<()> {
     let mut pos = n - 1;
     let tok = model.argmax();
     let t = Instant::now();
-    let mut draft = model.mtp_step(tok, pos + 1, true)?;
+    let mut draft = model.mtp_step(tok, (pos as i64 + 1 + off).max(0) as usize, true)?;
     let first_ms = t.elapsed().as_secs_f64() * 1e3;
     println!("mtp check: dump {:?}", model.mtp_dump());
 
@@ -77,7 +86,7 @@ fn mtp_check(model: &mut Qwen38, ids: &[u32], steps: usize) -> Result<()> {
                 log.push((guess, actual));
             }
         }
-        draft = model.mtp_step(actual, pos + 1, true)?;
+        draft = model.mtp_step(actual, (pos as i64 + 1 + off).max(0) as usize, true)?;
     }
     let per_step = t.elapsed().as_secs_f64() * 1e3 / steps as f64;
     println!(
