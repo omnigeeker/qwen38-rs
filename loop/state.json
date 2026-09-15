@@ -352,6 +352,31 @@
         ]
       },
       "next": "execute docs/PLAN_K2.md step 1+2, verify 6/6, measure forward2"
+    },
+    {
+      "round": 14,
+      "title": "full self-verification before the k=2 refactor: all gates green, baseline recorded",
+      "tok_s": 27.99,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "baseline",
+        "G4": "pass"
+      },
+      "evidence": {
+        "ms_per_token": 35.73,
+        "tok_s": 27.99,
+        "k1_sweep_ms": 26.87,
+        "k2_sweep_ms": 28.68,
+        "tests": 39,
+        "test_binaries": 13,
+        "parity": "6/6",
+        "sample": "' Paris.'",
+        "head": "0af6024",
+        "tree": "clean"
+      },
+      "next": "PLAN_K2 step 1: double every scratch activation buffer (row r at r*rows*2) with no dispatch change; parity must stay 6/6"
     }
   ]
 }
