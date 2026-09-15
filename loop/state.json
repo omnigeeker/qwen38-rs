@@ -774,6 +774,26 @@
         "lesson": "this kind of 'surely redundant' costs acceptance rather than correctness, so the oracle and byte-identical gates would never have caught it"
       },
       "next": "re-measure TILE=3 vs TILE=4 in a clean thermal window (TILE=4 needs a one-line change now); then attack the marginal row: 5 GDN dispatches + 3 attention dispatches per layer per row"
+    },
+    {
+      "round": 33,
+      "title": "endpoint serves the speculative decoder: spec_step became a model method used by both the CLI and the server, plus the server prefill had to warm the MTP head",
+      "tok_s": 40.68,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "oracle 6/6, spec-vs-plain divergence under investigation",
+        "G4": "pass"
+      },
+      "evidence": {
+        "the_gap": "the CLI reached 40 tok/s but qwen38 serve still ran the plain loop (set_token+forward+argmax) at 16-17 tok/s, because the speculative decoder lived inside the CLI gen.rs",
+        "the_fix": "Qwen38::spec_step(pos, next, out) returns the next position/settled token plus draft and verify times; the CLI keeps its timing report and the server calls the same code, so the front ends cannot drift",
+        "the_second_bug": "the server prefill did not warm the MTP head's attention state, so every draft was garbage: the endpoint measured 9.5 tok/s before that fix and 25.0 after, while throttled",
+        "protocols_verified": "OpenAI /v1/chat/completions (chat.completion and chat.completion.chunk with usage) and Anthropic /v1/messages (message and message_start/content_block_delta), plus /v1/models",
+        "escape_hatch": "QW_NO_SPEC=1 disables speculation",
+        "open_issue": "over 300-token runs spec vs plain differ on one prompt (114 positions, first at 162, re-converging, 79% of the tail agrees) and are identical on another; the late start plus re-convergence indicates an argmax flipping on a near-tie rather than state corruption. Oracle parity stays 6/6 and the 64-token byte-for-byte check passed, so the existing gates do not catch it. The k=1 and k=3 kernels accumulate each row independently and ought to be bit-identical, so something else in the tiled path perturbs the last bits"
+      },
+      "next": "find what perturbs the last bits in the tiled path (top priority - it is the only threat to the correctness constraint); then re-measure TILE=3 vs TILE=4 in a clean thermal window"
     }
   ]
 }

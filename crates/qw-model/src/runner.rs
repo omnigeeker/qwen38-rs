@@ -1682,6 +1682,63 @@ impl Qwen38 {
     }
 
     /// Index of the largest logit (host side).
+    /// One speculative step, shared by every front end.
+    ///
+    /// `next` is a token already settled at `pos` but not yet emitted.  The step
+    /// drafts `TILE - 1` tokens ahead with the MTP head (each chained on the
+    /// previous draft), verifies all of them in one `TILE`-wide forward pass,
+    /// appends every accepted token to `out`, and returns the position and
+    /// settled token for the next call, plus the draft and verify times in
+    /// seconds so a caller can report them.
+    pub fn spec_step(
+        &mut self,
+        pos: usize,
+        next: u32,
+        out: &mut Vec<u32>,
+    ) -> Result<(usize, u32, f64, f64)> {
+        use std::time::Instant;
+        out.push(next);
+        let t_draft = Instant::now();
+        let mut d = [0u32; TILE - 1];
+        for i in 0..TILE - 1 {
+            let tok_in = if i == 0 { next } else { d[i - 1] };
+            d[i] = Self::argmax_of(&self.mtp_step(tok_in, pos + i, true)?);
+        }
+        let draft = t_draft.elapsed().as_secs_f64();
+        let t_verify = Instant::now();
+        let mut toks = Vec::with_capacity(TILE);
+        toks.push(next);
+        toks.extend_from_slice(&d);
+        self.set_tokens(&toks)?;
+        self.forward2(pos)?;
+        let mut r = [0u32; TILE];
+        for (i, slot) in r.iter_mut().enumerate() {
+            *slot = Self::argmax_of(&self.logits_row(i));
+        }
+        let verify = t_verify.elapsed().as_secs_f64();
+        // The longest prefix of drafts the target agrees with.  Row `k` settles
+        // the token after the last accepted draft, so it becomes the next `next`
+        // for free.
+        let mut k = 0usize;
+        while k < TILE - 1 && d[k] == r[k] {
+            k += 1;
+        }
+        out.extend(d.iter().take(k));
+        // Row `TILE - 1` is already current and needs no rewind.
+        if k + 1 < TILE {
+            self.commit_row(k)?;
+        }
+        // The chained drafts after the first were computed from row 0, which still
+        // held the hidden of `pos`; re-append the last accepted one with the hidden
+        // it actually needs.  Dropping this costs 6 points of acceptance.
+        if k >= 1 {
+            self.promote_hidden(k - 1)?;
+            self.mtp_step(d[k - 1], pos + k, false)?;
+        }
+        self.promote_hidden(k)?;
+        Ok((pos + k + 1, r[k], draft, verify))
+    }
+
     pub fn argmax_of(v: &[f32]) -> u32 {
         let mut best = 0usize;
         for (i, x) in v.iter().enumerate() {

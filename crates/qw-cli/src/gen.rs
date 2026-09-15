@@ -285,7 +285,6 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     let mut out: Vec<u32> = Vec::new();
     let mut drafts = 0usize;
     let mut passes = 0usize;
-    let mut hits = 0usize;
     let t1 = Instant::now();
     if spec {
         // `next` is a token the decoder has already settled (position `pos`) but
@@ -295,61 +294,24 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
         let mut next = model.argmax();
         let (mut t_draft, mut t_pass) = (0.0f64, 0.0f64);
         while out.len() < opts.max_tokens {
-            out.push(next);
+            // `spec_step` emits the settled token itself, so the end-of-sequence
+            // check has to happen here and emit it explicitly.
             if opts.stop_at_eos && tok.is_eos(next) {
+                out.push(next);
                 break;
             }
-            // Draft `TILE - 1` tokens ahead with the MTP head, each chained on the
-            // previous draft: `d[i]` is a guess for `pos + 1 + i`.
-            let t = Instant::now();
-            let mut d = [0u32; TILE - 1];
-            for i in 0..TILE - 1 {
-                let tok_in = if i == 0 { next } else { d[i - 1] };
-                d[i] = Qwen38::argmax_of(&model.mtp_step(tok_in, pos + i, true)?);
-            }
-            t_draft += t.elapsed().as_secs_f64();
-            let t = Instant::now();
-            let mut toks = Vec::with_capacity(TILE);
-            toks.push(next);
-            toks.extend_from_slice(&d);
-            model.set_tokens(&toks)?;
-            model.forward2(pos)?;
-            t_pass += t.elapsed().as_secs_f64();
-            let mut r = [0u32; TILE];
-            for (i, slot) in r.iter_mut().enumerate() {
-                *slot = Qwen38::argmax_of(&model.logits_row(i));
-            }
+            let (p, n, dd, vv) = model.spec_step(pos, next, &mut out)?;
+            t_draft += dd;
+            t_pass += vv;
+            pos = p;
+            next = n;
             passes += 1;
             drafts += TILE - 1;
-            // The longest prefix of drafts the target agrees with.  Row `k` settles
-            // the token after the last accepted draft, so it becomes the next `next`
-            // for free.
-            let mut k = 0usize;
-            while k < TILE - 1 && d[k] == r[k] {
-                k += 1;
-            }
-            hits += k;
-            out.extend(d.iter().take(k));
-            // Row `TILE - 1` is already current and needs no rewind; otherwise put
-            // the recurrence back to the end of row `k`, and hand that row's hidden
-            // to the next draft.
-            if k + 1 < TILE {
-                model.commit_row(k)?;
-            }
-            // The chained drafts after the first were computed from row 0, which
-            // still held the hidden of `pos`; re-append the last accepted one with
-            // the hidden it actually needs.  Dropping this cost 6 points of
-            // acceptance (77.6% -> 71.2%) and 0.13 tokens per pass.
-            if k >= 1 {
-                model.promote_hidden(k - 1)?;
-                model.mtp_step(d[k - 1], pos + k, false)?;
-            }
-            model.promote_hidden(k)?;
-            pos += k + 1;
-            next = r[k];
         }
-        // a two-token step can overshoot the requested length
+        // a `TILE`-wide step can overshoot the requested length
         out.truncate(opts.max_tokens);
+        // every pass emits its base token plus however many drafts it accepted
+        let hits = out.len().saturating_sub(passes);
         let dp = drafts.max(1) as f64;
         eprintln!(
             "spec: draft {:.2} ms/pass, verify {:.2} ms/pass ({:.0}% of a pass)",

@@ -111,39 +111,71 @@ fn run_job(
     model.reset();
     let ids = tok.encode(text, false)?;
     let _ = pieces.send(Ok(EngineEvent::Prompt(ids.len())));
+    // When the MTP head is present the drafts come from its own attention state,
+    // so the prefill has to warm that state alongside the target's: feed the head
+    // each token's predecessor exactly as the CLI does, or every draft is garbage
+    // and speculation only costs time.
+    let spec = model.has_mtp() && std::env::var("QW_NO_SPEC").is_err();
     for (p, id) in ids.iter().enumerate() {
         model.set_token(*id)?;
         model.forward(p)?;
+        if spec && p + 1 < ids.len() {
+            model.mtp_step(ids[p + 1], p + 1, false)?;
+        }
     }
     // Decoding one id at a time mangles multi-byte characters that straddle two
     // tokens, so decode the running prefix and emit only what is new.
     let mut all: Vec<u32> = Vec::new();
     let mut sent_len = 0usize;
-    for pos in ids.len()..(ids.len() + max_tokens) {
-        let next = model.argmax();
-        if tok.is_eos(next) {
-            break;
+    // Speculative decoding when the MTP head is present: the same step the CLI
+    // benchmark uses, so the endpoint serves at the tuned throughput.
+    let mut pos = ids.len();
+    let mut next = model.argmax();
+    let mut emitted = 0usize;
+    while emitted < max_tokens && !tok.is_eos(next) {
+        let mut step: Vec<u32> = Vec::new();
+        if spec {
+            let (p, n, _, _) = model.spec_step(pos, next, &mut step)?;
+            pos = p;
+            next = n;
+        } else {
+            step.push(next);
+            model.set_token(next)?;
+            model.forward(pos)?;
+            pos += 1;
+            next = model.argmax();
         }
-        all.push(next);
-        let full = tok.decode(&all, true).unwrap_or_default();
-        if full.len() > sent_len && full.is_char_boundary(sent_len) {
-            // Hold back a trailing U+FFFD: the tokenizer emits a replacement
-            // character when a multi-byte character is split across a token
-            // boundary, and the remaining bytes only arrive with the next token.
-            let piece = &full[sent_len..];
-            let cut = piece.trim_end_matches('\u{FFFD}').len();
-            if cut > 0 {
-                sent_len += cut;
-                if pieces
-                    .send(Ok(EngineEvent::Piece(piece[..cut].to_string())))
-                    .is_err()
-                {
-                    break;
+        let mut full_pass = false;
+        for t in step {
+            if tok.is_eos(t) || emitted >= max_tokens {
+                full_pass = true;
+                break;
+            }
+            all.push(t);
+            emitted += 1;
+        }
+        {
+            let full = tok.decode(&all, true).unwrap_or_default();
+            if full.len() > sent_len && full.is_char_boundary(sent_len) {
+                // Hold back a trailing U+FFFD: the tokenizer emits a replacement
+                // character when a multi-byte character is split across a token
+                // boundary, and the remaining bytes only arrive with the next token.
+                let piece = &full[sent_len..];
+                let cut = piece.trim_end_matches('\u{FFFD}').len();
+                if cut > 0 {
+                    sent_len += cut;
+                    if pieces
+                        .send(Ok(EngineEvent::Piece(piece[..cut].to_string())))
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         }
-        model.set_token(next)?;
-        model.forward(pos)?;
+        if full_pass {
+            break;
+        }
     }
     Ok(())
 }
