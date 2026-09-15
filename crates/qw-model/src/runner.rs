@@ -34,7 +34,7 @@ struct Kernels {
     kv_append: Kernel,
     attn_scores: Kernel,
     attn_out: Kernel,
-    conv1d: Kernel,
+    conv1d_ring: Kernel,
     gdn: Kernel,
     copy: Kernel,
     round_bf16: Kernel,
@@ -64,16 +64,17 @@ struct Gdn {
     dt_bias: GpuBuffer,
     /// fp32 `[Hv][Dv][Dk]`
     state: GpuBuffer,
-    /// `[conv_k - 1][conv_dim]` raw pre-conv rows
-    conv_hist: GpuBuffer,
-    /// `TILE` per-row snapshots of `state` and `conv_hist`, taken only while
+    /// `[conv_k][conv_dim]` ring of raw pre-conv rows.  The current position's
+    /// qkv row is written at slot `pos % conv_k` and the convolution reads the
+    /// slots in order, so nothing has to be copied per row.
+    window: GpuBuffer,
+    /// `TILE` per-row snapshots of `state`, taken only while
     /// speculative verification is on.  A verify pass advances the recurrence
     /// through every drafted token, so on a partial acceptance the state must be
     /// committed for the longest accepted prefix; without these the only correct
     /// recovery is a full re-run of the accepted row, which costs more than the
     /// draft ever saves.
     snap: GpuBuffer,
-    csnap: GpuBuffer,
 }
 
 enum Kind {
@@ -108,7 +109,6 @@ struct Scratch {
     z: GpuBuffer,
     a: GpuBuffer,
     b: GpuBuffer,
-    window: GpuBuffer,
     conv_out: GpuBuffer,
     gdn_y: GpuBuffer,
     gdn_gated: GpuBuffer,
@@ -336,7 +336,6 @@ impl Qwen38 {
             z: dev.buffer(value_dim * 2 * tile),
             a: dev.buffer(hv * 2 * tile),
             b: dev.buffer(hv * 2 * tile),
-            window: dev.buffer(conv_k * conv_dim * 2),
             conv_out: dev.buffer(conv_dim * 2 * tile),
             gdn_y: dev.buffer(value_dim * 2 * tile),
             gdn_gated: dev.buffer(value_dim * 2 * tile),
@@ -363,9 +362,8 @@ impl Qwen38 {
                     a_log: f32_buf(&dev, &tensor_f32(&store.handle(&layout.gdn_a_log(i))?)?),
                     dt_bias: f32_buf(&dev, &tensor_f32(&store.handle(&layout.gdn_dt_bias(i))?)?),
                     state: dev.buffer(hv * dv * dk * 4),
-                    conv_hist: dev.buffer((conv_k - 1) * conv_dim * 2),
+                    window: dev.buffer(conv_k * conv_dim * 2),
                     snap: dev.buffer(hv * dv * dk * 4 * TILE),
-                    csnap: dev.buffer((conv_k - 1) * conv_dim * 2 * TILE),
                 }))
             } else {
                 Kind::Full(Box::new(FullAttn {
@@ -421,7 +419,7 @@ impl Qwen38 {
                 kv_append: b.kernel(msl_ops::ATTN, msl_ops::K_KV_APPEND)?,
                 attn_scores: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_SCORES_SOFTMAX)?,
                 attn_out: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_OUT)?,
-                conv1d: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU)?,
+                conv1d_ring: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
                 copy: b.kernel(msl_ops::GDN, msl_ops::K_COPY)?,
                 round_bf16: b.kernel(msl_ops::GDN, msl_ops::K_ROUND_BF16)?,
@@ -506,7 +504,7 @@ impl Qwen38 {
             match &layer.kind {
                 Kind::Gdn(g) => {
                     zero(&g.state);
-                    zero(&g.conv_hist);
+                    zero(&g.window);
                 }
                 Kind::Full(a) => {
                     zero(&a.k_cache);
@@ -522,7 +520,7 @@ impl Qwen38 {
     }
 
     /// Make the recurrent state match the longest accepted prefix of a verify
-    /// pass: `state`/`conv_hist` become what they were after row `row`
+    /// pass: `state` becomes what it was after row `row`
     /// (0-based).  Row `TILE - 1` is already current and needs no copy.
     pub fn commit_row(&mut self, row: usize) -> Result<()> {
         if row + 1 >= TILE {
@@ -532,7 +530,6 @@ impl Qwen38 {
         for layer in &self.layers {
             if let Kind::Gdn(g) = &layer.kind {
                 let sh = g.state.len_bytes() / 2;
-                let ch = g.conv_hist.len_bytes() / 2;
                 copy_dispatch(
                     &mut b,
                     &self.kernels.copy,
@@ -541,15 +538,6 @@ impl Qwen38 {
                     &g.state,
                     0,
                     sh,
-                );
-                copy_dispatch(
-                    &mut b,
-                    &self.kernels.copy,
-                    &g.csnap,
-                    row * ch,
-                    &g.conv_hist,
-                    0,
-                    ch,
                 );
             }
         }
@@ -761,7 +749,8 @@ impl Qwen38 {
                     );
                 }
                 Kind::Gdn(g) => {
-                    // qkv projection writes straight into the conv window's last row
+                    // qkv projection writes straight into the conv window's ring slot
+                    let slot = (t - 1).rem_euclid(cfg.linear_conv_kernel_dim as i32) as usize;
                     b.encode(
                         Dispatch::new(
                             &kernels.q4_gemv,
@@ -772,7 +761,7 @@ impl Qwen38 {
                         .buf_offset(1, g.in_qkv.scales.buf, g.in_qkv.scales.offset)
                         .buf_offset(2, g.in_qkv.biases.buf, g.in_qkv.biases.offset)
                         .buf(3, &scratch.h)
-                        .buf_offset(4, &scratch.window, 3 * conv_dim * 2)
+                        .buf_offset(4, &g.window, slot * conv_dim * 2)
                         .scalar(5, g.in_qkv.in_f as i32),
                     );
                     g.in_z
@@ -782,30 +771,13 @@ impl Qwen38 {
                     g.in_a
                         .encode(&mut b, &kernels.q4_gemv, &scratch.h, &scratch.a);
                     b.barrier();
-                    copy_dispatch(
-                        &mut b,
-                        &kernels.copy,
-                        &g.conv_hist,
-                        0,
-                        &scratch.window,
-                        0,
-                        3 * conv_dim,
-                    );
-                    b.barrier();
                     b.encode(
-                        Dispatch::new(&kernels.conv1d, (conv_dim, 1, 1), (NT, 1, 1))
-                            .buf(0, &scratch.window)
+                        Dispatch::new(&kernels.conv1d_ring, (conv_dim, 1, 1), (NT, 1, 1))
+                            .buf(0, &g.window)
                             .buf(1, &g.conv_w)
                             .buf(2, &scratch.conv_out)
-                            .scalar(3, conv_dim as i32),
-                    );
-                    b.encode(
-                        Dispatch::new(&kernels.copy, (3 * conv_dim, 1, 1), (NT, 1, 1))
-                            .buf(0, &scratch.window)
-                            .buf(1, &g.conv_hist)
-                            .scalar(2, (3 * conv_dim) as i32)
                             .scalar(3, conv_dim as i32)
-                            .scalar(4, 0),
+                            .scalar(4, slot as i32),
                     );
                     b.barrier();
                     let inv = 1.0f32 / (dk as f32).sqrt();
@@ -1131,7 +1103,10 @@ impl Qwen38 {
                     g.in_a
                         .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.a, TILE);
                     for row in 0..TILE {
-                        // qkv projection writes straight into the conv window's last row
+                        // qkv projection writes straight into the conv window's ring slot
+                        let slot = (t - 1 + row as i32)
+                            .rem_euclid(cfg.linear_conv_kernel_dim as i32)
+                            as usize;
                         b.encode(
                             Dispatch::new(
                                 &kernels.q4_gemv,
@@ -1142,34 +1117,17 @@ impl Qwen38 {
                             .buf_offset(1, g.in_qkv.scales.buf, g.in_qkv.scales.offset)
                             .buf_offset(2, g.in_qkv.biases.buf, g.in_qkv.biases.offset)
                             .buf_offset(3, &scratch.h, row * (h * 2))
-                            .buf_offset(4, &scratch.window, 3 * conv_dim * 2)
+                            .buf_offset(4, &g.window, slot * conv_dim * 2)
                             .scalar(5, g.in_qkv.in_f as i32),
                         );
                         b.barrier();
-                        copy_dispatch(
-                            &mut b,
-                            &kernels.copy,
-                            &g.conv_hist,
-                            0,
-                            &scratch.window,
-                            0,
-                            3 * conv_dim,
-                        );
-                        b.barrier();
                         b.encode(
-                            Dispatch::new(&kernels.conv1d, (conv_dim, 1, 1), (NT, 1, 1))
-                                .buf(0, &scratch.window)
+                            Dispatch::new(&kernels.conv1d_ring, (conv_dim, 1, 1), (NT, 1, 1))
+                                .buf(0, &g.window)
                                 .buf(1, &g.conv_w)
                                 .buf_offset(2, &scratch.conv_out, row * (conv_dim * 2))
-                                .scalar(3, conv_dim as i32),
-                        );
-                        b.encode(
-                            Dispatch::new(&kernels.copy, (3 * conv_dim, 1, 1), (NT, 1, 1))
-                                .buf(0, &scratch.window)
-                                .buf(1, &g.conv_hist)
-                                .scalar(2, (3 * conv_dim) as i32)
                                 .scalar(3, conv_dim as i32)
-                                .scalar(4, 0),
+                                .scalar(4, slot as i32),
                         );
                         b.barrier();
                         let inv = 1.0f32 / (dk as f32).sqrt();
@@ -1231,7 +1189,6 @@ impl Qwen38 {
                             // state is fp32 but copy_off moves 2-byte units, so
                             // count and offset in halves - the copy stays exact.
                             let sh = g.state.len_bytes() / 2;
-                            let ch = g.conv_hist.len_bytes() / 2;
                             copy_dispatch(
                                 &mut b,
                                 &kernels.copy,
@@ -1240,15 +1197,6 @@ impl Qwen38 {
                                 &g.snap,
                                 row * sh,
                                 sh,
-                            );
-                            copy_dispatch(
-                                &mut b,
-                                &kernels.copy,
-                                &g.conv_hist,
-                                0,
-                                &g.csnap,
-                                row * ch,
-                                ch,
                             );
                             b.barrier();
                         }

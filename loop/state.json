@@ -693,6 +693,27 @@
         "thermal": "under sustained load the box throttles 2x (plain decode 53->85 ms/token in one session); only interleaved pairs are comparable"
       },
       "next": "cut the pass to 45 ms: fuse the residual add into the preceding norm (-64..-128 dispatches), trim the draft cost paid once per pass, then add a third verified row via forward3 (q4_gemv_k3 already exists)"
+    },
+    {
+      "round": 29,
+      "title": "conv window becomes a per-layer position-indexed ring: -96 dispatches (k=1) / -192 (k=2), conv computation bit-identical, output unchanged",
+      "tok_s": 32.29,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6_byte_identical",
+        "G3": "pass",
+        "G4": "pass"
+      },
+      "evidence": {
+        "draft_is_not_the_lever": "instrumented spec loop: draft 9.44 ms/pass vs verify 121.89 ms/pass = 7% - the verify pass is everything",
+        "ring": "each GDN layer now owns a [conv_k][conv_dim] ring; qkv writes slot pos%conv_k and conv1d_silu_ring reads (slot+1+j)&3 so the two per-row history copies disappear",
+        "dispatch_counts": "k=1 1282 -> 1186 (-96), k=2 1794 -> 1602 (-192), exactly the predicted drop",
+        "correctness": "parity 6/6 against the mlx-lm oracle and speculative output byte-identical to plain greedy; the convolution is the same four rows and weights reordered",
+        "bonus": "the ring is position-indexed so the conv window needs no speculative snapshot - csnap and its per-row copies are gone and commit_row restores only the recurrent state",
+        "measurement_caveat": "the box is throttling hard (74.75 ms/token this session vs 41.56 clean) so the wall-clock gain was not measurable this round; predicted ~3 ms of a 49 ms pass at ~16 us/dispatch"
+      },
+      "next": "keep cutting the chain: fold ewise_add into the preceding rmsnorm (128), fold the q/k norms together (96), let the up gemv do silu_mul (64), then batch tile rows in the GDN kernels; re-measure the spec throughput in a clean thermal window"
     }
   ]
 }

@@ -291,14 +291,19 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
         // draft is right, hands back the token for `pos + 2` for free from row 1.
         let mut pos = ids.len();
         let mut next = model.argmax();
+        let (mut t_draft, mut t_pass) = (0.0f64, 0.0f64);
         while out.len() < opts.max_tokens {
             out.push(next);
             if opts.stop_at_eos && tok.is_eos(next) {
                 break;
             }
+            let t = Instant::now();
             let d = Qwen38::argmax_of(&model.mtp_step(next, pos, true)?);
+            t_draft += t.elapsed().as_secs_f64();
+            let t = Instant::now();
             model.set_tokens(&[next, d])?;
             model.forward2(pos)?;
+            t_pass += t.elapsed().as_secs_f64();
             let r0 = Qwen38::argmax_of(&model.logits_row(0));
             let r1 = Qwen38::argmax_of(&model.logits_row(1));
             drafts += 1;
@@ -322,6 +327,13 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
         }
         // a two-token step can overshoot the requested length
         out.truncate(opts.max_tokens);
+        let dp = drafts.max(1) as f64;
+        eprintln!(
+            "spec: draft {:.2} ms/pass, verify {:.2} ms/pass ({:.0}% of a pass)",
+            1e3 * t_draft / dp,
+            1e3 * t_pass / dp,
+            100.0 * t_draft / (t_draft + t_pass).max(1e-9)
+        );
         eprintln!(
             "spec: {hits}/{drafts} drafts accepted ({:.1}%), {:.2} tokens/pass",
             if drafts == 0 {

@@ -149,6 +149,28 @@ kernel void conv1d_silu(
     out[c] = (half)(acc / (1.0f + exp(-acc)));
 }
 
+// Ring-buffer form of conv1d_silu.  The layer keeps its own four-row window and
+// the current position's qkv row is already written at `slot`, so the convolution
+// reads the slots in ring order instead of the caller copying a three-row history
+// in and back out on every row - two dispatches per row per linear-attention
+// layer, all of it pure overhead.
+kernel void conv1d_silu_ring(
+    device const half*  window   [[buffer(0)]],
+    device const half*  w        [[buffer(1)]],
+    device half*        out      [[buffer(2)]],
+    constant int&       conv_dim [[buffer(3)]],
+    constant int&       slot     [[buffer(4)]],
+    uint c [[thread_position_in_grid]])
+{
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int r = (slot + 1 + j) & 3;    // oldest first; j == 3 is `slot`
+        acc += (float)w[c * 4 + j] * (float)window[(size_t)r * conv_dim + c];
+    }
+    out[c] = (half)(acc / (1.0f + exp(-acc)));
+}
+
 // One thread owns one (v-head, v-dim) row of the fp32 state matrix; the Dk loop
 // is fully serial per thread, which keeps the whole recurrence in registers.
 kernel void gdn_step(
@@ -324,6 +346,7 @@ kernel void sigmoid_mul(
 pub const K_ATTN_SCORES_SOFTMAX: &str = "attn_scores_softmax";
 pub const K_ATTN_OUT: &str = "attn_out";
 pub const K_KV_APPEND: &str = "kv_append";
+pub const K_CONV1D_SILU_RING: &str = "conv1d_silu_ring";
 pub const K_CONV1D_SILU: &str = "conv1d_silu";
 pub const K_GDN_STEP: &str = "gdn_step";
 pub const K_RMSNORM_WS: &str = "rmsnorm_s";
