@@ -56,8 +56,9 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "start the k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms",
-    "reduce dispatch count (fuse norms into consumers, drop redundant barriers) - the 8.9ms is GPU-side dispatch + real non-linear work"
+    "k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms (also M2 prefill)",
+    "MTP head: quantise bf16 mtp.* shard, add mtp.fc + decoder layer, draft/verify at k=2",
+    "then M5 endpoints (OpenAI + Anthropic) and M6 continuous batching"
   ],
   "history": [
     {
@@ -282,6 +283,30 @@
         "binding-call reduction: neutral because consecutive dispatches switch pipeline"
       ],
       "next": "fewer dispatches (fusion) or the k=2 path which amortises all per-token fixed cost"
+    },
+    {
+      "round": 11,
+      "title": "consolidation: verified status + measured roadmap to 40 tok/s written to docs/STATUS.md",
+      "tok_s": 27.75,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "measured",
+        "G4": "pass"
+      },
+      "evidence": {
+        "k1_ms": 26.87,
+        "k1_gbps": 536,
+        "k2_ms": 28.68,
+        "k2_ms_per_token": 14.34,
+        "k2_equiv_tok_s": 69.7,
+        "end_to_end_ms": 36.04,
+        "end_to_end_tok_s": 27.75,
+        "parity": "6/6",
+        "tests": 39
+      },
+      "next": "k=2 engine path then MTP head; projected 40-45 tok/s at alpha 0.6-0.8"
     }
   ]
 }
