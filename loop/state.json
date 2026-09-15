@@ -632,6 +632,26 @@
         "lever": "R output rows per threadgroup divides the activation traffic by R (llama.cpp mul_mat_vec_q / MLX qmv shape); at R=4 the pass should approach the 28-30 ms DRAM floor"
       },
       "next": "implement q4_gemv with R output rows per threadgroup (x staged in registers across R weight rows), measure A/B, then TILE=3/4 and the draft/verify loop; MTP acceptance 56.2% to improve in parallel"
+    },
+    {
+      "round": 26,
+      "title": "Measured the machine's true streaming ceiling (499 GB/s vs the GEMV's 360); three kernel shapes failed to close the gap and were reverted",
+      "tok_s": 40.7,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change_all_reverted",
+        "G4": "pass"
+      },
+      "evidence": {
+        "streaming_ceiling": "14 GB pure read: 499/486 GB/s (warm), 298 GB/s cold -> the GEMV's 360 GB/s is a real 1.4x gap, not a hardware limit",
+        "process_failure": "the round-25 'R rows per threadgroup' lever was already implemented and rejected in round 004 (46.58/60.88/62.84 ms) and uint4 widening in round 005 (wash); both are in this file and I re-derived them instead of reading them - grep the loop state before proposing a lever",
+        "shared_staging": "4 rows per threadgroup with x staged in threadgroup memory: bit-exact but 2.2x slower (108.99 vs 48.85 ms), reverted",
+        "coalesced": "one lane per word instead of per group: bit-exact, performance-identical (41.04/49.16 vs 40.57/48.85 ms) - proves the access pattern is not the limit, reverted",
+        "rows_per_lane": "R rows per lane (x fetched once per R weight rows): produced zeros and 5x slower; suspicions are acc[R][NK] spilling to thread-local memory and a collective called inside a guard; reverted"
+      },
+      "next": "retry rows-per-lane with R scalar accumulators and a fully literal unrolled nest (no acc[][] array); in parallel push MTP acceptance 56% -> 85% and cut the draft 5.5 ms -> 2.5 ms, since a k=2 pass already measures 40.7 tok/s"
     }
   ]
 }
