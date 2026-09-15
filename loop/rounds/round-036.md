@@ -51,3 +51,36 @@ bandwidth ceiling; it has real headroom.**  Since the per-row sequential work is
 leading suspect is the three-row accumulator in the tiled GEMV costing occupancy, and that is
 the next thing to attack - a pass that matched the plain step's bandwidth efficiency would
 land near 60 tok/s.
+
+## The next lever, with the reasoning already done
+
+Reading `Q4_GEMV_KS` settles two things.
+
+**The tiled GEMV is bit-exact per row versus the k=1 kernel.**  Both walk `g = lane; g <
+n_groups; g += 32`, unpack the same `Q4_WORDS_PER_GROUP` words in order, and reduce with
+`simd_sum(acc[t])` per row.  A tile launch therefore performs the same operations in the same
+order for each row that three k=1 launches would - which is why `QW_TILE_CHECK` sees exactly
+0.0 rather than "close", and it means a tile launch can replace k=1 launches without touching
+a single bit of output.
+
+**The GDN branch still reads its qkv weights three times per pass.**  `g.in_qkv` is
+`(key_dim * 2 + value_dim) x hidden`, about 21 MB per layer, and it is projected with a
+separate k=1 launch per row: ~3 GB per pass, ~19% of all traffic, of which two thirds is the
+same bytes read again.  The only reason it is per row is that the three output rows have to
+land in three consecutive ring slots, and `slot0 + 2` wraps for two of the eight slot
+positions.
+
+The way through is to stop writing the projection straight into the ring:
+
+1. project the tile with the k=3 kernel into a contiguous `qkv_cur[TILE][conv_dim]` - one
+   launch, one read of the weights, and by the argument above bit-identical to the three
+   separate launches;
+2. have the tile convolution read its older rows from the ring and its own rows from
+   `qkv_cur`, which needs one extra pointer and one comparison in the kernel;
+3. at the end of the pass, copy the `k + 1` accepted rows from `qkv_cur` into their ring
+   slots - a pure memcpy, so still bit-identical, and only for rows that survive.
+
+That is one launch where there are now three, and it removes roughly 2 GB of redundant weight
+traffic per pass, which is ~12% of the pass - several times what the whole of round 036
+bought.  It is a real change to the ring's bookkeeping, so it wants a full round rather than
+the tail of this one.
