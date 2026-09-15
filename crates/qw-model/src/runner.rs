@@ -561,10 +561,22 @@ impl Qwen38 {
                 words_per_row,
             )
         };
-        let scales = self.embed_s.as_bf16_f32();
-        let biases = self.embed_b.as_bf16_f32();
-        let scales = &scales[row * groups..(row + 1) * groups];
-        let biases = &biases[row * groups..(row + 1) * groups];
+        // Read this row's quantisation metadata straight out of the tensor bytes.
+        // `as_bf16_f32()` converts the *whole* table - 19.9M scales plus 19.9M
+        // biases, ~160 MB of allocation - and it was being paid once per token on
+        // both the decode and the draft path, which is several milliseconds a call.
+        let sb = self.embed_s.bytes();
+        let bb = self.embed_b.bytes();
+        let base = row * groups;
+        if (base + groups) * 2 > sb.len() || (base + groups) * 2 > bb.len() {
+            bail!("token {token} out of range");
+        }
+        let bf16_at = |bytes: &[u8], i: usize| -> f32 {
+            let bits = u16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]) as u32;
+            f32::from_bits(bits << 16)
+        };
+        let scales: Vec<f32> = (0..groups).map(|g| bf16_at(sb, base + g)).collect();
+        let biases: Vec<f32> = (0..groups).map(|g| bf16_at(bb, base + g)).collect();
         let mut vals = vec![0f32; h];
         for (wi, word) in words.iter().enumerate() {
             for v in 0..8 {

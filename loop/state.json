@@ -714,6 +714,27 @@
         "measurement_caveat": "the box is throttling hard (74.75 ms/token this session vs 41.56 clean) so the wall-clock gain was not measurable this round; predicted ~3 ms of a 49 ms pass at ~16 us/dispatch"
       },
       "next": "keep cutting the chain: fold ewise_add into the preceding rmsnorm (128), fold the q/k norms together (96), let the up gemv do silu_mul (64), then batch tile rows in the GDN kernels; re-measure the spec throughput in a clean thermal window"
+    },
+    {
+      "round": 30,
+      "title": "embed_row converted the entire 19.9M-entry embedding quantisation table to f32 on every call (both decode and draft paths); reading the one row out of the tensor bytes gives draft 6.35->2.60 ms, plain 24.06->27.5 tok/s and spec 32.29->35.61 tok/s",
+      "tok_s": 35.61,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6_byte_identical",
+        "G3": "big win",
+        "G4": "pass"
+      },
+      "evidence": {
+        "the_bug": "embed_row called embed_s.as_bf16_f32()/embed_b.as_bf16_f32() over [vocab=248320][80] = 19.9M entries each, ~40M conversions and ~160 MB of f32 allocation per call, to use 80 values; set_token/set_tokens and mtp_step all route through it",
+        "the_fix": "read the row's 80 scales and 80 biases directly out of the tensor bytes with a bf16_at helper - no allocation, no table-wide conversion",
+        "measured": "draft 6.35 -> 2.60 ms/pass (now at its ~2.2 ms bandwidth floor), verify 52.49 -> 45.15 ms/pass, plain decode 24.06 -> 27.5 tok/s, speculative 32.29 -> 35.61 tok/s",
+        "correctness": "parity 6/6 and speculative output byte-identical to plain greedy",
+        "progress": "speculative decoding is at 35.61 tok/s = 89% of the 40 tok/s target",
+        "next_bottleneck": "per pass: 45.15 verify + 2.60 draft = 47.8 ms accounted, ~51.9 ms measured - the ~4 ms gap is the host-side logits readback (logits_row copies 497 KB of f16 and converts 248K values, three times per pass)"
+      },
+      "next": "add a GPU argmax kernel writing one u32 per row (kills the ~4 ms/pass of logits readback), then continue the dispatch-chain fusion: rmsnorm+ewise_add, the q/k norm pair, silu_mul into the up gemv, and the GDN row loops"
     }
   ]
 }
