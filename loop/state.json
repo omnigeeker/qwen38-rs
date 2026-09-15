@@ -307,6 +307,28 @@
         "tests": 39
       },
       "next": "k=2 engine path then MTP head; projected 40-45 tok/s at alpha 0.6-0.8"
+    },
+    {
+      "round": 12,
+      "title": "GPU argmax attempt: 5/6 parity, zero gain, reverted - host readback is not a cost",
+      "tok_s": 27.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6_restored",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "parity_broken": "5/6",
+        "timing_ms": 36.37,
+        "readback_reduction": "496KB -> 488B",
+        "restored": "6/6"
+      },
+      "failed_ideas": [
+        "GPU argmax: readback was never the cost (timing unchanged); kernel not tie-equivalent on one case"
+      ],
+      "next": "k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms"
     }
   ]
 }
