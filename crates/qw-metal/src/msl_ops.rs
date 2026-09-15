@@ -160,12 +160,15 @@ kernel void conv1d_silu_ring(
     device half*        out      [[buffer(2)]],
     constant int&       conv_dim [[buffer(3)]],
     constant int&       slot     [[buffer(4)]],
+    constant int&       ring     [[buffer(5)]],
     uint c [[thread_position_in_grid]])
 {
     float acc = 0.0f;
     #pragma unroll
     for (int j = 0; j < 4; ++j) {
-        const int r = (slot + 1 + j) & 3;    // oldest first; j == 3 is `slot`
+        // oldest first; j == 3 is `slot`
+        // ring is a power of two, so the mask is exact and free
+        const int r = (slot + ring - 3 + j) & (ring - 1);
         acc += (float)w[c * 4 + j] * (float)window[(size_t)r * conv_dim + c];
     }
     out[c] = (half)(acc / (1.0f + exp(-acc)));

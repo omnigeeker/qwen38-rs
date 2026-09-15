@@ -813,6 +813,32 @@
         "next_method": "stop reasoning and dump the buffers: snapshot the GDN state, the window rings and a layer's k/v cache after a rejected pass in both paths and diff them"
       },
       "next": "instrument the k=0 path: dump GDN state, window rings and a layer's k/v cache after a rejected pass in both paths and diff; keep the endpoint's QW_NO_SPEC=1 escape hatch until it is fixed"
+    },
+    {
+      "round": 35,
+      "title": "ROOT CAUSE FOUND AND FIXED: the convolution ring was exactly conv_k slots wide, but a speculative pass writes TILE rows ahead - so a rejected pass evicted the row the next pass's first convolution still needed. Ring is now (conv_k + TILE).next_power_of_two(), mask-indexed. plain vs spec is now byte-identical over 3 prompts x 300 tokens",
+      "tok_s": 40.68,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6 + spec==plain byte-for-byte on 3 prompts x 300 tokens",
+        "G4": "pass"
+      },
+      "evidence": {
+        "root_cause": "the pass at position p writes ring slots for p, p+1, p+2; the slot for p+2 is the same slot as p-2 (p+2 = p-2 + conv_k), so the second draft evicted the row for p-2. With k=0 the next pass starts at p+1 and its row 0 convolves over {p-2, p-1, p, p+1}, reading the discarded draft in place of p-2",
+        "why_it_hid": "both extra rows are real rows of the same sequence, so the corruption is a one-row-old convolution input - small enough to normally change nothing, which is why I twice mislabelled the resulting divergence as floating-point noise at a near-tie",
+        "fix": "ring is (conv_k + TILE).next_power_of_two() = 8 slots, indexed with a mask so the kernel costs exactly what it did before",
+        "before_after": {
+          "plain_vs_spec_200": "14 diffs (first 162) -> identical",
+          "plain_vs_noaccept_200": "190 diffs (first 4) -> identical",
+          "three_prompts_300": "identical",
+          "oracle": "6/6 both"
+        },
+        "method": "QW_NO_ACCEPT=1 (force k=0) made the rejection path the only path and turned a rare corruption into divergence at token 4; QW_TILE_CHECK proves the tiled arithmetic is bit-exact (max|dlogit|=0.0). Together they separate wrong arithmetic from wrong state",
+        "tile4": "built and tested: correct but strictly worse - acceptance 75.5%->55.6%, tokens/pass 2.51->2.67, materially higher pass cost. TILE=3 stays",
+        "thermal": "box throttled from back-to-back model loads (plain decode 87 ms/token vs 24.6 ms in round 031); spec/plain ratio 1.38x unchanged; absolute numbers to be re-measured in a cool window"
+      },
+      "next": "re-measure throughput in a cool window to reconfirm >=40 tok/s with the fix in place, then resume the remaining dispatch-count levers (batch conv1d_silu_ring/rmsnorm_nw across tile rows, batch gdn_step rows, fold ewise_add into rmsnorm, fold silu_mul into the up-GEMV, fold q/k norms)"
     }
   ]
 }

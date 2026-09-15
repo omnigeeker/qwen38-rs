@@ -64,9 +64,13 @@ struct Gdn {
     dt_bias: GpuBuffer,
     /// fp32 `[Hv][Dv][Dk]`
     state: GpuBuffer,
-    /// `[conv_k][conv_dim]` ring of raw pre-conv rows.  The current position's
-    /// qkv row is written at slot `pos % conv_k` and the convolution reads the
-    /// slots in order, so nothing has to be copied per row.
+    /// `[conv_ring][conv_dim]` ring of raw pre-conv rows.  A pass writes `TILE`
+    /// rows but only the first `k + 1` survive a rejection, and the next pass's
+    /// first row still reads the three rows before it, so the ring has to be
+    /// wider than the convolution window.  With exactly `conv_k` slots a rejected
+    /// pass evicted the row the next pass was about to read; that stayed hidden
+    /// because it only shows up as an argmax flipping on a near-tie.
+    /// Slot of position `p` is `p % conv_ring`; the convolution reads the last four.
     window: GpuBuffer,
     /// `TILE` per-row snapshots of `state`, taken only while
     /// speculative verification is on.  A verify pass advances the recurrence
@@ -311,6 +315,8 @@ impl Qwen38 {
         let value_dim = hv * dv;
         let conv_dim = key_dim * 2 + value_dim;
         let conv_k = cfg.linear_conv_kernel_dim;
+        // one ring for the window plus the rows a pass writes ahead
+        let conv_ring = (conv_k + TILE).next_power_of_two(); // power of two: the kernel masks
         if conv_k != 4 {
             bail!("conv kernel {conv_k} != 4 is not implemented");
         }
@@ -362,7 +368,7 @@ impl Qwen38 {
                     a_log: f32_buf(&dev, &tensor_f32(&store.handle(&layout.gdn_a_log(i))?)?),
                     dt_bias: f32_buf(&dev, &tensor_f32(&store.handle(&layout.gdn_dt_bias(i))?)?),
                     state: dev.buffer(hv * dv * dk * 4),
-                    window: dev.buffer(conv_k * conv_dim * 2),
+                    window: dev.buffer(conv_ring * conv_dim * 2),
                     snap: dev.buffer(hv * dv * dk * 4 * TILE),
                 }))
             } else {
@@ -762,7 +768,8 @@ impl Qwen38 {
                 }
                 Kind::Gdn(g) => {
                     // qkv projection writes straight into the conv window's ring slot
-                    let slot = (t - 1).rem_euclid(cfg.linear_conv_kernel_dim as i32) as usize;
+                    let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two(); // power of two: the kernel masks
+                    let slot = (t - 1).rem_euclid(conv_ring as i32) as usize;
                     b.encode(
                         Dispatch::new(
                             &kernels.q4_gemv,
@@ -789,7 +796,8 @@ impl Qwen38 {
                             .buf(1, &g.conv_w)
                             .buf(2, &scratch.conv_out)
                             .scalar(3, conv_dim as i32)
-                            .scalar(4, slot as i32),
+                            .scalar(4, slot as i32)
+                            .scalar(5, conv_ring as i32),
                     );
                     b.barrier();
                     let inv = 1.0f32 / (dk as f32).sqrt();
@@ -1116,9 +1124,8 @@ impl Qwen38 {
                         .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.a, TILE);
                     for row in 0..TILE {
                         // qkv projection writes straight into the conv window's ring slot
-                        let slot = (t - 1 + row as i32)
-                            .rem_euclid(cfg.linear_conv_kernel_dim as i32)
-                            as usize;
+                        let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two(); // power of two: the kernel masks
+                        let slot = (t - 1 + row as i32).rem_euclid(conv_ring as i32) as usize;
                         b.encode(
                             Dispatch::new(
                                 &kernels.q4_gemv,
@@ -1139,7 +1146,8 @@ impl Qwen38 {
                                 .buf(1, &g.conv_w)
                                 .buf_offset(2, &scratch.conv_out, row * (conv_dim * 2))
                                 .scalar(3, conv_dim as i32)
-                                .scalar(4, slot as i32),
+                                .scalar(4, slot as i32)
+                                .scalar(5, conv_ring as i32),
                         );
                         b.barrier();
                         let inv = 1.0f32 / (dk as f32).sqrt();
