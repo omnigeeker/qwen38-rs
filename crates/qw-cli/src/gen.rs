@@ -283,6 +283,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
 
     let mut out: Vec<u32> = Vec::new();
     let mut drafts = 0usize;
+    let mut passes = 0usize;
     let mut hits = 0usize;
     let t1 = Instant::now();
     if spec {
@@ -297,29 +298,47 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             if opts.stop_at_eos && tok.is_eos(next) {
                 break;
             }
+            // Draft two tokens ahead with the MTP head: `d1` for `pos + 1` and,
+            // chained on it, `d2` for `pos + 2`.
             let t = Instant::now();
-            let d = Qwen38::argmax_of(&model.mtp_step(next, pos, true)?);
+            let d1 = Qwen38::argmax_of(&model.mtp_step(next, pos, true)?);
+            let d2 = Qwen38::argmax_of(&model.mtp_step(d1, pos + 1, true)?);
             t_draft += t.elapsed().as_secs_f64();
             let t = Instant::now();
-            model.set_tokens(&[next, d])?;
+            model.set_tokens(&[next, d1, d2])?;
             model.forward2(pos)?;
             t_pass += t.elapsed().as_secs_f64();
             let r0 = Qwen38::argmax_of(&model.logits_row(0));
             let r1 = Qwen38::argmax_of(&model.logits_row(1));
-            drafts += 1;
-            if d == r0 {
-                // Two tokens verified: the recurrence already covers both rows.
+            let r2 = Qwen38::argmax_of(&model.logits_row(2));
+            passes += 1;
+            drafts += 2;
+            if d1 == r0 && d2 == r1 {
+                // All three rows verified.  Row 2 also settles the token after
+                // `d2`, so it becomes the next `next` for free.
+                hits += 2;
+                out.push(d1);
+                out.push(d2);
+                // Complete the head's cache for `d2`: it consumes `pos + 2` and
+                // needs the hidden of `pos + 1`, which is row 1.  Promoting row 1
+                // into row 0 leaves row 2 intact, so row 2 can be promoted next.
+                model.promote_hidden(1)?;
+                model.mtp_step(d2, pos + 2, false)?;
+                model.promote_hidden(2)?;
+                pos += 3;
+                next = r2;
+            } else if d1 == r0 {
+                // Only the first draft was right: row 1 is real, so rewind the
+                // recurrence to the end of that row and keep its hidden.
                 hits += 1;
-                out.push(d);
-                // Complete the head's own cache for the token just verified, using
-                // row 0 (the hidden of `pos`), before row 1 is promoted over it.
-                model.mtp_step(d, pos + 1, false)?;
-                model.promote_row1_hidden()?;
+                out.push(d1);
+                model.commit_row(1)?;
+                model.promote_hidden(1)?;
                 pos += 2;
                 next = r1;
             } else {
                 // Only row 0 is real; commit the recurrence as of that row so the
-                // rejected draft leaves no trace.
+                // rejected drafts leave no trace.
                 model.commit_row(0)?;
                 pos += 1;
                 next = r0;
@@ -341,7 +360,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             } else {
                 100.0 * hits as f64 / drafts as f64
             },
-            out.len() as f64 / drafts.max(1) as f64
+            out.len() as f64 / passes.max(1) as f64
         );
     } else {
         for pos in ids.len()..ids.len() + opts.max_tokens {

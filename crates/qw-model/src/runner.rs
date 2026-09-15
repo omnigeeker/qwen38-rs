@@ -22,7 +22,7 @@ struct Kernels {
     q4_gemv: Kernel,
     /// Compile-time k=2 specialisation (round 6): the runtime-k kernel spills
     /// its accumulators to thread-local memory.
-    q4_gemv_k2: Kernel,
+    q4_gemv_tile: Kernel,
     rmsnorm: Kernel,
     rmsnorm_ws: Kernel,
     rmsnorm_nw: Kernel,
@@ -93,7 +93,7 @@ struct Layer {
 
 /// Scratch buffers, all fp16 unless stated.
 /// Number of tokens a single forward pass can carry (see docs/PLAN_K2.md).
-pub const TILE: usize = 2;
+pub const TILE: usize = 3;
 
 struct Scratch {
     x: GpuBuffer,
@@ -407,7 +407,7 @@ impl Qwen38 {
             let mut b = dev.batch();
             Kernels {
                 q4_gemv: b.kernel(msl::COMMON, msl::K_Q4_GEMV)?,
-                q4_gemv_k2: b.kernel(msl::COMMON, msl::K_Q4_GEMV_K2)?,
+                q4_gemv_tile: b.kernel(msl::COMMON, msl::K_Q4_GEMV_K3)?,
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,
                 rmsnorm_ws: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS)?,
                 rmsnorm_nw: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_NW)?,
@@ -984,10 +984,10 @@ impl Qwen38 {
             match &layer.kind {
                 Kind::Full(a) => {
                     // q (with output gate), k, v projections
-                    a.q.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.qg, TILE);
+                    a.q.encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.qg, TILE);
                     b.barrier();
-                    a.k.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pk, TILE);
-                    a.v.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pv, TILE);
+                    a.k.encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pk, TILE);
+                    a.v.encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pv, TILE);
                     b.barrier();
                     for row in 0..TILE {
                         // q_norm: heads live at stride 2*hd inside the q_proj output
@@ -1101,7 +1101,7 @@ impl Qwen38 {
                     b.barrier();
                     a.o.encode_k(
                         &mut b,
-                        &kernels.q4_gemv_k2,
+                        &kernels.q4_gemv_tile,
                         &scratch.attn_gated,
                         &scratch.proj_out,
                         TILE,
@@ -1109,11 +1109,11 @@ impl Qwen38 {
                 }
                 Kind::Gdn(g) => {
                     g.in_z
-                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.z, TILE);
+                        .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.z, TILE);
                     g.in_b
-                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.b, TILE);
+                        .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.b, TILE);
                     g.in_a
-                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.a, TILE);
+                        .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.a, TILE);
                     for row in 0..TILE {
                         // qkv projection writes straight into the conv window's ring slot
                         let slot = (t - 1 + row as i32)
@@ -1225,7 +1225,7 @@ impl Qwen38 {
                     }
                     g.out_proj.encode_k(
                         &mut b,
-                        &kernels.q4_gemv_k2,
+                        &kernels.q4_gemv_tile,
                         &scratch.gdn_gated,
                         &scratch.proj_out,
                         TILE,
@@ -1254,14 +1254,14 @@ impl Qwen38 {
             b.barrier();
             layer.gate.encode_k(
                 &mut b,
-                &kernels.q4_gemv_k2,
+                &kernels.q4_gemv_tile,
                 &scratch.h,
                 &scratch.mlp_gate,
                 TILE,
             );
             layer.up.encode_k(
                 &mut b,
-                &kernels.q4_gemv_k2,
+                &kernels.q4_gemv_tile,
                 &scratch.h,
                 &scratch.mlp_up,
                 TILE,
@@ -1280,7 +1280,7 @@ impl Qwen38 {
             b.barrier();
             layer.down.encode_k(
                 &mut b,
-                &kernels.q4_gemv_k2,
+                &kernels.q4_gemv_tile,
                 &scratch.mlp_act,
                 &scratch.proj_out,
                 TILE,
@@ -1320,7 +1320,7 @@ impl Qwen38 {
         b.barrier();
         lm_head.encode_k(
             &mut b,
-            &kernels.q4_gemv_k2,
+            &kernels.q4_gemv_tile,
             &scratch.h,
             &scratch.logits,
             TILE,
@@ -1334,14 +1334,19 @@ impl Qwen38 {
     /// position sits in row 1 of the tile, but the MTP head reads row 0, so a
     /// speculative loop that consumed both rows must promote it before drafting
     /// the next token.  Rows are disjoint, so one dispatch is enough.
-    pub fn promote_row1_hidden(&mut self) -> Result<()> {
+    /// Copy row `row` of the pass's hidden states down into row 0, where a
+    /// following `mtp_step` looks for "the hidden of the previous position".
+    pub fn promote_hidden(&mut self, row: usize) -> Result<()> {
+        if row == 0 {
+            return Ok(());
+        }
         let h = self.cfg.hidden_size;
         let mut b = self.dev.batch();
         copy_dispatch(
             &mut b,
             &self.kernels.copy,
             &self.scratch.h,
-            h,
+            row * h,
             &self.scratch.h,
             0,
             h,
