@@ -12,7 +12,7 @@ use qw_weights::WeightStore;
 use std::path::Path;
 use std::time::Instant;
 
-pub fn run(model_dir: &Path, iters: usize, k: usize) -> Result<()> {
+pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> {
     let mut dev = GpuDevice::new()?;
     let store = WeightStore::load_dir(&dev, model_dir)?;
 
@@ -71,6 +71,8 @@ pub fn run(model_dir: &Path, iters: usize, k: usize) -> Result<()> {
             let mut batch = dev.batch();
             let kernel = if k == 1 {
                 QLinear::kernel(&mut batch)?
+            } else if rows > 1 {
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_KR)?
             } else {
                 QLinear::kernel_k(&mut batch)?
             };
@@ -79,6 +81,8 @@ pub fn run(model_dir: &Path, iters: usize, k: usize) -> Result<()> {
                 let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
                 if k == 1 {
                     l.encode(&mut batch, &kernel, x, y);
+                } else if rows > 1 {
+                    l.encode_kr(&mut batch, &kernel, x, y, k, rows);
                 } else {
                     l.encode_k(&mut batch, &kernel, x, y, k);
                 }
@@ -92,7 +96,7 @@ pub fn run(model_dir: &Path, iters: usize, k: usize) -> Result<()> {
     let gbps = total_bytes as f64 / (best_ms / 1000.0) / 1e9;
     let tok_s = k as f64 * 1000.0 / best_ms;
     println!(
-        "one full weight sweep over k={k} tokens: {:.2} ms -> {:.1} tok/s linear path, {:.0} GB/s effective",
+        "one full weight sweep over k={k} tokens, rows={rows}: {:.2} ms -> {:.1} tok/s linear path, {:.0} GB/s effective",
         best_ms, tok_s, gbps
     );
     // end_to_end = false: this sweep encodes every linear into one command

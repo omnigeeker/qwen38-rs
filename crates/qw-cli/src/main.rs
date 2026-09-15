@@ -45,6 +45,9 @@ enum Cmd {
         /// verify this many tokens per weight sweep (speculative verification)
         #[arg(long, default_value_t = 1)]
         tokens: usize,
+        /// output rows per threadgroup in the multi-token kernel (A/B switch)
+        #[arg(long, default_value_t = 1)]
+        rows: usize,
     },
     /// Validate the 4-bit GEMV kernel against a CPU reference on real weights.
     Check {
@@ -106,7 +109,8 @@ fn main() -> Result<()> {
             model_dir,
             iters,
             tokens,
-        } => bench::run(&model_dir, iters, tokens),
+            rows,
+        } => bench::run(&model_dir, iters, tokens, rows),
         Cmd::Check {
             model_dir,
             tensor,

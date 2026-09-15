@@ -123,6 +123,74 @@ kernel void q4_gemv_k(
     }
 }
 
+// Same idea as q4_gemv_k, but each threadgroup also covers `R` consecutive
+// output rows with the x slice held in registers (R is a runtime scalar so the
+// row blocking can be swept without rebuilding).  R=1 reproduces q4_gemv_k.
+kernel void q4_gemv_kr(
+    device const uint*   w      [[buffer(0)]],
+    device const ushort* scales [[buffer(1)]],
+    device const ushort* biases [[buffer(2)]],
+    device const half*   x      [[buffer(3)]],
+    device half*         y      [[buffer(4)]],
+    constant int&        K      [[buffer(5)]],
+    constant int&        k      [[buffer(6)]],
+    constant int&        out_f  [[buffer(7)]],
+    constant int&        R      [[buffer(8)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]])
+{
+    const int n_groups = K / GROUP_SIZE;
+    const int row0 = (int)tg * R;
+
+    float acc[4][4];
+    for (int r = 0; r < R; ++r)
+        for (int t = 0; t < k; ++t) acc[r][t] = 0.0f;
+
+    for (int g = (int)lane; g < n_groups; g += 32) {
+        float xv[4][8];
+        for (int t = 0; t < k; ++t) {
+            device const half* gx = x + (size_t)t * K + g * GROUP_SIZE;
+            const float4 a0 = float4(*(device const half4*)(gx));
+            const float4 a1 = float4(*(device const half4*)(gx + 4));
+            xv[t][0] = a0.x; xv[t][1] = a0.y; xv[t][2] = a0.z; xv[t][3] = a0.w;
+            xv[t][4] = a1.x; xv[t][5] = a1.y; xv[t][6] = a1.z; xv[t][7] = a1.w;
+        }
+        for (int r = 0; r < R; ++r) {
+            const int row = row0 + r;
+            if (row >= out_f) break;
+            const float s  = as_type<float>((uint)scales[(size_t)row * n_groups + g] << 16);
+            const float bb = as_type<float>((uint)biases[(size_t)row * n_groups + g] << 16);
+            device const uint* gw = w + (size_t)row * (size_t)(K / 8) + g * Q4_WORDS_PER_GROUP;
+            #pragma unroll
+            for (int wi = 0; wi < Q4_WORDS_PER_GROUP; ++wi) {
+                const uint word = gw[wi];
+                const float4 w0 = float4((float)( word        & 0xFu),
+                                         (float)((word >>  4) & 0xFu),
+                                         (float)((word >>  8) & 0xFu),
+                                         (float)((word >> 12) & 0xFu)) * s + bb;
+                const float4 w1 = float4((float)((word >> 16) & 0xFu),
+                                         (float)((word >> 20) & 0xFu),
+                                         (float)((word >> 24) & 0xFu),
+                                         (float)((word >> 28) & 0xFu)) * s + bb;
+                for (int t = 0; t < k; ++t) {
+                    acc[r][t] += w0.x * xv[t][0] + w0.y * xv[t][1]
+                               + w0.z * xv[t][2] + w0.w * xv[t][3]
+                               + w1.x * xv[t][4] + w1.y * xv[t][5]
+                               + w1.z * xv[t][6] + w1.w * xv[t][7];
+                }
+            }
+        }
+    }
+    for (int r = 0; r < R; ++r) {
+        const int row = row0 + r;
+        if (row >= out_f) break;
+        for (int t = 0; t < k; ++t) {
+            const float a = simd_sum(acc[r][t]);
+            if (lane == 0) y[(size_t)t * out_f + row] = (half)a;
+        }
+    }
+}
+
 // RMSNorm over the last dim, one threadgroup per row.
 kernel void rmsnorm(
     device const half* x [[buffer(0)]],
@@ -171,6 +239,7 @@ kernel void ewise_add(
 /// Kernel entry names.
 pub const K_Q4_GEMV: &str = "q4_gemv";
 pub const K_Q4_GEMV_K: &str = "q4_gemv_k";
+pub const K_Q4_GEMV_KR: &str = "q4_gemv_kr";
 pub const K_RMSNORM: &str = "rmsnorm";
 pub const K_EWISE_ADD: &str = "ewise_add";
 
