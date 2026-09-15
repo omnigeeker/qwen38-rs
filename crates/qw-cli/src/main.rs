@@ -45,8 +45,8 @@ enum Cmd {
         /// verify this many tokens per weight sweep (speculative verification)
         #[arg(long, default_value_t = 1)]
         tokens: usize,
-        /// output rows per threadgroup in the multi-token kernel (A/B switch)
-        #[arg(long, default_value_t = 1)]
+        /// output rows per threadgroup; 0 = round-3 kernel, >=1 = x-hoisted variant
+        #[arg(long, default_value_t = 0)]
         rows: usize,
     },
     /// Validate the 4-bit GEMV kernel against a CPU reference on real weights.

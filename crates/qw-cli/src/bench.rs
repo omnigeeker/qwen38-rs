@@ -71,7 +71,7 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             let mut batch = dev.batch();
             let kernel = if k == 1 {
                 QLinear::kernel(&mut batch)?
-            } else if rows > 1 {
+            } else if rows >= 1 {
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_KR)?
             } else {
                 QLinear::kernel_k(&mut batch)?
@@ -81,7 +81,7 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
                 if k == 1 {
                     l.encode(&mut batch, &kernel, x, y);
-                } else if rows > 1 {
+                } else if rows >= 1 {
                     l.encode_kr(&mut batch, &kernel, x, y, k, rows);
                 } else {
                     l.encode_k(&mut batch, &kernel, x, y, k);

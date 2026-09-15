@@ -123,9 +123,12 @@ kernel void q4_gemv_k(
     }
 }
 
-// Same idea as q4_gemv_k, but each threadgroup also covers `R` consecutive
-// output rows with the x slice held in registers (R is a runtime scalar so the
-// row blocking can be swept without rebuilding).  R=1 reproduces q4_gemv_k.
+// Vector-load variant of q4_gemv_k: the 4-bit words of a group are fetched as
+// two 16-byte `uint4` loads instead of eight 4-byte loads.  The round-3 kernel
+// issues one load instruction per 4-byte weight word, so its instruction stream
+// is dominated by tiny loads; wider loads are the cheapest way to cut it.
+// (The `R` scalar from the row-blocking experiment is kept for ABI stability and
+// ignored.)
 kernel void q4_gemv_kr(
     device const uint*   w      [[buffer(0)]],
     device const ushort* scales [[buffer(1)]],
@@ -136,34 +139,29 @@ kernel void q4_gemv_kr(
     constant int&        k      [[buffer(6)]],
     constant int&        out_f  [[buffer(7)]],
     constant int&        R      [[buffer(8)]],
-    uint tg   [[threadgroup_position_in_grid]],
+    uint row  [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_threadgroup]])
 {
+    (void)R;
     const int n_groups = K / GROUP_SIZE;
-    const int row0 = (int)tg * R;
+    device const ushort* sp = scales + (size_t)row * (size_t)n_groups;
+    device const ushort* bp = biases + (size_t)row * (size_t)n_groups;
+    device const uint4*  wp = (device const uint4*)(w + (size_t)row * (size_t)(K / 8));
 
-    float acc[4][4];
-    for (int r = 0; r < R; ++r)
-        for (int t = 0; t < k; ++t) acc[r][t] = 0.0f;
+    float acc[4];
+    for (int t = 0; t < k; ++t) acc[t] = 0.0f;
 
     for (int g = (int)lane; g < n_groups; g += 32) {
-        float xv[4][8];
-        for (int t = 0; t < k; ++t) {
-            device const half* gx = x + (size_t)t * K + g * GROUP_SIZE;
-            const float4 a0 = float4(*(device const half4*)(gx));
-            const float4 a1 = float4(*(device const half4*)(gx + 4));
-            xv[t][0] = a0.x; xv[t][1] = a0.y; xv[t][2] = a0.z; xv[t][3] = a0.w;
-            xv[t][4] = a1.x; xv[t][5] = a1.y; xv[t][6] = a1.z; xv[t][7] = a1.w;
-        }
-        for (int r = 0; r < R; ++r) {
-            const int row = row0 + r;
-            if (row >= out_f) break;
-            const float s  = as_type<float>((uint)scales[(size_t)row * n_groups + g] << 16);
-            const float bb = as_type<float>((uint)biases[(size_t)row * n_groups + g] << 16);
-            device const uint* gw = w + (size_t)row * (size_t)(K / 8) + g * Q4_WORDS_PER_GROUP;
+        const float s  = as_type<float>((uint)sp[g] << 16);
+        const float bb = as_type<float>((uint)bp[g] << 16);
+        device const uint4* gw = wp + (size_t)g * (Q4_WORDS_PER_GROUP / 4);
+        #pragma unroll
+        for (int wi = 0; wi < Q4_WORDS_PER_GROUP / 4; ++wi) {
+            const uint4 w4 = gw[wi];
+            const uint wds[4] = {w4.x, w4.y, w4.z, w4.w};
             #pragma unroll
-            for (int wi = 0; wi < Q4_WORDS_PER_GROUP; ++wi) {
-                const uint word = gw[wi];
+            for (int c = 0; c < 4; ++c) {
+                const uint word = wds[c];
                 const float4 w0 = float4((float)( word        & 0xFu),
                                          (float)((word >>  4) & 0xFu),
                                          (float)((word >>  8) & 0xFu),
@@ -173,21 +171,18 @@ kernel void q4_gemv_kr(
                                          (float)((word >> 24) & 0xFu),
                                          (float)((word >> 28) & 0xFu)) * s + bb;
                 for (int t = 0; t < k; ++t) {
-                    acc[r][t] += w0.x * xv[t][0] + w0.y * xv[t][1]
-                               + w0.z * xv[t][2] + w0.w * xv[t][3]
-                               + w1.x * xv[t][4] + w1.y * xv[t][5]
-                               + w1.z * xv[t][6] + w1.w * xv[t][7];
+                    device const half* gx = x + (size_t)t * K + g * GROUP_SIZE
+                                          + (wi * 4 + c) * 8;
+                    const float4 x0 = float4(*(device const half4*)(gx));
+                    const float4 x1 = float4(*(device const half4*)(gx + 4));
+                    acc[t] += dot(w0, x0) + dot(w1, x1);
                 }
             }
         }
     }
-    for (int r = 0; r < R; ++r) {
-        const int row = row0 + r;
-        if (row >= out_f) break;
-        for (int t = 0; t < k; ++t) {
-            const float a = simd_sum(acc[r][t]);
-            if (lane == 0) y[(size_t)t * out_f + row] = (half)a;
-        }
+    for (int t = 0; t < k; ++t) {
+        const float a = simd_sum(acc[t]);
+        if (lane == 0) y[(size_t)t * out_f + row] = (half)a;
     }
 }
 

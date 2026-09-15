@@ -51,8 +51,7 @@
     "k4_equiv_tok_s": 53.5
   },
   "next_actions": [
-    "hoist the x group slice out of the word loop in q4_gemv_k and measure",
-    "go to a tiled q4_gemm_t (speculative verification as a small prefill) if (1) does not pay - this is what makes k tokens cheap structurally, and M2 needs it anyway"
+    "write q4_gemm_t: tiled 4-bit GEMM over a tile of T tokens (T=8..32), x staged in threadgroup memory, fp32 accumulate; target 27-28ms per weight pass at T=8; verify token-by-token against the k=1 GEMV. Needed for M2 prefill regardless."
   ],
   "history": [
     {
@@ -137,6 +136,31 @@
       },
       "failed_ideas": [
         "R-row register blocking at any R>1: strictly worse (x reuse not the bottleneck)"
+      ]
+    },
+    {
+      "round": 5,
+      "title": "GEMV structure exhausted: 4 variants, none beats round-3; tiled GEMM next",
+      "tok_s": 27.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_regression",
+        "G4": "pass"
+      },
+      "evidence": {
+        "k2_round3_ms": 46.52,
+        "k2_xhoisted_ms": 63.12,
+        "k2_uint4_ms": 46.31,
+        "k3_round3_ms": 60.36,
+        "k3_xhoisted_ms": 84.39,
+        "k3_uint4_ms": 60.09,
+        "parity": "6/6"
+      },
+      "failed_ideas": [
+        "x hoist to registers: 36-40% worse",
+        "uint4 weight loads: wash"
       ]
     }
   ]
