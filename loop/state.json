@@ -56,9 +56,9 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms (also M2 prefill)",
-    "MTP head: quantise bf16 mtp.* shard, add mtp.fc + decoder layer, draft/verify at k=2",
-    "then M5 endpoints (OpenAI + Anthropic) and M6 continuous batching"
+    "execute docs/PLAN_K2.md: step 1 (linear k=2 via K_Q4_GEMV_K2) + step 2 (non-linear looped twice with buf_offset), then verify 6/6 and measure forward2",
+    "step 2 fusion: one 2-row norm/gate kernel instead of two dispatches",
+    "then the MTP head (quantise bf16 mtp.*, mtp.fc + decoder layer) and M5 endpoints"
   ],
   "history": [
     {
@@ -329,6 +329,29 @@
         "GPU argmax: readback was never the cost (timing unchanged); kernel not tie-equivalent on one case"
       ],
       "next": "k=2 engine path: attention over two positions, delta-net recurrence for two steps, two-row norms"
+    },
+    {
+      "round": 13,
+      "title": "k=2 implementation plan written (docs/PLAN_K2.md) after inspecting forward(): a ~300-line refactor, not safely doable in one short round",
+      "tok_s": 27.75,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "plan": "docs/PLAN_K2.md",
+        "forward_loc": 427,
+        "steps": [
+          "linear k=2 via K_Q4_GEMV_K2",
+          "non-linear looped twice with buf_offset",
+          "verify 6/6 + row-1 logit equivalence",
+          "MTP draft"
+        ]
+      },
+      "next": "execute docs/PLAN_K2.md step 1+2, verify 6/6, measure forward2"
     }
   ]
 }
