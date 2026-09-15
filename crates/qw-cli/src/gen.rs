@@ -138,7 +138,11 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             md(&ref0, &self0)
         );
         println!("k2check: {}", if ok { "PASS" } else { "FAIL" });
-        return if ok { Ok(()) } else { anyhow::bail!("k2 check failed") };
+        return if ok {
+            Ok(())
+        } else {
+            anyhow::bail!("k2 check failed")
+        };
     }
 
     if let Some(path) = &opts.dump_vectors {

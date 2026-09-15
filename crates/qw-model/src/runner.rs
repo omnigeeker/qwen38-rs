@@ -833,8 +833,7 @@ impl Qwen38 {
         let mut b = CommandBatch::new(dev);
 
         for (i, layer) in layers.iter().enumerate() {
-             for row in 0..TILE {
-
+            for row in 0..TILE {
                 // ---- pre-norm ----
                 b.encode(
                     Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
@@ -844,16 +843,15 @@ impl Qwen38 {
                         .scalar(3, h as i32)
                         .scalar(4, eps),
                 );
-             }
+            }
             b.barrier();
             match &layer.kind {
                 Kind::Full(a) => {
-
                     // q (with output gate), k, v projections
-                    a.q.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.qg, TILE, );
+                    a.q.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.qg, TILE);
                     b.barrier();
-                    a.k.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pk, TILE, );
-                    a.v.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pv, TILE, );
+                    a.k.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pk, TILE);
+                    a.v.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.pv, TILE);
                     b.barrier();
                     for row in 0..TILE {
                         // q_norm: heads live at stride 2*hd inside the q_proj output
@@ -969,17 +967,18 @@ impl Qwen38 {
                         &mut b,
                         &kernels.q4_gemv_k2,
                         &scratch.attn_gated,
-                        &scratch.proj_out, TILE, );
+                        &scratch.proj_out,
+                        TILE,
+                    );
                 }
                 Kind::Gdn(g) => {
                     g.in_z
-                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.z, TILE, );
+                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.z, TILE);
                     g.in_b
-                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.b, TILE, );
+                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.b, TILE);
                     g.in_a
-                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.a, TILE, );
-                     for row in 0..TILE {
-
+                        .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.a, TILE);
+                    for row in 0..TILE {
                         // qkv projection writes straight into the conv window's last row
                         b.encode(
                             Dispatch::new(
@@ -1026,8 +1025,8 @@ impl Qwen38 {
                         // rmsnorm_s ABI: 0=x 1=w(optional) 2=y 3=D 4=in_stride 5=eps 6=scale 7=has_weight
                         b.encode(
                             Dispatch::new(&kernels.rmsnorm_nw, (hk * NT, 1, 1), (NT, 1, 1))
-                                .buf_offset(0, &scratch.conv_out, row * (conv_dim * 2) + (0))
-                                .buf_offset(1, &scratch.conv_out, row * (conv_dim * 2) + (0))
+                                .buf_offset(0, &scratch.conv_out, row * (conv_dim * 2))
+                                .buf_offset(1, &scratch.conv_out, row * (conv_dim * 2))
                                 .buf_offset(2, &scratch.q, row * (nh * hd * 2))
                                 .scalar(3, dk as i32)
                                 .scalar(4, dk as i32)
@@ -1037,8 +1036,16 @@ impl Qwen38 {
                         );
                         b.encode(
                             Dispatch::new(&kernels.rmsnorm_nw, (hk * NT, 1, 1), (NT, 1, 1))
-                                .buf_offset(0, &scratch.conv_out, row * (conv_dim * 2) + (key_dim * 2))
-                                .buf_offset(1, &scratch.conv_out, row * (conv_dim * 2) + (key_dim * 2))
+                                .buf_offset(
+                                    0,
+                                    &scratch.conv_out,
+                                    row * (conv_dim * 2) + (key_dim * 2),
+                                )
+                                .buf_offset(
+                                    1,
+                                    &scratch.conv_out,
+                                    row * (conv_dim * 2) + (key_dim * 2),
+                                )
                                 .buf_offset(2, &scratch.k, row * (nkv * hd * 2))
                                 .scalar(3, dk as i32)
                                 .scalar(4, dk as i32)
@@ -1051,7 +1058,11 @@ impl Qwen38 {
                             Dispatch::new(&kernels.gdn, (hv * dv, 1, 1), (dv, 1, 1))
                                 .buf_offset(0, &scratch.q, row * (nh * hd * 2))
                                 .buf_offset(1, &scratch.k, row * (nkv * hd * 2))
-                                .buf_offset(2, &scratch.conv_out, row * (conv_dim * 2) + (2 * key_dim * 2))
+                                .buf_offset(
+                                    2,
+                                    &scratch.conv_out,
+                                    row * (conv_dim * 2) + (2 * key_dim * 2),
+                                )
                                 .buf_offset(3, &scratch.a, row * (hv * 2))
                                 .buf_offset(4, &scratch.b, row * (hv * 2))
                                 .buf(5, &g.a_log)
@@ -1074,12 +1085,14 @@ impl Qwen38 {
                                 .scalar(5, eps),
                         );
                         b.barrier();
-                     }
+                    }
                     g.out_proj.encode_k(
                         &mut b,
                         &kernels.q4_gemv_k2,
                         &scratch.gdn_gated,
-                        &scratch.proj_out, TILE, );
+                        &scratch.proj_out,
+                        TILE,
+                    );
                 }
             }
             b.barrier();
@@ -1093,8 +1106,7 @@ impl Qwen38 {
                 );
             }
             b.barrier();
-             for row in 0..TILE {
-
+            for row in 0..TILE {
                 // ---- MLP ----
                 b.encode(
                     Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
@@ -1104,14 +1116,22 @@ impl Qwen38 {
                         .scalar(3, h as i32)
                         .scalar(4, eps),
                 );
-             }
+            }
             b.barrier();
-            layer
-                .gate
-                .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.mlp_gate, TILE, );
-            layer
-                .up
-                .encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.mlp_up, TILE, );
+            layer.gate.encode_k(
+                &mut b,
+                &kernels.q4_gemv_k2,
+                &scratch.h,
+                &scratch.mlp_gate,
+                TILE,
+            );
+            layer.up.encode_k(
+                &mut b,
+                &kernels.q4_gemv_k2,
+                &scratch.h,
+                &scratch.mlp_up,
+                TILE,
+            );
             b.barrier();
             for row in 0..TILE {
                 b.encode(
@@ -1126,7 +1146,9 @@ impl Qwen38 {
                 &mut b,
                 &kernels.q4_gemv_k2,
                 &scratch.mlp_act,
-                &scratch.proj_out, TILE, );
+                &scratch.proj_out,
+                TILE,
+            );
             b.barrier();
             for row in 0..TILE {
                 b.encode(
@@ -1164,7 +1186,13 @@ impl Qwen38 {
             );
         }
         b.barrier();
-        lm_head.encode_k(&mut b, &kernels.q4_gemv_k2, &scratch.h, &scratch.logits, TILE);
+        lm_head.encode_k(
+            &mut b,
+            &kernels.q4_gemv_k2,
+            &scratch.h,
+            &scratch.logits,
+            TILE,
+        );
         self.last_dispatches = b.dispatches();
         b.finish(true);
         Ok(())
@@ -1186,7 +1214,6 @@ impl Qwen38 {
         let v: Vec<f16> = self.scratch.logits.to_vec(row * self.vocab, self.vocab);
         v.iter().map(|x| x.to_f32()).collect()
     }
-
 
     /// Logits of the last `forward` call, copied to the host.
     pub fn logits(&self) -> Vec<f32> {
