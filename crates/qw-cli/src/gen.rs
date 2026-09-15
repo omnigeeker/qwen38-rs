@@ -21,6 +21,75 @@ pub struct GenOpts<'a> {
     pub stop_at_eos: bool,
 }
 
+/// How often does the MTP head's top-1 draft equal the token the decoder really
+/// picks?  That acceptance rate is what speculative decoding runs on, so it is
+/// the only number that says whether the head is wired up correctly.
+fn mtp_check(model: &mut Qwen38, ids: &[u32], steps: usize) -> Result<()> {
+    if !model.has_mtp() {
+        println!("mtp check: head not loaded (set QW_MTP_DIR)");
+        return Ok(());
+    }
+    model.reset();
+    let n = ids.len();
+    if n == 0 {
+        return Ok(());
+    }
+    // Ride along with the prompt so the head's own cache covers the prompt too.
+    let tp = Instant::now();
+    for (p, id) in ids.iter().enumerate() {
+        model.set_token(*id)?;
+        model.forward(p)?;
+        if p + 1 < n {
+            model.mtp_step(ids[p + 1], p + 1, false)?;
+        }
+    }
+    println!(
+        "mtp check: prompt {} tokens, head cache warm in {:.1} ms",
+        n,
+        tp.elapsed().as_secs_f64() * 1e3
+    );
+
+    println!("mtp check: norms {:?}", model.mtp_norm_stats());
+
+    let mut pos = n - 1;
+    let tok = model.argmax();
+    let t = Instant::now();
+    let mut draft = model.mtp_step(tok, pos + 1, true)?;
+    let first_ms = t.elapsed().as_secs_f64() * 1e3;
+    println!("mtp check: dump {:?}", model.mtp_dump());
+
+    let mut hits = 0usize;
+    let mut total = 0usize;
+    let mut log: Vec<(u32, u32)> = Vec::new();
+    let t = Instant::now();
+    for _ in 0..steps {
+        model.set_token(tok)?;
+        pos += 1;
+        model.forward(pos)?;
+        let actual = model.argmax();
+        if !draft.is_empty() {
+            total += 1;
+            let guess = Qwen38::argmax_of(&draft);
+            if guess == actual {
+                hits += 1;
+            }
+            if log.len() < 8 {
+                log.push((guess, actual));
+            }
+        }
+        draft = model.mtp_step(actual, pos + 1, true)?;
+    }
+    let per_step = t.elapsed().as_secs_f64() * 1e3 / steps as f64;
+    println!(
+        "mtp check: acceptance {hits}/{total} = {:.1}% | first draft {:.1} ms | head+head sweep {:.2} ms/token",
+        100.0 * hits as f64 / total.max(1) as f64,
+        first_ms,
+        per_step
+    );
+    println!("mtp check: first (draft, actual) pairs {log:?}");
+    Ok(())
+}
+
 pub fn run(opts: GenOpts<'_>) -> Result<()> {
     let t_load = Instant::now();
     let mut model = Qwen38::load(opts.model_dir, opts.max_t)?;
@@ -61,6 +130,10 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
         }
     }
     let prefill = t0.elapsed();
+
+    if std::env::var("QW_MTP_CHECK").is_ok() {
+        mtp_check(&mut model, &ids, 32)?;
+    }
 
     if std::env::var("QW_K2_CHECK").is_ok() {
         let amax = |v: &[f32]| -> u32 {

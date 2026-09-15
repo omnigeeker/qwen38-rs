@@ -570,6 +570,28 @@
         "cost_model": "extra row ~9.4 ms against a ~27 ms sweep => k=3 ~51 tok/s and k=4 ~59 tok/s before draft and acceptance"
       },
       "next": "make TILE a parameter and generate forward3/forward4 with the existing q4_gemv_k3/k4 kernels; then quantise the local bf16 mtp.* shard and wire the MTP draft head; then add per-row state snapshots so a partially accepted prefix does not need a recompute"
+    },
+    {
+      "round": 23,
+      "title": "MTP head quantised from the bf16 shard, wired into the engine, drafting at 34.4% top-1 acceptance; decoder untouched",
+      "tok_s": 40.7,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "converter": "tools/mtp_quantize.py -> models/Qwen3.8-27B-mtp-4bit/mtp.safetensors (31 tensors, MLX affine 4-bit group 64, bf16 scales/biases)",
+        "bug1": "quantising from an fp32 copy made MLX emit fp32 scales while the engine reads bf16 -> all-NaN drafts",
+        "bug2": "the bf16 release stores every RMSNorm weight as w-1; the pre_fc_norm weights were unshifted (visible as negative values) -> acceptance 12.5% -> 34.4%",
+        "order": "[embed|hidden] 34.4% vs [hidden|embed] 0% (QW_MTP_SWAP)",
+        "acceptance": "11/32 = 34.4%",
+        "mtp_cost_ms": 7.0,
+        "decoder_regression": "none: parity 6/6, forward2 bit-exact, k=2 49.17 ms = 40.7 tok/s"
+      },
+      "next": "raise MTP acceptance (hidden input pre- vs post-final-norm, whether the head should read the decoder's cache, per-norm shift audit) and cut its ~7 ms/token cost; then wire draft/verify with per-row state snapshots and TILE=3/4"
     }
   ]
 }

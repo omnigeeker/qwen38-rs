@@ -112,6 +112,92 @@ struct Scratch {
     scores: GpuBuffer,
 }
 
+/// The multi-token-prediction head: one `fc` that fuses the embedding of the
+/// next token with the decoder's hidden state, one full-attention decoder layer
+/// and its own KV cache.
+///
+/// The draft is only a proposal - the decoder verifies it - so a mistake here
+/// costs acceptance rate, never correctness.
+struct Mtp {
+    fc: QLinear<'static>,
+    q: QLinear<'static>,
+    k: QLinear<'static>,
+    v: QLinear<'static>,
+    o: QLinear<'static>,
+    gate: QLinear<'static>,
+    up: QLinear<'static>,
+    down: QLinear<'static>,
+    pre_norm_e: GpuBuffer,
+    pre_norm_h: GpuBuffer,
+    input_norm: GpuBuffer,
+    post_norm: GpuBuffer,
+    norm: GpuBuffer,
+    q_norm: GpuBuffer,
+    k_norm: GpuBuffer,
+    k_cache: GpuBuffer,
+    v_cache: GpuBuffer,
+    /// MTP residual stream, `[hidden]`
+    hid: GpuBuffer,
+    /// `[2 * hidden]` input of `fc`
+    cat: GpuBuffer,
+}
+
+impl Mtp {
+    /// Load the locally quantised head written by `tools/mtp_quantize.py`.
+    ///
+    /// The norms in that file are already shifted by the reference's `+1`
+    /// (the bf16 release stores them unshifted), so no shift is applied here.
+    fn load(
+        dev: &GpuDevice,
+        store: &'static WeightStore,
+        cfg: &crate::config::TextConfig,
+        max_t: usize,
+    ) -> Result<Self> {
+        let h = cfg.hidden_size;
+        let nkv = cfg.num_key_value_heads;
+        let hd = cfg.head_dim;
+        let l = WeightLayout::default();
+        let layer = l.mtp_layer(0);
+        let attn = |p: &str| format!("{layer}.self_attn.{p}.weight");
+        Ok(Self {
+            fc: QLinear::from_store(store, &l.mtp_fc())?,
+            q: QLinear::from_store(store, &attn("q_proj"))?,
+            k: QLinear::from_store(store, &attn("k_proj"))?,
+            v: QLinear::from_store(store, &attn("v_proj"))?,
+            o: QLinear::from_store(store, &attn("o_proj"))?,
+            gate: QLinear::from_store(store, &format!("{layer}.mlp.gate_proj.weight"))?,
+            up: QLinear::from_store(store, &format!("{layer}.mlp.up_proj.weight"))?,
+            down: QLinear::from_store(store, &format!("{layer}.mlp.down_proj.weight"))?,
+            pre_norm_e: norm_buf(dev, store, &l.mtp_pre_norm_embedding(), 0.0)?,
+            pre_norm_h: norm_buf(dev, store, &l.mtp_pre_norm_hidden(), 0.0)?,
+            input_norm: norm_buf(dev, store, &format!("{layer}.input_layernorm.weight"), 0.0)?,
+            post_norm: norm_buf(
+                dev,
+                store,
+                &format!("{layer}.post_attention_layernorm.weight"),
+                0.0,
+            )?,
+            norm: norm_buf(dev, store, &l.mtp_norm(), 0.0)?,
+            q_norm: norm_buf(dev, store, &attn("q_norm"), 0.0)?,
+            k_norm: norm_buf(dev, store, &attn("k_norm"), 0.0)?,
+            k_cache: dev.buffer(nkv * max_t * hd * 2),
+            v_cache: dev.buffer(nkv * max_t * hd * 2),
+            hid: dev.buffer(h * 2),
+            cat: dev.buffer(2 * h * 2),
+        })
+    }
+}
+
+/// Where the quantised MTP head lives: `$QW_MTP_DIR`, else a sibling of the
+/// model directory.  `None` means the engine runs without MTP.
+fn mtp_dir(dir: &Path) -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("QW_MTP_DIR") {
+        return Some(std::path::PathBuf::from(p));
+    }
+    let cand = dir.join("..").join("Qwen3.8-27B-mtp-4bit");
+    cand.is_dir().then_some(cand)
+}
+
 pub struct Qwen38 {
     pub cfg: crate::config::TextConfig,
     pub max_t: usize,
@@ -126,6 +212,8 @@ pub struct Qwen38 {
     lm_head: QLinear<'static>,
     final_norm: GpuBuffer,
     layout: WeightLayout,
+    /// Draft head for speculative decoding, when its weights are present.
+    mtp: Option<Mtp>,
     last_dispatches: usize,
     /// `[layer][hidden]` copies of the residual stream (dumped on demand)
     debug: Option<GpuBuffer>,
@@ -291,6 +379,18 @@ impl Qwen38 {
 
         zero(&scratch.x);
 
+        let mtp = match mtp_dir(dir) {
+            Some(mdir) => {
+                let st: &'static WeightStore = Box::leak(Box::new(
+                    WeightStore::load_dir(&dev, &mdir)
+                        .with_context(|| format!("load mtp weights from {}", mdir.display()))?,
+                ));
+                tracing::info!("mtp head loaded from {}", mdir.display());
+                Some(Mtp::load(&dev, st, &cfg, max_t)?)
+            }
+            None => None,
+        };
+
         let embed_stem = layout.embed_tokens();
         let stem = embed_stem.trim_end_matches(".weight");
         let kernels = {
@@ -331,6 +431,7 @@ impl Qwen38 {
             lm_head: QLinear::from_store(store, &layout.lm_head())?,
             final_norm,
             layout,
+            mtp,
             last_dispatches: 0,
             debug: None,
             bf16_residual: std::env::var("QW_BF16_ROUND").is_ok(),
@@ -401,6 +502,10 @@ impl Qwen38 {
             }
         }
         zero(&self.scratch.x);
+        if let Some(m) = self.mtp.as_ref() {
+            zero(&m.k_cache);
+            zero(&m.v_cache);
+        }
     }
 
     /// Dequantise one embedding row on the host (10 KB) into the input buffer.
@@ -1211,6 +1316,310 @@ impl Qwen38 {
             h = (h ^ *x as u64).wrapping_mul(1099511628211);
         }
         h
+    }
+
+    /// True when the quantised draft head is loaded.
+    pub fn has_mtp(&self) -> bool {
+        self.mtp.is_some()
+    }
+
+    /// Advance the MTP head by one token and return its draft logits.
+    ///
+    /// `next_token` is the token the decoder chose for position `pos`, and the
+    /// decoder's hidden state for the *previous* position must still be in
+    /// `scratch.x` (call this immediately after the `forward` that produced
+    /// `next_token`).  The head appends its own k/v at `pos`, so its cache stays
+    /// in step with the decoder as long as it is called once per committed
+    /// token; the returned logits draft `pos + 1`.
+    ///
+    /// With `want_logits == false` the head only advances its cache (the final
+    /// head sweep is skipped), which is what prefill wants.
+    pub fn mtp_step(&mut self, next_token: u32, pos: usize, want_logits: bool) -> Result<Vec<f32>> {
+        let e = self.embed_row(next_token)?;
+        let max_t = self.max_t as i32;
+        let vocab = self.vocab;
+        let Self {
+            cfg,
+            dev,
+            scratch,
+            kernels,
+            mtp,
+            lm_head,
+            ..
+        } = self;
+        let m = mtp.as_mut().context("MTP head not loaded")?;
+        let h = cfg.hidden_size;
+        let nh = cfg.num_attention_heads;
+        let nkv = cfg.num_key_value_heads;
+        let hd = cfg.head_dim;
+        let rot_dim = cfg.rotary_dim() as i32;
+        let eps = cfg.rms_norm_eps;
+        let scale = 1.0f32 / (hd as f32).sqrt();
+        let t = (pos + 1) as i32;
+
+        // cat = [ norm(embed) | norm(hidden) ] (or the reverse, see QW_MTP_SWAP)
+        let eb = dev.buffer_from_bytes(&e);
+        let swap = std::env::var("QW_MTP_SWAP").is_ok();
+        let (e_off, h_off) = if swap { (h, 0usize) } else { (0usize, h) };
+        let mut b = CommandBatch::new(dev);
+        copy_dispatch(&mut b, &kernels.copy, &eb, 0, &m.cat, e_off, h);
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                .buf_offset(0, &m.cat, e_off * 2)
+                .buf(1, &m.pre_norm_e)
+                .buf_offset(2, &m.cat, e_off * 2)
+                .scalar(3, h as i32)
+                .scalar(4, eps),
+        );
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.x)
+                .buf(1, &m.pre_norm_h)
+                .buf_offset(2, &m.cat, h_off * 2)
+                .scalar(3, h as i32)
+                .scalar(4, eps),
+        );
+        b.barrier();
+        m.fc.encode(&mut b, &kernels.q4_gemv, &m.cat, &m.hid);
+        b.barrier();
+        // one full-attention decoder layer on the MTP residual stream
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                .buf(0, &m.hid)
+                .buf(1, &m.input_norm)
+                .buf(2, &scratch.h)
+                .scalar(3, h as i32)
+                .scalar(4, eps),
+        );
+        b.barrier();
+        m.q.encode(&mut b, &kernels.q4_gemv, &scratch.h, &scratch.qg);
+        b.barrier();
+        m.k.encode(&mut b, &kernels.q4_gemv, &scratch.h, &scratch.pk);
+        m.v.encode(&mut b, &kernels.q4_gemv, &scratch.h, &scratch.pv);
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm_ws, (nh * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.qg)
+                .buf(1, &m.q_norm)
+                .buf(2, &scratch.q)
+                .scalar(3, hd as i32)
+                .scalar(4, (2 * hd) as i32)
+                .scalar(5, eps)
+                .scalar(6, 1.0f32)
+                .scalar(7, 1),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm_ws, (nkv * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.pk)
+                .buf(1, &m.k_norm)
+                .buf(2, &scratch.k)
+                .scalar(3, hd as i32)
+                .scalar(4, hd as i32)
+                .scalar(5, eps)
+                .scalar(6, 1.0f32)
+                .scalar(7, 1),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.rope, (nh * 64, 1, 1), (64, 1, 1))
+                .buf(0, &scratch.q)
+                .buf(1, &scratch.q)
+                .scalar(2, nh as i32)
+                .scalar(3, hd as i32)
+                .scalar(4, rot_dim)
+                .scalar(5, cfg.rope_theta() as f32)
+                .scalar(6, pos as i32),
+        );
+        b.encode(
+            Dispatch::new(&kernels.rope, (nkv * 64, 1, 1), (64, 1, 1))
+                .buf(0, &scratch.k)
+                .buf(1, &scratch.k)
+                .scalar(2, nkv as i32)
+                .scalar(3, hd as i32)
+                .scalar(4, rot_dim)
+                .scalar(5, cfg.rope_theta() as f32)
+                .scalar(6, pos as i32),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.k)
+                .buf(1, &scratch.pv)
+                .buf(2, &m.k_cache)
+                .buf(3, &m.v_cache)
+                .scalar(4, pos as i32)
+                .scalar(5, max_t)
+                .scalar(6, nkv as i32)
+                .scalar(7, hd as i32),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.q)
+                .buf(1, &m.k_cache)
+                .buf(2, &scratch.scores)
+                .scalar(3, t)
+                .scalar(4, max_t)
+                .scalar(5, nh as i32)
+                .scalar(6, nkv as i32)
+                .scalar(7, hd as i32)
+                .scalar(8, scale),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.attn_out, (nh * hd, 1, 1), (hd, 1, 1))
+                .buf(0, &scratch.scores)
+                .buf(1, &m.v_cache)
+                .buf(2, &scratch.attn_out)
+                .scalar(3, t)
+                .scalar(4, max_t)
+                .scalar(5, nh as i32)
+                .scalar(6, nkv as i32)
+                .scalar(7, hd as i32),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.gate_mul, (nh * hd, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.attn_out)
+                .buf(1, &scratch.qg)
+                .buf(2, &scratch.attn_gated)
+                .scalar(3, hd as i32),
+        );
+        b.barrier();
+        m.o.encode(
+            &mut b,
+            &kernels.q4_gemv,
+            &scratch.attn_gated,
+            &scratch.proj_out,
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
+                .buf(0, &m.hid)
+                .buf(1, &scratch.proj_out)
+                .buf(2, &m.hid),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                .buf(0, &m.hid)
+                .buf(1, &m.post_norm)
+                .buf(2, &scratch.h)
+                .scalar(3, h as i32)
+                .scalar(4, eps),
+        );
+        b.barrier();
+        m.gate
+            .encode(&mut b, &kernels.q4_gemv, &scratch.h, &scratch.mlp_gate);
+        m.up.encode(&mut b, &kernels.q4_gemv, &scratch.h, &scratch.mlp_up);
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.silu_mul, (cfg.intermediate_size, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.mlp_gate)
+                .buf(1, &scratch.mlp_up)
+                .buf(2, &scratch.mlp_act),
+        );
+        b.barrier();
+        m.down.encode(
+            &mut b,
+            &kernels.q4_gemv,
+            &scratch.mlp_act,
+            &scratch.proj_out,
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.ewise_add, (h, 1, 1), (NT, 1, 1))
+                .buf(0, &m.hid)
+                .buf(1, &scratch.proj_out)
+                .buf(2, &m.hid),
+        );
+        if want_logits {
+            b.barrier();
+            b.encode(
+                Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                    .buf(0, &m.hid)
+                    .buf(1, &m.norm)
+                    .buf(2, &scratch.h)
+                    .scalar(3, h as i32)
+                    .scalar(4, eps),
+            );
+            b.barrier();
+            lm_head.encode(&mut b, &kernels.q4_gemv, &scratch.h, &scratch.logits);
+        }
+        b.finish(true);
+        if !want_logits {
+            return Ok(Vec::new());
+        }
+        let v: Vec<f16> = scratch.logits.to_vec(0, vocab);
+        Ok(v.iter().map(|x| x.to_f32()).collect())
+    }
+
+    /// Temporary diagnostic: the first values of every MTP norm.
+    pub fn mtp_norm_stats(&self) -> Vec<(&'static str, Vec<f32>)> {
+        let m = match self.mtp.as_ref() {
+            Some(m) => m,
+            None => return Vec::new(),
+        };
+        let f = |b: &GpuBuffer| -> Vec<f32> {
+            let v: Vec<f16> = b.to_vec(0, 4);
+            v.iter().map(|x| x.to_f32()).collect()
+        };
+        vec![
+            ("pre_norm_e", f(&m.pre_norm_e)),
+            ("pre_norm_h", f(&m.pre_norm_h)),
+            ("input_norm", f(&m.input_norm)),
+            ("post_norm", f(&m.post_norm)),
+            ("norm", f(&m.norm)),
+            ("q_norm", f(&m.q_norm)),
+            ("k_norm", f(&m.k_norm)),
+        ]
+    }
+
+    /// Diagnostic: `(name, min, max, non-finite count)` for the MTP state and
+    /// the decoder logits after a step.  Returned as one structured value so a
+    /// print cannot mis-align it against its format string.
+    pub fn mtp_dump(&self) -> Vec<(&'static str, f32, f32, usize)> {
+        let m = match self.mtp.as_ref() {
+            Some(m) => m,
+            None => return Vec::new(),
+        };
+        let h = self.cfg.hidden_size;
+        let stat = |name: &'static str, v: Vec<f32>| {
+            let bad = v.iter().filter(|x| !x.is_finite()).count();
+            let mn = v
+                .iter()
+                .copied()
+                .filter(|x| x.is_finite())
+                .fold(f32::MAX, f32::min);
+            let mx = v
+                .iter()
+                .copied()
+                .filter(|x| x.is_finite())
+                .fold(f32::MIN, f32::max);
+            (name, mn, mx, bad)
+        };
+        let take = |b: &GpuBuffer, n: usize| -> Vec<f32> {
+            b.to_vec::<f16>(0, n).iter().map(|x| x.to_f32()).collect()
+        };
+        vec![
+            stat("cat", take(&m.cat, 2 * h)),
+            stat("hid", take(&m.hid, h)),
+            stat("normed", take(&self.scratch.h, h)),
+            stat("logits", take(&self.scratch.logits, self.vocab)),
+        ]
+    }
+
+    /// Index of the largest logit (host side).
+    pub fn argmax_of(v: &[f32]) -> u32 {
+        let mut best = 0usize;
+        for (i, x) in v.iter().enumerate() {
+            if *x > v[best] {
+                best = i;
+            }
+        }
+        best as u32
     }
 
     /// Logits of one row of the last two-token forward, copied to the host.
