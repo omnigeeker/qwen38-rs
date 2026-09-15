@@ -2,11 +2,11 @@
 //! toolchain, and the 4-bit affine GEMV must match a CPU reference.
 
 use half::f16;
-use qw_metal::{msl, Dispatch, GpuBuffer, GpuDevice};
+use qw_metal::{msl, Dispatch, GpuDevice};
 
 /// MLX-style packing: 8 unsigned 4-bit values per u32, little-endian nibble order.
 fn pack_q4(values: &[u8]) -> Vec<u32> {
-    assert!(values.len() % 8 == 0);
+    assert!(values.len().is_multiple_of(8));
     values
         .chunks(8)
         .map(|c| {

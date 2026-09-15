@@ -2,9 +2,7 @@
 //! and Anthropic (`/v1/messages`).
 
 use crate::anthropic::{ErrorEnvelope, MessagesRequest};
-use crate::openai::{
-    ApiError, ChatCompletionRequest, CompletionRequest, ModelCard, ModelList,
-};
+use crate::openai::{ApiError, ChatCompletionRequest, CompletionRequest, ModelCard, ModelList};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -51,7 +49,11 @@ fn now_secs() -> u64 {
 fn not_ready_openai(msg: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(ApiError::new(msg, "engine_unavailable", "engine_not_loaded")),
+        Json(ApiError::new(
+            msg,
+            "engine_unavailable",
+            "engine_not_loaded",
+        )),
     )
         .into_response()
 }
@@ -116,10 +118,7 @@ async fn completions(
     not_ready_openai("generation backend not wired yet")
 }
 
-async fn messages(
-    State(st): State<Arc<AppState>>,
-    Json(req): Json<MessagesRequest>,
-) -> Response {
+async fn messages(State(st): State<Arc<AppState>>, Json(req): Json<MessagesRequest>) -> Response {
     if !st.ready {
         return not_ready_anthropic("engine is still loading the 4-bit weights");
     }

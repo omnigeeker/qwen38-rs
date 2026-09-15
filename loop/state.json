@@ -22,20 +22,40 @@
   },
   "gates": {
     "G1_build": "pass",
-    "G2_correctness": "partial",
-    "G3_performance": "not_started",
-    "G4_publish": "pending"
+    "G2_correctness": "pass_kernel_level",
+    "G3_performance": "baseline_measured",
+    "G4_publish": "pass"
   },
   "metrics": {
     "best_tok_s_single_stream": 0.0,
     "target_tok_s_single_stream": 40.0,
     "theoretical_ceiling_tok_s_no_mtp": 33.0,
-    "mtp_required": true
+    "mtp_required": true,
+    "linear_sweep_upper_bound_tok_s": 33.5,
+    "linear_sweep_effective_gbps": 482,
+    "device_peak_read_gbps": 519,
+    "kernel_efficiency_vs_peak_pct": 93,
+    "mlx_lm_reference_tok_s": 30.0
   },
   "next_actions": [
-    "M1: implement single-token forward (rmsnorm/mlp/gqa/gated-delta-net) and match mlx-lm hidden states",
-    "add tools/oracle.py dump-hidden and layer-by-layer parity harness",
-    "fetch MTP tensors (mtp.*) from bf16 release via ModelScope and quantize locally"
+    "M1: implement kernels silu_mul, rope, attn_decode (GQA+KV cache), gdn_step (conv1d+fp32 state)",
+    "M1: single-token forward for all 64 layers, hidden-state parity vs oracle.py --dump-hidden",
+    "M1: quantise and load the bf16 mtp.* shard (download already staged in models/Qwen3.8-27B-bf16-mtp)",
+    "M2: prefill path (q4_gemm_t) + greedy parity on the 6-prompt suite"
   ],
-  "history": []
+  "history": [
+    {
+      "round": 1,
+      "title": "M0 scaffold + Metal JIT + aligned weight store + real-weight GEMV validation",
+      "tok_s": 33.5,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_kernel_level",
+        "G3": "baseline",
+        "G4": "pass"
+      },
+      "note": "linear-path upper bound 33.5 tok/s at 482 GB/s (93% of peak); MTP required for >=40 tok/s e2e"
+    }
+  ]
 }

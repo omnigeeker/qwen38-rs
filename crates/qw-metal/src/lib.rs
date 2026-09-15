@@ -18,6 +18,6 @@ pub mod device;
 pub mod kernel;
 pub mod msl;
 
-pub use buffer::{GpuBuffer, DType};
+pub use buffer::{DType, GpuBuffer};
 pub use device::GpuDevice;
-pub use kernel::{Dispatch, Kernel};
+pub use kernel::{CommandBatch, Dispatch, Kernel};

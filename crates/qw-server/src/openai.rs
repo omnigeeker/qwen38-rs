@@ -180,10 +180,9 @@ mod tests {
 
     #[test]
     fn parses_text_and_parts_content() {
-        let a: ChatCompletionRequest = serde_json::from_str(
-            r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
-        )
-        .unwrap();
+        let a: ChatCompletionRequest =
+            serde_json::from_str(r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#)
+                .unwrap();
         assert_eq!(a.messages[0].content.as_ref().unwrap().as_text(), "hi");
 
         let b: ChatCompletionRequest = serde_json::from_str(

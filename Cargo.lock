@@ -922,6 +922,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "half",
  "qw-engine",
  "qw-metal",
  "qw-model",

@@ -15,7 +15,9 @@
 //!   * `beta = sigmoid(b)`, `g = exp(-exp(A_log) * softplus(a + dt_bias))`.
 
 pub mod config;
+pub mod linear;
 pub mod naming;
 
 pub use config::{ModelConfig, TextConfig};
+pub use linear::QLinear;
 pub use naming::WeightLayout;

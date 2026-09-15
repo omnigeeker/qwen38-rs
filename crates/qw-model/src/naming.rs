@@ -141,10 +141,7 @@ mod tests {
     #[test]
     fn names_match_checkpoint_layout() {
         let l = WeightLayout::default();
-        assert_eq!(
-            l.embed_tokens(),
-            "language_model.model.embed_tokens.weight"
-        );
+        assert_eq!(l.embed_tokens(), "language_model.model.embed_tokens.weight");
         assert_eq!(l.lm_head(), "language_model.lm_head.weight");
         assert_eq!(l.final_norm(), "language_model.model.norm.weight");
         assert_eq!(

@@ -68,7 +68,9 @@ impl Default for Sampler {
 
 impl Sampler {
     pub fn new(seed: u64) -> Self {
-        Self { rng: Rng::new(seed) }
+        Self {
+            rng: Rng::new(seed),
+        }
     }
 
     /// Sample one token id from `logits`.

@@ -43,13 +43,28 @@ impl TensorInfo {
     }
 }
 
+/// Alignment the kernels rely on: `half4`/`uint4` loads want 16 bytes, and we
+/// keep 256 bytes of headroom so a future swizzled layout stays valid.
+pub const TENSOR_ALIGN: usize = 256;
+
 /// One memory-mapped safetensors shard plus its header index.
+///
+/// Two load paths exist:
+///   * **alias** (`zero_copy = true`): the mapping itself becomes the Metal
+///     buffer.  Only used when every tensor lands 16-byte aligned, which is
+///     rare because the safetensors header shifts `data_start` by an arbitrary
+///     amount.
+///   * **materialise**: one aligned GPU buffer per shard with every tensor
+///     copied in at a `TENSOR_ALIGN` boundary.  Costs one 15 GB memcpy
+///     (~0.3 s) and gives the kernels fully aligned, contiguous operands.
 pub struct Shard {
     pub path: String,
     pub mmap: Option<Mmap>,
     pub gpu: GpuBuffer,
     pub header_len: usize,
     pub tensors: FxHashMap<String, TensorInfo>,
+    /// byte offset of every tensor inside `gpu`
+    pub offsets: FxHashMap<String, usize>,
     /// true when the GPU buffer aliases the mmap (no copy)
     pub zero_copy: bool,
 }
@@ -83,7 +98,7 @@ impl Shard {
         }
 
         let data_start = 8 + header_len;
-        let (gpu, zero_copy) = upload_mapping(dev, &mmap, data_start);
+        let (gpu, offsets, zero_copy) = materialise(dev, &mmap, data_start, &header);
 
         Ok(Self {
             path: path.to_string(),
@@ -91,22 +106,17 @@ impl Shard {
             gpu,
             header_len,
             tensors: header,
+            offsets,
             zero_copy,
         })
     }
 
-    /// Byte offset of a tensor inside the GPU buffer.
-    ///
-    /// In the zero-copy path the buffer aliases the whole file, so the header
-    /// bytes are part of the offset; in the fallback path the payload is
-    /// uploaded on its own and offsets are payload-relative.
+    /// Byte offset of a tensor inside this shard's GPU buffer.
     pub fn offset_of(&self, name: &str) -> Result<usize> {
-        let info = self
-            .tensors
+        self.offsets
             .get(name)
-            .ok_or_else(|| anyhow!("tensor {name} not in {}", self.path))?;
-        let base = if self.zero_copy { 8 + self.header_len } else { 0 };
-        Ok(base + info.data_offsets.0)
+            .copied()
+            .ok_or_else(|| anyhow!("tensor {name} not in {}", self.path))
     }
 
     pub fn info(&self, name: &str) -> Option<&TensorInfo> {
@@ -114,26 +124,60 @@ impl Shard {
     }
 }
 
-/// Wrap the mmap in a `bytesNoCopy` Metal buffer when the driver allows it,
-/// otherwise copy the payload into a fresh buffer.
+/// Bring one shard into GPU memory.
 ///
-/// The buffer always aliases the *mapping base*, so tensor offsets include the
-/// safetensors header (`8 + header_len`).
-fn upload_mapping(dev: &GpuDevice, mmap: &Mmap, data_start: usize) -> (GpuBuffer, bool) {
-    let base = mmap.as_ptr() as usize;
-    let page = 16 * 1024usize;
-    let aligned_len = mmap.len().div_ceil(page) * page;
-    if base % page == 0 {
-        if let Some(buf) = dev.buffer_no_copy(base as *const std::ffi::c_void, aligned_len) {
-            return (buf, true);
+/// Preferred: alias the mapping (zero copy) — but only if every tensor address
+/// is 16-byte aligned, which the safetensors header length rarely permits.
+/// Otherwise: allocate one buffer and copy every tensor to an aligned offset.
+fn materialise(
+    dev: &GpuDevice,
+    mmap: &Mmap,
+    data_start: usize,
+    header: &FxHashMap<String, TensorInfo>,
+) -> (GpuBuffer, FxHashMap<String, usize>, bool) {
+    let all_aligned = header
+        .values()
+        .all(|i| (data_start + i.data_offsets.0).is_multiple_of(16));
+
+    if all_aligned {
+        let base = mmap.as_ptr() as usize;
+        let page = 16 * 1024usize;
+        let aligned_len = mmap.len().div_ceil(page) * page;
+        if base.is_multiple_of(page) {
+            if let Some(buf) = dev.buffer_no_copy(base as *const std::ffi::c_void, aligned_len) {
+                let offsets = header
+                    .iter()
+                    .map(|(k, v)| (k.clone(), data_start + v.data_offsets.0))
+                    .collect();
+                return (buf, offsets, true);
+            }
         }
     }
-    // Fallback: zero-copy rejected -> keep the payload in a plain buffer and
-    // shift offsets by `data_start` so handles stay valid either way.
-    let len = mmap.len() - data_start;
-    let buf = dev.buffer(len);
-    buf.copy_from(&mmap[data_start..]);
-    (buf, false)
+
+    // Materialise: deterministic aligned layout, no aliasing surprises.
+    let mut offsets: FxHashMap<String, usize> = FxHashMap::default();
+    let mut cursor = 0usize;
+    let mut names: Vec<&String> = header.keys().collect();
+    names.sort();
+    for name in names {
+        let info = &header[name];
+        cursor = cursor.div_ceil(TENSOR_ALIGN) * TENSOR_ALIGN;
+        offsets.insert(name.clone(), cursor);
+        cursor += info.nbytes();
+    }
+    let buf = dev.buffer(cursor);
+    for (name, off) in &offsets {
+        let info = &header[name];
+        let src = &mmap[data_start + info.data_offsets.0..data_start + info.data_offsets.1];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src.as_ptr(),
+                (buf.as_metal().contents() as *mut u8).add(*off),
+                src.len(),
+            );
+        }
+    }
+    (buf, offsets, false)
 }
 
 /// The whole model: all shards + a flat name -> TensorHandle map.
@@ -255,7 +299,9 @@ impl<'a> TensorHandle<'a> {
     /// BF16 tensor as f32 values (for MTP weights stored in bf16).
     pub fn as_bf16_f32(&self) -> Vec<f32> {
         self.bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| {
                 let bits = u16::from_le_bytes([c[0], c[1]]) as u32;
                 f32::from_bits(bits << 16)

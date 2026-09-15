@@ -90,7 +90,7 @@ impl TextConfig {
         if !self.layer_types.is_empty() && layer_idx < self.layer_types.len() {
             return self.layer_types[layer_idx] == "linear_attention";
         }
-        (layer_idx + 1) % self.full_attention_interval != 0
+        !(layer_idx + 1).is_multiple_of(self.full_attention_interval)
     }
 
     pub fn num_linear_layers(&self) -> usize {

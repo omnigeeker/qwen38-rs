@@ -66,21 +66,23 @@ if [[ "$G1" == "pass" ]]; then
   fi
 fi
 
-TOK_S=$(python3 - "$BENCH_JSON" <<'PY' 2>/dev/null || echo 0
+# Only end-to-end measurements may move best_tok_s_single_stream; the linear
+# sweep number is tracked separately as an upper bound.
+read -r TOK_S E2E <<<"$(python3 - "$BENCH_JSON" <<'PY' 2>/dev/null || echo "0.0 false"
 import json,sys
 try:
-    print(json.loads(sys.argv[1]).get("tok_per_s", 0.0))
+    d=json.loads(sys.argv[1]); print(d.get("tok_per_s",0.0), d.get("end_to_end",False))
 except Exception:
-    print(0.0)
+    print(0.0, False)
 PY
-)
+)"
 
 cat > "$LOG" <<EOF
 # Round $ROUND_PAD — $TITLE
 
 - date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 - gates: G1=$G1 G2=$G2 G3=$G3
-- tok/s: $TOK_S
+- tok/s: $TOK_S (end_to_end=$E2E)
 
 ## Evidence
 
@@ -94,18 +96,21 @@ $( [[ "$G1" == "pass" && ( "$G2" == "pass" || "$G2" == "oracle-ready" ) ]] && ec
 EOF
 
 echo "--- recording state ---"
-python3 - "$ROUND" "$TOK_S" "$G1" "$G2" "$G3" "$TITLE" <<'PY'
+python3 - "$ROUND" "$TOK_S" "$E2E" "$G1" "$G2" "$G3" "$TITLE" <<'PY'
 import json, sys, datetime
-round_no, tok_s, g1, g2, g3, title = sys.argv[1:7]
+round_no, tok_s, e2e, g1, g2, g3, title = sys.argv[1:8]
+e2e = str(e2e).strip().lower() in ("true", "1")
 p='loop/state.json'
 st=json.load(open(p))
 best=st['metrics'].get('best_tok_s_single_stream',0.0)
 tok=float(tok_s)
-if tok > best:
+if e2e and tok > best:
     st['metrics']['best_tok_s_single_stream']=tok
+if not e2e and tok > 0:
+    st['metrics']['linear_sweep_upper_bound_tok_s']=tok
 st['gates'].update({'G1_build':g1,'G2_correctness':g2,'G3_performance':g3})
 st.setdefault('history',[]).append({
-  'round': int(round_no), 'title': title, 'tok_s': tok,
+  'round': int(round_no), 'title': title, 'tok_s': tok, 'end_to_end': e2e,
   'gates': {'G1':g1,'G2':g2,'G3':g3},
   'at': datetime.datetime.utcnow().isoformat()+'Z'})
 st['round']=int(round_no)+1
@@ -120,4 +125,4 @@ if [[ "${SKIP_PUSH:-0}" != "1" ]]; then
   git push || echo "push failed (check gh auth / remote)"
 fi
 
-echo "=== round $ROUND_PAD done: G1=$G1 G2=$G2 G3=$G3 tok/s=$TOK_S ==="
+echo "=== round $ROUND_PAD done: G1=$G1 G2=$G2 G3=$G3 tok/s=$TOK_S (end_to_end=$E2E) ==="

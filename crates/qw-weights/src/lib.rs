@@ -31,7 +31,12 @@ impl QuantSpec {
 }
 
 /// Dequantise one row of affine 4-bit weights on the CPU (test oracle).
-pub fn dequantize_row(q: &[u8], scales: &[half::f16], biases: &[half::f16], spec: QuantSpec) -> Vec<f32> {
+pub fn dequantize_row(
+    q: &[u8],
+    scales: &[half::f16],
+    biases: &[half::f16],
+    spec: QuantSpec,
+) -> Vec<f32> {
     let mut out = Vec::with_capacity(q.len());
     for (i, v) in q.iter().enumerate() {
         let g = i / spec.group_size;

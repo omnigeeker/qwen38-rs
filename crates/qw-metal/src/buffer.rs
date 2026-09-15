@@ -46,16 +46,15 @@ impl GpuBuffer {
         std::slice::from_raw_parts(self.buf.contents() as *const T, n)
     }
 
-    pub unsafe fn as_mut_slice<T: Copy>(&self) -> &mut [T] {
-        let n = self.len / std::mem::size_of::<T>();
-        std::slice::from_raw_parts_mut(self.buf.contents() as *mut T, n)
-    }
-
     /// Copy `src` into this buffer at byte offset 0.
     pub fn copy_from<T: Copy>(&self, src: &[T]) {
         let n = std::mem::size_of_val(src).min(self.len);
         unsafe {
-            std::ptr::copy_nonoverlapping(src.as_ptr() as *const u8, self.buf.contents() as *mut u8, n);
+            std::ptr::copy_nonoverlapping(
+                src.as_ptr() as *const u8,
+                self.buf.contents() as *mut u8,
+                n,
+            );
         }
     }
 

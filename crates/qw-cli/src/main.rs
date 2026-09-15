@@ -1,5 +1,8 @@
 //! `qwen38` — command line entry point.
 
+mod bench;
+mod check;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use qw_model::{ModelConfig, WeightLayout};
@@ -36,8 +39,24 @@ enum Cmd {
     Bench {
         #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
         model_dir: PathBuf,
-        #[arg(long, default_value_t = 128)]
-        tokens: usize,
+        #[arg(long, default_value_t = 3)]
+        iters: usize,
+    },
+    /// Validate the 4-bit GEMV kernel against a CPU reference on real weights.
+    Check {
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
+        #[arg(long)]
+        tensor: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        samples: usize,
+    },
+    /// End-to-end parity gate against the mlx-lm oracle.
+    Verify {
+        #[arg(long, default_value = "loop/artifacts/oracle.json")]
+        oracle: PathBuf,
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
     },
     /// One-shot generation.
     Gen {
@@ -67,7 +86,13 @@ fn main() -> Result<()> {
             port,
             model_id,
         } => cmd_serve(model_dir, port, model_id),
-        Cmd::Bench { model_dir, tokens } => cmd_bench(model_dir, tokens),
+        Cmd::Bench { model_dir, iters } => bench::run(&model_dir, iters),
+        Cmd::Check {
+            model_dir,
+            tensor,
+            samples,
+        } => check::run(&model_dir, tensor.as_deref(), samples),
+        Cmd::Verify { oracle, model_dir } => cmd_verify(oracle, model_dir),
         Cmd::Gen {
             model_dir,
             prompt,
@@ -82,23 +107,49 @@ fn cmd_info(model_dir: &std::path::Path) -> Result<()> {
     let t = &cfg.text_config;
     println!("== Qwen3.8-27B ==");
     println!("model_type         : {:?}", cfg.model_type);
-    println!("hidden / inter     : {} / {}", t.hidden_size, t.intermediate_size);
-    println!("layers             : {} ({} linear + {} full)",
-        t.num_hidden_layers, t.num_linear_layers(), t.num_full_layers());
-    println!("heads (q/kv, dim)  : {}/{}, head_dim={}", t.num_attention_heads, t.num_key_value_heads, t.head_dim);
-    println!("linear attn        : {} v-heads x {}, {} k-heads x {}, conv={}",
-        t.linear_num_value_heads, t.linear_value_head_dim,
-        t.linear_num_key_heads, t.linear_key_head_dim, t.linear_conv_kernel_dim);
-    println!("vocab / ctx        : {} / {}", t.vocab_size, t.max_position_embeddings);
-    println!("rope               : theta={} partial={} rotary_dim={}",
-        t.rope_theta(), t.partial_rotary_factor(), t.rotary_dim());
+    println!(
+        "hidden / inter     : {} / {}",
+        t.hidden_size, t.intermediate_size
+    );
+    println!(
+        "layers             : {} ({} linear + {} full)",
+        t.num_hidden_layers,
+        t.num_linear_layers(),
+        t.num_full_layers()
+    );
+    println!(
+        "heads (q/kv, dim)  : {}/{}, head_dim={}",
+        t.num_attention_heads, t.num_key_value_heads, t.head_dim
+    );
+    println!(
+        "linear attn        : {} v-heads x {}, {} k-heads x {}, conv={}",
+        t.linear_num_value_heads,
+        t.linear_value_head_dim,
+        t.linear_num_key_heads,
+        t.linear_key_head_dim,
+        t.linear_conv_kernel_dim
+    );
+    println!(
+        "vocab / ctx        : {} / {}",
+        t.vocab_size, t.max_position_embeddings
+    );
+    println!(
+        "rope               : theta={} partial={} rotary_dim={}",
+        t.rope_theta(),
+        t.partial_rotary_factor(),
+        t.rotary_dim()
+    );
     println!("MTP layers         : {}", t.mtp_num_hidden_layers);
 
     let dev = qw_metal::GpuDevice::new()?;
     let store = qw_weights::WeightStore::load_dir(&dev, model_dir)?;
     let zero_copy = store.shards.iter().filter(|s| s.zero_copy).count();
     println!("\n== weights ==");
-    println!("shards             : {} ({} zero-copy mmap aliased)", store.shards.len(), zero_copy);
+    println!(
+        "shards             : {} ({} zero-copy mmap aliased)",
+        store.shards.len(),
+        zero_copy
+    );
     println!("tensors            : {}", store.index.len());
 
     let layout = WeightLayout::default();
@@ -155,8 +206,11 @@ fn cmd_serve(model_dir: PathBuf, port: u16, model_id: String) -> Result<()> {
     })
 }
 
-fn cmd_bench(_model_dir: PathBuf, _tokens: usize) -> Result<()> {
-    anyhow::bail!("bench: kernel work lands in milestone M1/M3 (see loop/LOOP.md)")
+fn cmd_verify(_oracle: PathBuf, _model_dir: PathBuf) -> Result<()> {
+    // M0/M1 scope: there is no forward pass yet, so the honest gate is the
+    // real-weight kernel check plus config/coverage validation.
+    println!("verify: no forward pass yet (milestone M1) — running real-weight kernel check");
+    check::run(&PathBuf::from("models/Qwen3.8-27B-4bit"), None, 8)
 }
 
 fn cmd_gen(_model_dir: PathBuf, _prompt: String, _max_tokens: usize, _greedy: bool) -> Result<()> {

@@ -31,7 +31,7 @@ impl Kernel {
 /// Parameters for a single dispatch.
 pub struct Dispatch<'a> {
     pub kernel: &'a Kernel,
-    pub buffers: Vec<(usize, &'a GpuBuffer)>,
+    pub buffers: Vec<(usize, &'a GpuBuffer, usize)>,
     pub constants: Vec<(usize, Vec<u8>)>,
     pub grid: MTLSize,
     pub threadgroup: MTLSize,
@@ -57,7 +57,14 @@ impl<'a> Dispatch<'a> {
     }
 
     pub fn buf(mut self, index: usize, b: &'a GpuBuffer) -> Self {
-        self.buffers.push((index, b));
+        self.buffers.push((index, b, 0));
+        self
+    }
+
+    /// Bind a buffer at a byte offset (used by the zero-copy weight store, where
+    /// every tensor lives inside a shard-sized buffer).
+    pub fn buf_offset(mut self, index: usize, b: &'a GpuBuffer, offset: usize) -> Self {
+        self.buffers.push((index, b, offset));
         self
     }
 
@@ -109,8 +116,8 @@ impl<'d> CommandBatch<'d> {
     pub fn encode(&mut self, d: Dispatch<'_>) -> &mut Self {
         let enc = self.encoder();
         enc.set_compute_pipeline_state(&d.kernel.pipeline);
-        for (i, b) in &d.buffers {
-            enc.set_buffer(*i as u64, Some(b.as_metal()), 0);
+        for (i, b, off) in &d.buffers {
+            enc.set_buffer(*i as u64, Some(b.as_metal()), *off as u64);
         }
         for (i, bytes) in &d.constants {
             enc.set_bytes(*i as u64, bytes.len() as u64, bytes.as_ptr() as *const _);
