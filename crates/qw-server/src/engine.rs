@@ -21,12 +21,19 @@ pub enum Prompt {
     Chat(Vec<Message>),
 }
 
+/// What the engine thread sends back: the prompt length first (so usage can
+/// report it), then one event per generated piece.
+pub enum EngineEvent {
+    Prompt(usize),
+    Piece(String),
+}
+
 pub struct Job {
     pub prompt: Prompt,
     pub max_tokens: usize,
     /// Rows for the key/value and delta-net state.  `max_t` must cover the
     /// prompt plus the completion.
-    pub pieces: UnboundedSender<Result<String, String>>,
+    pub pieces: UnboundedSender<Result<EngineEvent, String>>,
 }
 
 /// Handle to the engine thread.  Cheap to clone.
@@ -80,7 +87,7 @@ impl Engine {
         &self,
         prompt: Prompt,
         max_tokens: usize,
-    ) -> UnboundedReceiver<Result<String, String>> {
+    ) -> UnboundedReceiver<Result<EngineEvent, String>> {
         let (pieces, rx) = unbounded_channel();
         let _ = self.tx.send(Job {
             prompt,
@@ -99,10 +106,11 @@ fn run_job(
     tok: &Tokenizer,
     text: &str,
     max_tokens: usize,
-    pieces: &UnboundedSender<Result<String, String>>,
+    pieces: &UnboundedSender<Result<EngineEvent, String>>,
 ) -> Result<()> {
     model.reset();
     let ids = tok.encode(text, false)?;
+    let _ = pieces.send(Ok(EngineEvent::Prompt(ids.len())));
     for (p, id) in ids.iter().enumerate() {
         model.set_token(*id)?;
         model.forward(p)?;
@@ -126,7 +134,10 @@ fn run_job(
             let cut = piece.trim_end_matches('\u{FFFD}').len();
             if cut > 0 {
                 sent_len += cut;
-                if pieces.send(Ok(piece[..cut].to_string())).is_err() {
+                if pieces
+                    .send(Ok(EngineEvent::Piece(piece[..cut].to_string())))
+                    .is_err()
+                {
                     break;
                 }
             }

@@ -2,7 +2,7 @@
 //! and Anthropic (`/v1/messages`), both served by the same local engine.
 
 use crate::anthropic::{ErrorEnvelope, MessagesRequest};
-use crate::engine::{Engine, Prompt};
+use crate::engine::{Engine, EngineEvent, Prompt};
 use crate::openai::{
     ApiError, ChatCompletionRequest, CompletionRequest, Content, ModelCard, ModelList,
 };
@@ -146,6 +146,29 @@ fn to_messages(msgs: &[crate::openai::ChatMessage]) -> Vec<Message> {
         .collect()
 }
 
+/// The engine reports the prompt length first (for `usage`); the SSE encoders
+/// only care about text, so this adapter drops the metadata event.
+fn text_only(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Result<EngineEvent, String>>,
+) -> tokio::sync::mpsc::UnboundedReceiver<Result<String, String>> {
+    let (tx, out) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(item) = rx.recv().await {
+            let keep = match item {
+                Ok(EngineEvent::Prompt(_)) => None,
+                Ok(EngineEvent::Piece(p)) => Some(Ok(p)),
+                Err(e) => Some(Err(e)),
+            };
+            if let Some(v) = keep {
+                if tx.send(v).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    out
+}
+
 /// `data: ...` chunks in OpenAI's wire format, terminated by `data: [DONE]`.
 fn openai_sse(
     rx: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
@@ -264,20 +287,22 @@ fn anthropic_sse(
 }
 
 async fn collect(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
-) -> Result<(String, usize), String> {
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Result<EngineEvent, String>>,
+) -> Result<(usize, String, usize), String> {
+    let mut prompt = 0usize;
     let mut text = String::new();
     let mut n = 0usize;
     while let Some(item) = rx.recv().await {
         match item {
-            Ok(piece) => {
+            Ok(EngineEvent::Prompt(p)) => prompt = p,
+            Ok(EngineEvent::Piece(piece)) => {
                 text.push_str(&piece);
                 n += 1;
             }
             Err(e) => return Err(e),
         }
     }
-    Ok((text, n))
+    Ok((prompt, text, n))
 }
 
 async fn chat_completions(
@@ -293,9 +318,9 @@ async fn chat_completions(
     let created = now_secs();
     let rx = engine.submit(Prompt::Chat(messages), max_tokens);
     if req.stream.unwrap_or(false) {
-        return openai_sse(rx, id, st.model_id.clone(), created);
+        return openai_sse(text_only(rx), id, st.model_id.clone(), created);
     }
-    let (text, n) = match collect(rx).await {
+    let (prompt, text, n) = match collect(rx).await {
         Ok(v) => v,
         Err(e) => return error_openai(&e, "generation_failed"),
     };
@@ -309,7 +334,7 @@ async fn chat_completions(
             "message": {"role": "assistant", "content": text},
             "finish_reason": "stop",
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": n, "total_tokens": n},
+        "usage": {"prompt_tokens": prompt, "completion_tokens": n, "total_tokens": prompt + n},
     }))
     .into_response()
 }
@@ -326,9 +351,9 @@ async fn completions(
     let created = now_secs();
     let rx = engine.submit(Prompt::Text(req.prompt), max_tokens);
     if req.stream.unwrap_or(false) {
-        return openai_sse(rx, id, st.model_id.clone(), created);
+        return openai_sse(text_only(rx), id, st.model_id.clone(), created);
     }
-    let (text, n) = match collect(rx).await {
+    let (prompt, text, n) = match collect(rx).await {
         Ok(v) => v,
         Err(e) => return error_openai(&e, "generation_failed"),
     };
@@ -338,7 +363,7 @@ async fn completions(
         "created": created,
         "model": st.model_id,
         "choices": [{"index": 0, "text": text, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": n, "total_tokens": n},
+        "usage": {"prompt_tokens": prompt, "completion_tokens": n, "total_tokens": prompt + n},
     }))
     .into_response()
 }
@@ -352,9 +377,9 @@ async fn messages(State(st): State<Arc<AppState>>, Json(req): Json<MessagesReque
     let id = format!("msg_{}", now_secs());
     let rx = engine.submit(Prompt::Chat(messages), max_tokens);
     if req.stream.unwrap_or(false) {
-        return anthropic_sse(rx, id, st.model_id.clone(), 0);
+        return anthropic_sse(text_only(rx), id, st.model_id.clone(), 0);
     }
-    let (text, n) = match collect(rx).await {
+    let (prompt, text, n) = match collect(rx).await {
         Ok(v) => v,
         Err(e) => return error_anthropic(&e),
     };
@@ -366,7 +391,7 @@ async fn messages(State(st): State<Arc<AppState>>, Json(req): Json<MessagesReque
         "content": [{"type": "text", "text": text}],
         "stop_reason": "end_turn",
         "stop_sequence": null,
-        "usage": {"input_tokens": 0, "output_tokens": n},
+        "usage": {"input_tokens": prompt, "output_tokens": n},
     }))
     .into_response()
 }

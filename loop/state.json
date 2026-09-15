@@ -56,8 +56,7 @@
     "k2_effective_gbps": 503
   },
   "next_actions": [
-    "M5 polish: route anthropic_sse, honour Anthropic max_tokens/stream, report prompt_tokens, hold back trailing U+FFFD",
-    "PLAN_K2 step 2: ~10 QLinear::encode sites to encode_k(..., TILE) with msl::K_Q4_GEMV_K2"
+    "PLAN_K2: split the layer body into four k=2 projected groups (qkv, o_proj, gate/up, down) separated by per-row non-linear segments; verify 6/6 and compare forward2 row-1 logits against forward"
   ],
   "history": [
     {
@@ -426,6 +425,33 @@
         ]
       },
       "next": "Anthropic streaming + request max_tokens/stream, prompt_tokens in usage, hold back trailing U+FFFD, then PLAN_K2 step 2"
+    },
+    {
+      "round": 17,
+      "title": "M5 completed: accurate prompt_tokens/completion_tokens on OpenAI and Anthropic, streaming preserved",
+      "tok_s": 27.8,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "pass_6/6",
+        "G3": "no_change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "openai_usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 24
+        },
+        "anthropic_usage": {
+          "input_tokens": 9,
+          "output_tokens": 8
+        },
+        "tests": 39,
+        "parity": "6/6",
+        "engine_event": "EngineEvent::{Prompt,Piece}",
+        "sse": "text_only adapter"
+      },
+      "next": "PLAN_K2 step 2/3: split each layer body into linear (k=2) and per-row non-linear segments, per the segment table in round-017.md"
     }
   ]
 }
