@@ -1124,6 +1124,27 @@
         "deliverable": "the key_dim trap is documented and the dispatch-count hypothesis is dead; no code change kept"
       },
       "next": "The ~25 ms non-sweep rest needs a new explanation before another attempt: it is demonstrably not reducible by dispatch batching, and the round-045 estimate that built the plan (7.6 us/dispatch) is refuted. Next step is to measure the rest directly rather than infer it - e.g. time forward2 with the non-GEMV dispatches filtered out at the plateau (the round-043 ablation, but re-run against the current u4 kernel and the steady-state protocol), and separately time the two MTP draft steps and the tail, so the 24.6 ms is attributed by measurement. If the k_norm/k_rope batching is revisited it needs the kernel change (row = idx/n_heads, head = idx%n_heads, plus a y_stride scalar), not a grid change. Mains power with Low Power Mode off is still required for any absolute claim"
+    },
+    {
+      "round": 48,
+      "title": "Measurement round: within-run per-batch timing (QW_ENCODE_TIME) shows the non-GEMV part of a full k=3 pass is 44-52 ms (28-33%), not the 8.6 ms (7%) inherited from round 043's ablation, which had measured the bench sweep's own batch (GEMV-only). Eleven single-family ablations on the full pass are all within +-3.5% of baseline (baseline slowest) => the cost is ~46 us per dispatch spread evenly, no single family is a lever. Coolest full forward in a fresh process = 34.38 ms (419 GB/s) and the throttle ramp is visible token by token (34->35->37->45->53->77->130 ms over 7 tokens). mtp_step(want_logits=false) = 0.8-9.8 ms, so the 1.1-2.6 s spec prefill is thermal ramp, not MTP warm-up. Mains budget: 26 ms weights at DRAM peak + ~19 ms ALU rows + ~15 ms non-GEMV = 60 ms, ceiling ~42-45 tok/s for this design at TILE=3",
+      "tok_s": 18.4,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "no speedup claimed - measurement round, no code change",
+        "G4": "pass"
+      },
+      "evidence": {
+        "within_run": "QW_ENCODE_TIME=1 per-batch commit+wait in one process: first forward 256.59 ms (process cold start), 2nd 34.38 ms, then 35.30/37.43/45.01/53.33/77.44/130.44/128.82/93.70/96.83/89.36 (throttle ramp over ~7 tokens), mtp_step(false) 0.76-9.78 ms x11, verify TILE=3 156.99 ms / 1634 dispatches",
+        "cost_model_wrong_4x": "within one run the plateau k=1 full forward is ~93 ms and the k=3 verify ~157 ms, while the pure-GEMV bench sweep is 85.74 (k=1) and 113.15 (k=3) => per-row 32 ms full vs 14.5 ms GEMV => the non-GEMV work of a full pass is 44-52 ms (28-33%). Round 043's 8.6 ms came from ablating the bench sweep's own batch, which contains only GEMV dispatches",
+        "ablations": "11 single-family skips on the full spec pass with QW_NO_ACCEPT=1 (fixed row count), reading the verify batch's commit+wait: baseline 198.99, skip rmsnorm 199.43 (469 fewer dispatches), gdn_step 192.16, conv1d_silu_ring_tile 198.27, attn_scores_softmax 195.01, attn_out 194.95, ewise_add 195.42, silu_mul 195.41, rope_partial 195.88, kv_append 192.29, gate_mul 196.34 - all within +-3.5% and the baseline is the slowest, so ~46 us per dispatch spread evenly and no single family is a lever (consistent with round 046: merging 96 dispatches was 1.04% slower)",
+        "mains_proxy": "coolest sustainable full forward 34.38 ms = 14.41 GB at 419 GB/s vs 546 GB/s peak; the 12-token spec prefill (1.1-2.6 s) is the thermal ramp, not MTP warm-up, so prefill time is a thermometer",
+        "mains_budget": "26 ms weight stream at DRAM peak (14.41 GB / 546 GB/s, matching round 001's 60 ms/pass) + ~19 ms per-row ALU (3 x 6.3) + ~15 ms non-GEMV/dispatch = 60 ms => ceiling ~42-45 tok/s for this design; TILE=4 (~73 ms / 2.83 tok) and TILE=5 (~89 ms / 3.03 tok) are both worse, so TILE=3 stays optimal",
+        "deliverable": "the corrected cost model and the three floors to move"
+      },
+      "next": "50 tok/s needs one of the three floors moved, and round 047/048 together rule out the cheap ones. CONCRETE NEXT: build the matrix-unit path for the per-row dots (dequantise a weight tile with simdgroup 4-bit unpack into threadgroup memory as half, then simdgroup_multiply_accumulate) since the ALU dots run at ~28% of fp32 peak and 19 of the 60 mains ms; screen it against the bench sweep first (the instrument that is reproducible), then confirm with a within-run QW_ENCODE_TIME comparison of the verify batch, never across processes. Secondary, only if that fails: cut bytes per weight (3-bit) to move the 26 ms DRAM floor. The full TILE-batching of the per-row families needs the padded-stride fix and must first be shown to beat the 1% regression round 046 measured"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
