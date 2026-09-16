@@ -148,6 +148,19 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     }
     let prefill = t0.elapsed();
 
+    // Diagnostic: the prefill is twelve sequential full-weight passes, which is
+    // enough GPU load to reach the thermally throttled plateau before the first
+    // decode token is timed.  Idling here lets the part cool so the first verify
+    // of the run measures the unthrottled clock, which is the closest this
+    // machine (battery + Low Power Mode) offers to a mains figure.
+    if let Ok(v) = std::env::var("QW_COOL_SLEEP") {
+        let secs: f64 = v.parse().unwrap_or(0.0);
+        if secs > 0.0 {
+            eprintln!("  [cool] idling {secs:.0}s after the prefill before decoding");
+            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+        }
+    }
+
     if std::env::var("QW_MTP_CHECK").is_ok() {
         mtp_check(&mut model, &ids, 32)?;
     }

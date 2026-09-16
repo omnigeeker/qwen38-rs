@@ -425,10 +425,10 @@ impl Qwen38 {
                 // sweep at a reproducible clock plateau: median ratio 0.9304, 76/80 wins.
                 q4_gemv_tile: b.kernel(
                     msl::COMMON,
-                    if TILE == 4 {
-                        msl::K_Q4_GEMV_K4_U4H
-                    } else {
-                        msl::K_Q4_GEMV_K3_U4H
+                    match TILE {
+                        6 => msl::K_Q4_GEMV_K6_U4H,
+                        4 => msl::K_Q4_GEMV_K4_U4H,
+                        _ => msl::K_Q4_GEMV_K3_U4H,
                     },
                 )?,
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,
