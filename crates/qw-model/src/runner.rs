@@ -99,7 +99,7 @@ struct Layer {
 
 /// Scratch buffers, all fp16 unless stated.
 /// Number of tokens a single forward pass can carry (see docs/PLAN_K2.md).
-pub const TILE: usize = 3;
+pub const TILE: usize = 4;
 
 struct Scratch {
     x: GpuBuffer,
@@ -423,7 +423,14 @@ impl Qwen38 {
                 // 16-byte weight loads instead of 8: the sweep is memory-latency bound and
                 // this buys memory-level parallelism per instruction.  Round 043 paired
                 // sweep at a reproducible clock plateau: median ratio 0.9304, 76/80 wins.
-                q4_gemv_tile: b.kernel(msl::COMMON, msl::K_Q4_GEMV_K3_U4H)?,
+                q4_gemv_tile: b.kernel(
+                    msl::COMMON,
+                    if TILE == 4 {
+                        msl::K_Q4_GEMV_K4_U4H
+                    } else {
+                        msl::K_Q4_GEMV_K3_U4H
+                    },
+                )?,
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,
                 rmsnorm_ws: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS)?,
                 rmsnorm_nw: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_NW)?,

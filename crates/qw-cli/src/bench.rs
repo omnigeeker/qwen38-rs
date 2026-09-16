@@ -91,11 +91,16 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         // baseline is the instrument's calibration: a value away from 1.0000 means the
         // method has an order or drift bias, and any candidate's number has to be read
         // against that, not against 1.0000.
-        let variants: [(&str, &str, usize); 5] = [
+        let variants: [(&str, &str, usize); 6] = [
             ("k3 (baseline)", qw_metal::msl::K_Q4_GEMV_K3, 1),
             ("k3 + u4 (16B) loads", qw_metal::msl::K_Q4_GEMV_K3_U4, 1),
             ("k3 + u4 + half dots", qw_metal::msl::K_Q4_GEMV_K3_U4H, 1),
             ("k3 + u4 + half4 acc", qw_metal::msl::K_Q4_GEMV_K3_U4H4, 1),
+            (
+                "k3 + u4 + 2grp unroll",
+                qw_metal::msl::K_Q4_GEMV_K3_U4HU2,
+                1,
+            ),
             ("k3 (baseline dup)", qw_metal::msl::K_Q4_GEMV_K3, 1),
         ];
         // On this machine the GPU clock swings by 4x on the timescale of a single

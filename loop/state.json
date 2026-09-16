@@ -1186,6 +1186,29 @@
         "stray_processes": "3 stray qwen38 processes were present and corrupted the first k=4 sweep reading (109.74 ms vs 75.46 ms after clearing). The stray check before timing stays mandatory"
       },
       "next": "The instruction diet is close to exhausted for this kernel shape: the extract+convert is ~16 of ~40 instructions per group/word/lane and is irreducible, the x loads are 6 (minimum for 3 rows at 8+8 bytes), and both accumulator alternatives measured worse than the shipped form. Remaining candidates: (a) simdgroup_matrix with threadgroup staging, which moves the per-row dots off the ALU entirely; (b) an all-half k=1/k=3 pair re-checked for TILE=4 now that the marginal row is cheaper. Mains power still gates any absolute claim about 50 tok/s"
+    },
+    {
+      "round": 50,
+      "title": "CORRECTED round 048: the non-GEMV part of a full pass is 15.0 ms (14%), not 44 ms (33%) - measured by skipping every GEMV dispatch inside one run (full 109.4 ms / GEMV-skipped 15.0 ms / 1137 dispatches = 13 us each). The GEMV is 86% of the pass and the 14.41 GB stream within it is 69.6 ms at the plateau. Three hypotheses tested and rejected: the 1090 encoder splits cost nothing on a real forward (110.9 split vs 111.6-114.0 single), the 2-group unroll for more MLP is 9.5% slower (calibrated 0.8748 vs 0.7992), and round 049's half4 accumulator is 1.2% slower. TILE=4 shipped: steady-state 2.69 -> 3.41 tokens/pass at the same p=0.895, +2.7% tok/s in a cool state and +0.63% hot, median +1.1% over 8 pairs, accept.sh 12/12 - justified by bytes of weight streamed per token falling 5.36 -> 4.23 GB (-21%), the term that is at a hard DRAM floor at mains",
+      "tok_s": 20.62,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "TILE=4 +1.1% median over 8 alternating pairs (set 1 +2.7% cool, set 2 +0.63% hot)",
+        "G4": "accept.sh 12/12 ACCEPTED"
+      },
+      "evidence": {
+        "correction": "round 048's 44-52 ms non-GEMV figure came from subtracting the bench sweep (113.15 ms) from the full verify (157 ms) measured in different thermal states. Inside one run with all GEMV dispatches skipped: full verify 109.37/109.82 ms, GEMV-skipped 15.15/14.88 ms => non-GEMV is 15.0 ms (14%), 13 us per dispatch; GEMV is 94.4 ms (86%) of which the 14.41 GB stream is 69.6 ms at 207 GB/s",
+        "encoder_split": "on a real forward, not the sweep: 1090 encoders 110.92/110.71 ms vs 1 encoder 111.63/113.98 ms => the split is free; round 006's conclusion holds and this lever is closed",
+        "mlp_unroll": "2-group unroll with dual fp32 accumulators: calibrated 0.8748 vs the plain half form's 0.7992 (instrument bias 1.0601), 11/12 wins but 9.5% slower => register pressure beats the extra loads in flight",
+        "tile4": "steady-state tokens/pass 2.69 (TILE=3) vs 3.41 (TILE=4), same implied p=0.895. Pass cost grows 22-26% => the true marginal cost of one verified row is ~30 ms, not the ~17 ms the components predict (GEMV 8.3 + non-GEMV 4 + draft 4.65) - the same model error round 048 made. 8 alternating pairs: set 1 (cool, 19.9 tok/s) +2.7% median, set 2 (hot, 16.0 tok/s) +0.63% median",
+        "why_shipped": "bytes of weight streamed per token 5.36 GB -> 4.23 GB (-21%); the weight stream is the only term at a hard floor (DRAM peak) when the machine is not throttled",
+        "tile5": "with p=0.895 the fourth draft adds 0.64 expected tokens against another ~30 ms row => not worth measuring",
+        "power": "machine is on battery at 16% with Low Power Mode on (powermode 1); no mains verification is possible this round"
+      },
+      "deliverable": "TILE=4 in crates/qw-model/src/runner.rs plus q4_gemv_k4_u4h in crates/qw-metal/src/msl.rs; q4_gemv_k3_u4hu2 and q4_gemv_k3_u4h4 remain as closed bench arms",
+      "next": "The GEMV is 86% of the pass and 74% of that is the irreducible DRAM stream; the ALU part has now rejected three separate attacks. Mains is the only thing that can settle whether the target is met. If it is not, the remaining structural idea is simdgroup_matrix with threadgroup staging, which moves the per-row dots off the ALU entirely - but with M=3 against an 8x8 tile the useful fraction is 37% and every neighbouring attempt has regressed, so it needs a bench screen before any integration"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
