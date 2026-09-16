@@ -1083,6 +1083,26 @@
         "the_real_target": "the non-sweep rest is ~24.6 ms at the plateau and ~27 ms on mains, i.e. nearly power-insensitive (dispatch/sync/latency bound, not bandwidth bound), and at mains it is 45% of the pass. Halving it is +12.5 ms = 42.4 -> ~51 tok/s. Composition: draft 9.7 (two MTP steps each with a host round trip for the argmax), non-GEMV 8.6, tail 3.0, logits 2.5"
       },
       "next": "Attack the power-insensitive rest, biggest first: (1) the draft's two host round trips - do the argmax on the GPU and keep both MTP steps in one command buffer by having the embedding gather read the token id from a GPU buffer, so no sync is needed between them; (2) the 1137 non-GEMV dispatches via the tiling fusions (rmsnorm_gated 144->48, rmsnorm_s 96->32, rope_partial 96->32, ewise_add into rmsnorm). Every candidate must be confirmed by an interleaved end-to-end A/B because the calibrated sweep is only a screen. Mains power with Low Power Mode off is still required for any absolute claim"
+    },
+    {
+      "round": 46,
+      "title": "Implemented the f16-argmax/fewer-readback logits path, measured it end to end over 3 clean alternating pairs, and reverted it: median paired ratio 1.0088, i.e. 0.88% SLOWER. Reason: PartialOrd for f16 widens both operands on every compare, so the f16 path pays ~2 conversions per element compared versus one bulk conversion in the f32 path. Also caught a stray qwen38 serve process holding 18 GB that had corrupted the first attempt (apparent 12% win from two outlier readings)",
+      "tok_s": 18.3,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "no speedup claimed - change reverted as a measured regression",
+        "G4": "pass"
+      },
+      "evidence": {
+        "idea": "a speculative pass asks for the argmax of the 248320-wide vocab five times (2 MTP drafts returning Vec<f32> built by widening an f16 readback, plus 3 verify rows read one at a time) = 5 readbacks, 5 1 MB allocations and 1.24M f16->f32 widenings per pass, when only an index is wanted",
+        "refuted": "3 clean alternating pairs: ratios 1.0116, 1.0033, 1.0088, median 1.0088 -> the f16 argmax is 0.88% SLOWER. Reverted, parity re-confirmed 6/6",
+        "why": "half::f16's PartialOrd widens both operands on every comparison, so the f16 path pays two conversions per element compared inside a non-vectorisable loop, while the f32 path paid one bulk conversion per element and then compared raw f32s. Comparisons outnumber elements, so the trade is strictly negative",
+        "contamination": "a stray `qwen38 serve` (pid 60244) from an earlier round was still resident holding ~18 GB and produced two outlier u4 readings of 14.72 and 9.29 tok/s against a normal 18.5, faking a 12% win. Second time in this session (round 040 killed one). With it killed the same binary read 18.28 three times exactly, so the paired protocol resolves well under 1% when nothing else runs",
+        "process": "stray-process check now belongs in front of every timed comparison"
+      },
+      "next": "No new speedup this round; u4 stands at +1.7%. The target remains the power-insensitive rest (~25 ms: draft 9.7, non-GEMV 8.6, tail 3.0, logits 2.5), where the only lever with real upside left is dispatch count - the fusions (rmsnorm_gated 144->48, rmsnorm_s 96->32, rope_partial 96->32, ewise_add into rmsnorm, silu_mul) remove ~416 of the 1137 non-GEMV dispatches. Note the logits readback is NOT worth optimising: the f32 widening is not the cost and reducing it measured negative"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
