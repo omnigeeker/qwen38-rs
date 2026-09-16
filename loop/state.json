@@ -998,6 +998,28 @@
         "environment": "battery + powermode 1 all round. Same binary, same sweep: 27.9 / 33.0 / 58.5 / 70.6 / 113.5 ms across the session; one variant's samples inside one run spanned 65-294 ms. Absolute tok/s is not comparable across sessions, and relative claims need >=6 tightly interleaved model-level pairs. A 50 tok/s verification needs mains power with Low Power Mode off"
       },
       "next": "Do not spend more rounds on ~5% kernel experiments until the machine is on mains power: they cannot be resolved. The solid, measurement-independent facts to build on are the 1634-dispatch census (only 497 GEMV) and the superlinear marginal-row curve. The largest non-GEMV blocks remain ewise_add 128, rmsnorm_gated 144, rmsnorm 129, rmsnorm_nw_tile 96, rmsnorm_s 96, rope_partial 96; fusing the residual add into the following rmsnorm and batching the per-row reduction kernels over TILE are the next candidates. Ask the user to plug in and turn off Low Power Mode before any further throughput claim"
+    },
+    {
+      "round": 42,
+      "title": "Found and fixed a reading error in the engine's own split report (it divided by drafts, not passes), then ablated the forward with new dispatch filters: the 1137 non-GEMV dispatches are worth only 8.6 ms (7%), while the 497-dispatch GEMV sweep is 93%. But the same 497 dispatches cost 3.5x more in situ (113.8 ms) than in the isolated bench (32.6 ms), and four explanations were refuted: CPU encoding is 1.1-1.9 ms, barrier()'s 1090 encoder splits cost nothing (1 encoder gives no gain), dependencies are absent in the filtered run, and per-linear x buffers change nothing",
+      "tok_s": 43.2,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "no speedup claimed; four hypotheses measured and killed",
+        "G4": "pass"
+      },
+      "evidence": {
+        "report_bug": "gen.rs:387 divides t_draft/t_pass by `drafts` (= passes*(TILE-1)), not by passes, so the printed ms/pass is really ms per draft. True split: draft 9.9 + verify 133.1 + tail 3 = ~146 ms/pass, matching the wall clock. Round 041's 'half the pass is unaccounted' was an artifact",
+        "tail": "the untimed tail (commit_row + promote_hidden + post-accept redraft) is only 1.7-4.8 ms",
+        "ablation": "QW_ONLY_KERNEL/QW_SKIP_KERNEL dispatch filters added to CommandBatch::encode. k=2 forward: full 122.40 ms, only q4_gemv 113.78, skip gdn_step 117.17, skip rmsnorm family 120.43, skip conv1d 122.92, skip attn 123.43. So all 1137 non-GEMV dispatches = 8.6 ms = 7%",
+        "in_situ_gap": "same 497 dispatches, same grid (out_f*32, tg 32), same kernels/weights: in situ 55.08-64.48 ms (k=1) and 113.78 ms (k=3) vs isolated bench 27.39-36.24 ms (k=1) and 32.62 ms (k=3)",
+        "refuted": "(1) CPU command encoding is 1.14-1.86 ms for 1634 dispatches, not the cost; (2) barrier() ends the encoder (1090 encoders per pass) and using ONE encoder changes nothing (61.64 vs 55.08 on the filtered run, 63.24 vs 64.48 on the full); (3) the filtered run has no producers/dependencies at all and is still slow; (4) QW_X_PER_LINEAR=1 (a distinct x per linear) gives 33.48 ms vs 36.24 - no slowdown",
+        "barrier_impl": "barrier() is not a memory barrier: it calls enc.end_encoding(), so the batch has 1090 encoder boundaries per pass. Measured to cost nothing",
+        "instruments": "QW_ENCODE_TIME=1 (CPU encode ms, commit+wait ms, dispatches, encoders per batch); QW_ONLY_KERNEL=<substr>/QW_SKIP_KERNEL=<substr>; QW_X_PER_LINEAR=1 (bench); QW_NO_ENC_SPLIT=1 (unsafe timing bound)"
+      },
+      "next": "The open question is why the identical 497 sweep dispatches cost 3.5x more inside a pass than isolated, now that CPU encoding, encoder splitting, dependencies and x locality are all excluded. Leading remaining candidates: DRAM access locality of the dispatch order (the bench walks linears in sorted-name order, the model walks them in layer order), the effect of real activation data versus the bench's constant 0.01, and GPU clock state during a long measurement versus a short one. If the in-situ sweep reached the bench's rate the forward would drop from ~122 ms to ~40 ms, which would clear 50 tok/s outright - so this is now the only question worth budget. Absolute tok/s still needs mains power with Low Power Mode off"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

@@ -1733,6 +1733,7 @@ impl Qwen38 {
         // The longest prefix of drafts the target agrees with.  Row `k` settles
         // the token after the last accepted draft, so it becomes the next `next`
         // for free.
+        let t_tail = Instant::now();
         let mut k = 0usize;
         while k < TILE - 1 && d[k] == r[k] {
             k += 1;
@@ -1745,9 +1746,12 @@ impl Qwen38 {
         }
         out.extend(d.iter().take(k));
         // Row `TILE - 1` is already current and needs no rewind.
+        let t_commit = Instant::now();
         if k + 1 < TILE {
             self.commit_row(k)?;
         }
+        let commit_ms = t_commit.elapsed().as_secs_f64() * 1e3;
+        let t_promo = Instant::now();
         // The chained drafts after the first were computed from row 0, which still
         // held the hidden of `pos`; re-append the last accepted one with the hidden
         // it actually needs.  Dropping this costs 6 points of acceptance.
@@ -1756,6 +1760,15 @@ impl Qwen38 {
             self.mtp_step(d[k - 1], pos + k, false)?;
         }
         self.promote_hidden(k)?;
+        if std::env::var("QW_TAIL").is_ok() {
+            eprintln!(
+                "  tail: commit {:.2} ms | promote+redraft {:.2} ms | acceptance+bookkeeping {:.2} ms | tail total {:.2} ms",
+                commit_ms,
+                t_promo.elapsed().as_secs_f64() * 1e3,
+                t_promo.elapsed().as_secs_f64() * 1e3 - commit_ms - 0.0,
+                t_tail.elapsed().as_secs_f64() * 1e3
+            );
+        }
         Ok((pos + k + 1, r[k], draft, verify))
     }
 

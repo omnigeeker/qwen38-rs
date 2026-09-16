@@ -52,6 +52,18 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             xs.push((in_f, dev.buffer_from_bytes(&v)));
         }
     }
+    // QW_X_PER_LINEAR: give every linear its own x buffer, the way the model does,
+    // instead of one shared buffer per in_f.  Isolates whether the shared (always
+    // cache-hot) input is what makes this sweep look so much faster than the same
+    // dispatches inside a real pass.
+    let per_linear = std::env::var_os("QW_X_PER_LINEAR").is_some();
+    let mut x_own: Vec<qw_metal::GpuBuffer> = Vec::new();
+    if per_linear {
+        for l in &linears {
+            let v = vec![f16::from_f32(0.01); l.in_f * k];
+            x_own.push(dev.buffer_from_bytes(&v));
+        }
+    }
     let ys: Vec<(usize, qw_metal::GpuBuffer)> = {
         let mut v = Vec::new();
         for out_f in linears
@@ -165,8 +177,12 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             } else {
                 QLinear::kernel_k(&mut batch)?
             };
-            for l in &linears {
-                let x = &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1;
+            for (li, l) in linears.iter().enumerate() {
+                let x = if per_linear {
+                    &x_own[li]
+                } else {
+                    &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1
+                };
                 let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
                 if k == 1 {
                     l.encode(&mut batch, &kernel, x, y);

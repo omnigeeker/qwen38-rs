@@ -86,6 +86,15 @@ pub struct CommandBatch<'d> {
     count: usize,
     /// Dispatches per entry point, printed when QW_DISPATCH_HIST is set.
     hist: Vec<(String, usize)>,
+    /// Number of `barrier()` calls.
+    nbarriers: usize,
+    /// Compute encoders actually created (differs from `nbarriers` when dispatch
+    /// filtering removes everything between two barriers).
+    nencoders: usize,
+    /// When this batch was created.  Metal does not start executing a command
+    /// buffer until it is committed, so the time from creation to `finish` is CPU
+    /// work that the GPU cannot overlap - worth separating from the wait.
+    t0: std::time::Instant,
 }
 
 impl<'d> CommandBatch<'d> {
@@ -97,6 +106,9 @@ impl<'d> CommandBatch<'d> {
             enc: None,
             count: 0,
             hist: Vec::new(),
+            nbarriers: 0,
+            nencoders: 0,
+            t0: std::time::Instant::now(),
         }
     }
 
@@ -111,12 +123,43 @@ impl<'d> CommandBatch<'d> {
 
     fn encoder(&mut self) -> &ComputeCommandEncoderRef {
         if self.enc.is_none() {
+            self.nencoders += 1;
             self.enc = Some(self.cb.new_compute_command_encoder().to_owned());
         }
         self.enc.as_ref().unwrap()
     }
 
+    /// Diagnostic filters.  `QW_ONLY_KERNEL` keeps just the dispatches whose entry
+    /// point contains the given substring, `QW_SKIP_KERNEL` drops them.  Results are
+    /// wrong either way - the point is to attribute a pass's GPU time to kernel
+    /// families instead of guessing from dispatch counts.
+    fn filtered(name: &str) -> bool {
+        fn get(k: &str) -> Option<String> {
+            use std::sync::OnceLock;
+            static ONLY: OnceLock<Option<String>> = OnceLock::new();
+            static SKIP: OnceLock<Option<String>> = OnceLock::new();
+            match k {
+                "only" => ONLY
+                    .get_or_init(|| std::env::var("QW_ONLY_KERNEL").ok())
+                    .clone(),
+                _ => SKIP
+                    .get_or_init(|| std::env::var("QW_SKIP_KERNEL").ok())
+                    .clone(),
+            }
+        }
+        if let Some(o) = get("only") {
+            return !name.contains(o.as_str());
+        }
+        if let Some(k) = get("skip") {
+            return name.contains(k.as_str());
+        }
+        false
+    }
+
     pub fn encode(&mut self, d: Dispatch<'_>) -> &mut Self {
+        if Self::filtered(&d.kernel.name) {
+            return self;
+        }
         let enc = self.encoder();
         enc.set_compute_pipeline_state(&d.kernel.pipeline);
         for (i, b, off) in &d.buffers {
@@ -136,6 +179,14 @@ impl<'d> CommandBatch<'d> {
 
     /// Close the current encoder so the next dispatch observes prior writes.
     pub fn barrier(&mut self) -> &mut Self {
+        self.nbarriers += 1;
+        // Diagnostic: QW_NO_ENC_SPLIT keeps every dispatch inside one encoder.  That
+        // is UNSAFE - Metal gives no inter-dispatch visibility within an encoder, so
+        // results are wrong - but it bounds what splitting encoders costs, which is
+        // the question worth answering before reworking the barrier properly.
+        if std::env::var_os("QW_NO_ENC_SPLIT").is_some() {
+            return self;
+        }
         if let Some(enc) = self.enc.take() {
             enc.end_encoding();
         }
@@ -148,6 +199,7 @@ impl<'d> CommandBatch<'d> {
 
     /// Commit and (optionally) block until the GPU is done.
     pub fn finish(mut self, wait: bool) {
+        let encode = self.t0.elapsed();
         // A full-model pass is a chain of ~1300 dispatches and the small
         // elementwise ops dominate the count, so knowing who they are is the
         // first step to fusing them.
@@ -165,9 +217,19 @@ impl<'d> CommandBatch<'d> {
         if let Some(enc) = self.enc.take() {
             enc.end_encoding();
         }
+        let t_commit = std::time::Instant::now();
         self.cb.commit();
         if wait {
             self.cb.wait_until_completed();
+        }
+        if std::env::var_os("QW_ENCODE_TIME").is_some() {
+            eprintln!(
+                "  batch: CPU encode {:.2} ms | commit+wait {:.2} ms | {} dispatches in {} encoders",
+                encode.as_secs_f64() * 1e3,
+                t_commit.elapsed().as_secs_f64() * 1e3,
+                self.count,
+                self.nencoders
+            );
         }
     }
 }
