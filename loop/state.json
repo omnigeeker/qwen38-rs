@@ -1042,6 +1042,26 @@
         "conclusion": "the sweep is 77% of a pass and saturates both throttled memory bandwidth (207 vs 440 GB/s cold) and throttled ALU issue (14.5 ms/row). Weights are irreducible at 4-bit, so no code change reaches it in this power state"
       },
       "next": "The 50 tok/s target must be worked and verified on mains with Low Power Mode off; on battery the honest figure is 18.4 tok/s steady-state, now reproducible. When mains is available: re-measure the steady-state number, then re-open the sweep with the plateau protocol - the specific question is whether a mains sweep reaches ~500 GB/s (recoverable to 50 tok/s) or is already at the practical peak (in which case the remaining 23% of the pass, not the sweep, is the only place left)"
+    },
+    {
+      "round": 44,
+      "title": "Wired q4_gemv_k3_u4 (16-byte uint4 weight loads) into the model - the first measured sweep win since round 040. Paired sweep at the reproducible clock plateau: median ratio 0.9304, 76/80 wins. Oracle parity 6/6 and accept.sh 12/12 both pass. Rooted in round 043's finding that the sweep is memory-latency bound: u4 doubles the bytes in flight per instruction, which is the axis row blocking failed to exploit",
+      "tok_s": 18.4,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "pass",
+        "G4": "accept.sh 12 passed 0 failed ACCEPTED"
+      },
+      "evidence": {
+        "paired_sweep": "at a 30 s burn-in plateau, 80 rounds with alternating order in one process: k3+u4 (16B loads, grid_rows=1) median ratio 0.9304 with 76/80 wins; k3+u4 with 2 rows/tg median ratio 1.0495 with 14/80 wins. So u4 alone is 7.0% faster and stacking rows on top of it loses again",
+        "correctness": "the u4 kernel changes the accumulation order inside a group, so parity was checked first: oracle 6/6 cases, tools/accept.sh 12 passed 0 failed ACCEPTED",
+        "projection": "the sweep is 77% of a pass, so 7.0% off the sweep is ~5.4% off a pass: 18.4 -> ~19.4 tok/s on battery, and against the 42.4 tok/s mains baseline a projected ~44.8",
+        "end_to_end_pending": "the interleaved steady-state A/B was prepared (/tmp/qwen38_base, /tmp/qwen38_u4) but not completed - after ~40 min of continuous load the machine read 8.74 tok/s steady-state against 18.4 earlier in the same session, a 2x swing, so two sequential runs prove nothing and the interleaved pair is required",
+        "harness_notes": "two apparent failures were my own extraction regex, not the engine: the steady-state line carries tokens/pass between the seconds and the ms/token fields, and tail -4 cuts the stderr diagnostics that are flushed before the buffered stdout text"
+      },
+      "next": "Run the interleaved steady-state A/B of /tmp/qwen38_base vs /tmp/qwen38_u4 (3 clean pairs, 400 tokens, alternating) to confirm the 7% sweep win end to end. Then continue on the same axis: u4 helped by doubling bytes in flight per load instruction, so the natural follow-on is a wider per-lane stride (more words per iteration, or two uint4 per iteration) before touching anything else. Mains power with Low Power Mode off is still required for any absolute throughput claim"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

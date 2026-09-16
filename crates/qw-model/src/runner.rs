@@ -420,7 +420,10 @@ impl Qwen38 {
                 q4_gemv: b.kernel(msl::COMMON, msl::K_Q4_GEMV)?,
                 // Unblocked: see QLinear::encode_tile for why row blocking was tried
                 // and rejected.
-                q4_gemv_tile: b.kernel(msl::COMMON, msl::K_Q4_GEMV_K3)?,
+                // 16-byte weight loads instead of 8: the sweep is memory-latency bound and
+                // this buys memory-level parallelism per instruction.  Round 043 paired
+                // sweep at a reproducible clock plateau: median ratio 0.9304, 76/80 wins.
+                q4_gemv_tile: b.kernel(msl::COMMON, msl::K_Q4_GEMV_K3_U4)?,
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,
                 rmsnorm_ws: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS)?,
                 rmsnorm_nw: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_NW)?,

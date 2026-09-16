@@ -83,11 +83,14 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         // Only near-equal candidates go in one round: a variant that is 30% slower
         // swings the clock inside the round and corrupts the baseline it is paired
         // against (R=6/R=8 spill and did exactly that).
-        let variants: [(&str, &str, usize); 4] = [
+        // Row blocking is closed (round 043: 1.0266-1.0690, slower at every factor even
+        // at a reproducible clock plateau).  What is left untested is the other way to
+        // buy memory-level parallelism: more bytes in flight per instruction, i.e. a
+        // 16-byte uint4 weight load instead of 8 bytes.
+        let variants: [(&str, &str, usize); 3] = [
             ("k3 (baseline)", qw_metal::msl::K_Q4_GEMV_K3, 1),
-            ("k3 + 2 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R2, 2),
-            ("k3 + 3 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R3, 3),
-            ("k3 + 4 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R4, 4),
+            ("k3 + u4 (16B) loads", qw_metal::msl::K_Q4_GEMV_K3_U4, 1),
+            ("k3 + u4, 2 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R2U, 2),
         ];
         // On this machine the GPU clock swings by 4x on the timescale of a single
         // sweep (battery + Low Power Mode), so absolute times mean nothing.  Measure
