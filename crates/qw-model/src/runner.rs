@@ -1723,13 +1723,28 @@ impl Qwen38 {
         let mut toks = Vec::with_capacity(TILE);
         toks.push(next);
         toks.extend_from_slice(&d);
+        let t_set = Instant::now();
         self.set_tokens(&toks)?;
+        let set_ms = t_set.elapsed().as_secs_f64() * 1e3;
+        let t_fwd = Instant::now();
         self.forward2(pos)?;
+        let fwd_ms = t_fwd.elapsed().as_secs_f64() * 1e3;
+        let t_log = Instant::now();
         let mut r = [0u32; TILE];
         for (i, slot) in r.iter_mut().enumerate() {
             *slot = Self::argmax_of(&self.logits_row(i));
         }
+        let log_ms = t_log.elapsed().as_secs_f64() * 1e3;
         let verify = t_verify.elapsed().as_secs_f64();
+        if std::env::var("QW_TAIL").is_ok() {
+            eprintln!(
+                "  verify: set_tokens {:.2} ms | forward2 {:.2} ms | {}x(logits pull + argmax) {:.2} ms",
+                set_ms,
+                fwd_ms,
+                TILE,
+                log_ms
+            );
+        }
         // The longest prefix of drafts the target agrees with.  Row `k` settles
         // the token after the last accepted draft, so it becomes the next `next`
         // for free.

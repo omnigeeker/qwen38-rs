@@ -1020,6 +1020,28 @@
         "instruments": "QW_ENCODE_TIME=1 (CPU encode ms, commit+wait ms, dispatches, encoders per batch); QW_ONLY_KERNEL=<substr>/QW_SKIP_KERNEL=<substr>; QW_X_PER_LINEAR=1 (bench); QW_NO_ENC_SPLIT=1 (unsafe timing bound)"
       },
       "next": "The open question is why the identical 497 sweep dispatches cost 3.5x more inside a pass than isolated, now that CPU encoding, encoder splitting, dependencies and x locality are all excluded. Leading remaining candidates: DRAM access locality of the dispatch order (the bench walks linears in sorted-name order, the model walks them in layer order), the effect of real activation data versus the bench's constant 0.01, and GPU clock state during a long measurement versus a short one. If the in-situ sweep reached the bench's rate the forward would drop from ~122 ms to ~40 ms, which would clear 50 tok/s outright - so this is now the only question worth budget. Absolute tok/s still needs mains power with Low Power Mode off"
+    },
+    {
+      "round": 43,
+      "title": "Answered round 042's open question: the in-situ/isolated gap is GPU clock throttling under sustained load (3-5x), not anything about the kernels. Added QW_BENCH_BURN and found the throttle plateaus after 20-30 s (stable to 0.05%), which finally makes A/B measurement reproducible on this machine. Added a steady-state throughput window to `gen` (0.5% spread over 3 runs). Split verify (forward2 126-128 ms, logits pulls only 2.73 ms so GPU argmax is not worth it). Rejected row blocking at the plateau with 60 paired rounds. Concluded the sweep (77% of a pass) saturates both throttled memory bandwidth and throttled ALU issue, so no code change can reach it on battery",
+      "tok_s": 18.4,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "pass",
+        "G4": "accept.sh 12 passed 0 failed ACCEPTED"
+      },
+      "evidence": {
+        "throttle": "QW_BENCH_BURN added to bench. Same 497-dispatch k=3 sweep: cold 38.42/32.49 ms (two fresh processes), after 3 s of load 110.60 ms, after 10 s 160.57 ms. The round-042 'in situ is 3.5x slower' gap is entirely power management",
+        "plateau": "burn 5 s -> 156.2 ms/sweep then 206.76 measured (degrading); 15 s -> 144.2 then 110.63; 30 s -> 112.8 then 113.12; 45 s -> 113.6 then 113.18. Stable to 0.05% across processes; 120 s idle restores 36.41 ms",
+        "reproducible_metric": "gen now reports a steady-state window over the last third of tokens: 18.48/18.43/18.38 tok/s (54.1/54.3/54.4 ms/token), 2.69 tokens/pass, 0.5% spread over 3 runs. 18.4 tok/s battery vs 42.4 tok/s mains on the same binary = 2.3x",
+        "verify_split": "set_tokens 0.03 ms | forward2 126-128 ms | 3x(logits pull + argmax) 2.73 ms. GPU-side argmax would save ~2%, not worth doing",
+        "plateau_sweep": "k=1 84.10 ms (171 GB/s), k=2 97.88, k=3 113.15 (127 GB/s). Fit a+b*k: fixed 69.6 ms for the 14.41 GB weight stream (207 GB/s) + a flat 14.5 ms per row",
+        "row_blocking_rejected": "at the plateau, 60 tightly paired rounds with alternating order: R2 ratio 1.0690 wins 3/60, R3 1.0387 wins 7/60, R4 1.0266 wins 15/60 - slower at every factor, and now with a trustworthy measurement",
+        "conclusion": "the sweep is 77% of a pass and saturates both throttled memory bandwidth (207 vs 440 GB/s cold) and throttled ALU issue (14.5 ms/row). Weights are irreducible at 4-bit, so no code change reaches it in this power state"
+      },
+      "next": "The 50 tok/s target must be worked and verified on mains with Low Power Mode off; on battery the honest figure is 18.4 tok/s steady-state, now reproducible. When mains is available: re-measure the steady-state number, then re-open the sweep with the plateau protocol - the specific question is whether a mains sweep reaches ~500 GB/s (recoverable to 50 tok/s) or is already at the practical peak (in which case the remaining 23% of the pass, not the sweep, is the only place left)"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

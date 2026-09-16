@@ -365,6 +365,11 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
         let mut pos = ids.len();
         let mut next = model.argmax();
         let (mut t_draft, mut t_pass) = (0.0f64, 0.0f64);
+        // This machine throttles the GPU by ~3x within 20-30 s of sustained load and
+        // recovers within ~2 minutes idle, so the average rate over a whole run mixes
+        // two clock states and is not reproducible.  The steady-state window below is
+        // measured after the throttled plateau is reached, which is.
+        let mut steady: Option<(f64, usize, usize)> = None;
         while out.len() < opts.max_tokens {
             // `spec_step` emits the settled token itself, so the end-of-sequence
             // check has to happen here and emit it explicitly.
@@ -379,6 +384,9 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             next = n;
             passes += 1;
             drafts += TILE - 1;
+            if steady.is_none() && out.len() * 3 >= opts.max_tokens * 2 {
+                steady = Some((t1.elapsed().as_secs_f64(), out.len(), passes));
+            }
         }
         // a `TILE`-wide step can overshoot the requested length
         out.truncate(opts.max_tokens);
@@ -391,6 +399,19 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             1e3 * t_pass / dp,
             100.0 * t_draft / (t_draft + t_pass).max(1e-9)
         );
+        if let Some((t_s, n0, p0)) = steady {
+            let dt = t1.elapsed().as_secs_f64() - t_s;
+            let dn = out.len().saturating_sub(n0);
+            let dp = passes.saturating_sub(p0);
+            if dt > 0.0 && dn > 0 {
+                eprintln!(
+                    "spec: steady-state {:.2} tok/s ({dn} tokens in {dt:.2} s, {:.2} tokens/pass, {:.1} ms/token)",
+                    dn as f64 / dt,
+                    dn as f64 / dp.max(1) as f64,
+                    1e3 * dt / dn as f64
+                );
+            }
+        }
         eprintln!(
             "spec: {hits}/{drafts} drafts accepted ({:.1}%), {:.2} tokens/pass",
             if drafts == 0 {

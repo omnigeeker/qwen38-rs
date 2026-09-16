@@ -151,6 +151,44 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         return Ok(());
     }
 
+    // QW_BENCH_BURN=<seconds>: hammer the GPU with the same sweep until the deadline
+    // before timing anything.  If the in-situ/in-isolation gap is the clock dropping
+    // under sustained load rather than anything about the kernels, this reproduces it.
+    if let Ok(secs) = std::env::var("QW_BENCH_BURN") {
+        let secs: f64 = secs.parse().unwrap_or(0.0);
+        let deadline = Instant::now() + std::time::Duration::from_secs_f64(secs);
+        let mut burns = 0usize;
+        while Instant::now() < deadline {
+            let mut batch = dev.batch();
+            let kernel = if k == 1 {
+                QLinear::kernel(&mut batch)?
+            } else {
+                let name = match k {
+                    2 => qw_metal::msl::K_Q4_GEMV_K2,
+                    3 => qw_metal::msl::K_Q4_GEMV_K3,
+                    4 => qw_metal::msl::K_Q4_GEMV_K4,
+                    _ => qw_metal::msl::K_Q4_GEMV_K,
+                };
+                batch.kernel(qw_metal::msl::COMMON, name)?
+            };
+            for l in &linears {
+                let x = &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1;
+                let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
+                if k == 1 {
+                    l.encode(&mut batch, &kernel, x, y);
+                } else {
+                    l.encode_kr(&mut batch, &kernel, x, y, k, 1);
+                }
+            }
+            batch.finish(true);
+            burns += 1;
+        }
+        eprintln!(
+            "  burned {burns} sweeps over {secs:.0} s ({:.2} ms each)",
+            secs * 1e3 / burns.max(1) as f64
+        );
+    }
+
     let mut best_ms = f64::INFINITY;
     for _ in 0..iters.max(1) {
         let t0 = Instant::now();
