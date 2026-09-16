@@ -954,7 +954,29 @@
         "correctness": "oracle parity 6/6 and spec==plain byte-for-byte over 300 tokens with the token count asserted, re-verified this round"
       },
       "next": "objective met. Optional margin work if the goal is reopened: the two remaining per-row launches with enough per-thread work to amortise a row decode (the rmsnorm_ws pairs and the rope pairs, ~64 dispatches per pass), and a GPU-side argmax to keep the 1.5 MB of verification logits off the host (~1-2%)"
+    },
+    {
+      "round": 40,
+      "title": "Pass census (1922 dispatches, only 497 GEMV) and two copy folds into existing kernels: state snapshot into gdn_step and ring update into the tile convolution. 1922 -> 1634 dispatches, 2.0% faster (4/4 interleaved pairs), byte-identical. Also cleared a bench trap (rows=0 uses the runtime-k kernel, so the apparent 2x from row blocking was an artifact) and found the machine is on battery + Low Power Mode, which caps absolute throughput 2.5x",
+      "tok_s": 43.2,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6 + spec==plain byte-for-byte, 300 tokens, plain byte-identical to the previous build",
+        "G3": "2.0% via interleaved A/B (4/4 pairs); absolute numbers unusable, machine on battery + Low Power Mode",
+        "G4": "pass"
+      },
+      "evidence": {
+        "census": "`QW_DISPATCH_HIST` on a real decode pass: 1922 dispatches, q4_gemv_k3 only 497 (26%). The other 1425 are copy_off 288, gdn_step 144, rmsnorm_gated 144, rmsnorm 129, rmsnorm_nw_tile 96, rmsnorm_s 96, rope_partial 96, ewise_add 128, silu_mul 64, conv1d_silu_ring_tile 48, and 48 each of kv_append/attn_scores_softmax/attn_out/gate_mul. The engine's own split: draft 5.9 ms/pass, verify 89.6 ms/pass",
+        "bench_trap": "bench --tokens 3 with rows=0 calls QLinear::kernel_k() = q4_gemv_k, the RUNTIME-k kernel whose token loop is not unrolled; rows=1 selects q4_gemv_k3, the unrolled specialisation, with an identical grid. The engine already uses the unrolled one, so the 78.70 vs 38.19 ms '2x from row blocking' was measuring a kernel the model never runs, and round 039's '~62% of single-row bandwidth' claim rested on it",
+        "corrected_gemv": "unrolled both sides: k=1 31.33 ms (460 GB/s), k=3 38.19 ms (377 GB/s), marginal row 3.43 ms = 57.6 GFLOP at ~16.8 TFLOP/s, i.e. essentially the fp32 ALU peak. The three-row GEMV is already close to optimal and the 6.86 ms spent on rows 2-3 cannot be removed without packed/tensor-core math, which would risk oracle parity. The 50 tok/s target must come from the 1425 non-GEMV dispatches",
+        "change": "folded two copy_off launches into the kernels that already hold the data: (1) gdn_step now writes the row-end state snapshot itself (buffers 13/14, guarded by snap_on), removing a whole-state copy per row AND its read (~450 MB/pass); (2) conv1d_silu_ring_tile writes its own ring slot, safe because every window read in that dispatch is for pos < pos0, at least three slots behind. A/B: 4 pairs, ratios 0.9756/0.9845/0.9687/0.9917, median 0.9801 => 2.0%",
+        "power_trap": "mid-round absolute throughput collapsed from 23.6 to 58.5 ms/token and stayed: pmset reports drawing from Battery Power while discharging with powermode 1 (Low Power). Three runs then read 58.53/58.54/58.25 ms - stable and 2.5x slower than on mains. Absolute tok/s is only comparable within one power state; a 50 tok/s claim needs mains power with Low Power Mode off",
+        "stray_process": "a leftover `qwen38 serve --addr 127.0.0.1:8088` from an earlier round (old CLI flag) was holding 18.7 GB; killed"
+      },
+      "next": "keep cutting the 1425 non-GEMV dispatches, in order of size: ewise_add 128 (fuse the residual add into the following rmsnorm), rmsnorm_gated 144 and rmsnorm_s 96 (batch over TILE - these are heavy reduction kernels, so unlike kv_append/gate_mul in round 038 the row decode should amortise), rope_partial 96, and merging the MLP gate/up GEMVs (64). Re-derive the absolute tok/s only on mains power with Low Power Mode off"
     }
   ],
-  "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B"
+  "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
+  "goal": "raise single-decoder throughput target from 40 to 50 tok/s"
 }

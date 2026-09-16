@@ -1163,24 +1163,6 @@ impl Qwen38 {
                         .scalar(7, t - 1),
                     );
                     b.barrier();
-                    // Keep the ring current for the next pass with all TILE rows,
-                    // exactly as the old per-row projection did.  Writing the
-                    // rejected rows too is safe: the ring is wider than the window,
-                    // so three rows written ahead cannot reach the rows the next
-                    // pass still reads.  The copy has to happen here rather than at
-                    // the end of the pass because qkv_cur is shared by every layer.
-                    for row in 0..TILE {
-                        copy_dispatch(
-                            &mut b,
-                            &kernels.copy,
-                            &scratch.qkv_cur,
-                            row * conv_dim,
-                            &g.window,
-                            ((slot0 + row) & (conv_ring - 1)) * conv_dim,
-                            conv_dim,
-                        );
-                    }
-                    b.barrier();
                     let inv = 1.0f32 / (dk as f32).sqrt();
                     // q = inv^2 * rms_norm(q), k = inv * rms_norm(k)  (no weight)
                     b.encode(
@@ -1228,24 +1210,11 @@ impl Qwen38 {
                                 .scalar(9, hk as i32)
                                 .scalar(10, hv as i32)
                                 .scalar(11, dk as i32)
-                                .scalar(12, dv as i32),
+                                .scalar(12, dv as i32)
+                                .buf_offset(13, &g.snap, row * g.state.len_bytes())
+                                .scalar(14, if self.spec_snap { 1 } else { 0 }),
                         );
                         b.barrier();
-                        if self.spec_snap {
-                            // state is fp32 but copy_off moves 2-byte units, so
-                            // count and offset in halves - the copy stays exact.
-                            let sh = g.state.len_bytes() / 2;
-                            copy_dispatch(
-                                &mut b,
-                                &kernels.copy,
-                                &g.state,
-                                0,
-                                &g.snap,
-                                row * sh,
-                                sh,
-                            );
-                            b.barrier();
-                        }
                         b.encode(
                             Dispatch::new(&kernels.rmsnorm_gated, (hv * NT, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.gdn_y, row * (value_dim * 2))

@@ -178,7 +178,7 @@ kernel void conv1d_silu_ring(
 // (slot0 + r).  The slots are consecutive because TILE <= ring, so one dispatch
 // covers what used to take TILE of them.
 kernel void conv1d_silu_ring_tile(
-    device const half*  window   [[buffer(0)]],
+    device half*        window   [[buffer(0)]],
     device const half*  w        [[buffer(1)]],
     device half*        out      [[buffer(2)]],
     constant int&       conv_dim [[buffer(3)]],
@@ -203,6 +203,13 @@ kernel void conv1d_silu_ring_tile(
         acc += (float)w[c * 4 + j] * (float)(*src);
     }
     out[(size_t)row * conv_dim + c] = (half)(acc / (1.0f + exp(-acc)));
+    // Fold the ring update in: the row of this pass that this thread just convolved
+    // is exactly the raw row the next pass needs in the ring, so writing it here
+    // removes a copy launch per row (and the read that copy would have done).  No
+    // thread can read the slot it writes - every window read in this dispatch is for
+    // pos < pos0, i.e. at least three slots behind the ones written here.
+    window[(size_t)((slot0 + row) & (ring - 1)) * conv_dim + c] =
+        cur[(size_t)row * conv_dim + c];
 }
 
 // Weightless rms norm for a whole tile: threadgroup (head, tile row).  The
@@ -263,6 +270,8 @@ kernel void gdn_step(
     constant int&       Hv      [[buffer(10)]],
     constant int&       Dk      [[buffer(11)]],
     constant int&       Dv      [[buffer(12)]],
+    device float*       snap    [[buffer(13)]],  // [TILE][Hv * Dv * Dk] fp32
+    constant int&       snap_on [[buffer(14)]],
     uint hv [[threadgroup_position_in_grid]],
     uint dv [[thread_index_in_threadgroup]])
 {
@@ -291,6 +300,13 @@ kernel void gdn_step(
         acc += S[d] * (float)qp[d];
     }
     y[(size_t)hv * Dv + dv] = (half)acc;
+    // The speculative rewind needs the state as of the end of this row.  Those
+    // values are already in registers here, so writing them out costs one store per
+    // element and saves a separate whole-state copy launch (plus the read it did).
+    if (snap_on) {
+        device float* SP = snap + ((size_t)hv * Dv + dv) * Dk;
+        for (int d = 0; d < Dk; ++d) SP[d] = S[d];
+    }
 }
 
 // RMSNorm over `D` with an explicit input row stride and an output scale.
