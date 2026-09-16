@@ -411,6 +411,70 @@ kernel void NAME(                                                               
 }
 Q4_GEMV_KS_U4H(q4_gemv_k3_u4h, 3)
 
+// The half4 form still spends a horizontal reduction per dot: `dot(half4,half4)`
+// has to collapse four lanes to a scalar, twice per word per row.  But a lane sees
+// only n_groups/32 iterations of the group loop (K=5120 is 80 groups over 32 lanes,
+// so two or three), so the accumulator can stay a half4 and be collapsed once at the
+// end instead of 16 times per group.  Same weights, same x, same order of products -
+// only the order of the final additions changes, and the partial sums stay far below
+// the half range because a lane only owns a couple of groups.
+#define Q4_GEMV_KS_U4H4(NAME, NK)                                                         \
+kernel void NAME(                                                                         \
+    device const uint*   w      [[buffer(0)]],                                            \
+    device const ushort* scales [[buffer(1)]],                                            \
+    device const ushort* biases [[buffer(2)]],                                            \
+    device const half*   x      [[buffer(3)]],                                            \
+    device half*         y      [[buffer(4)]],                                            \
+    constant int&        K      [[buffer(5)]],                                            \
+    constant int&        k      [[buffer(6)]],                                            \
+    constant int&        out_f  [[buffer(7)]],                                            \
+    constant int&        R      [[buffer(8)]],                                            \
+    uint row  [[threadgroup_position_in_grid]],                                            \
+    uint lane [[thread_index_in_threadgroup]])                                            \
+{                                                                                         \
+    (void)k;                                                                              \
+    (void)R;                                                                              \
+    const int n_groups = K / GROUP_SIZE;                                                  \
+    device const uint4*  wp = (device const uint4*)(w + (size_t)row * (size_t)(K / 8));    \
+    device const ushort* sp = scales + (size_t)row * (size_t)n_groups;                     \
+    device const ushort* bp = biases + (size_t)row * (size_t)n_groups;                     \
+    half4 a4[NK];                                                                         \
+    _Pragma("unroll") for (int t = 0; t < NK; ++t) a4[t] = half4(0.0h);                    \
+    for (int g = (int)lane; g < n_groups; g += 32) {                                      \
+        const half sh = (half)as_type<float>((uint)sp[g] << 16);                           \
+        const half bh = (half)as_type<float>((uint)bp[g] << 16);                           \
+        device const uint4* gw = wp + (size_t)g * (Q4_WORDS_PER_GROUP / 4);                \
+        _Pragma("unroll") for (int wi = 0; wi < Q4_WORDS_PER_GROUP / 4; ++wi) {            \
+            const uint4 w4 = gw[wi];                                                       \
+            const uint wds[4] = {w4.x, w4.y, w4.z, w4.w};                                  \
+            _Pragma("unroll") for (int c = 0; c < 4; ++c) {                                \
+                const uint word = wds[c];                                                  \
+                const half4 w0 = half4((half)( word        & 0xFu),                        \
+                                       (half)((word >>  4) & 0xFu),                        \
+                                       (half)((word >>  8) & 0xFu),                        \
+                                       (half)((word >> 12) & 0xFu)) * sh + bh;             \
+                const half4 w1 = half4((half)((word >> 16) & 0xFu),                        \
+                                       (half)((word >> 20) & 0xFu),                        \
+                                       (half)((word >> 24) & 0xFu),                        \
+                                       (half)((word >> 28) & 0xFu)) * sh + bh;             \
+                _Pragma("unroll") for (int t = 0; t < NK; ++t) {                           \
+                    device const half* gx = x + (size_t)t * K + g * GROUP_SIZE             \
+                                          + (wi * 4 + c) * 8;                              \
+                    const half4 x0 = *(device const half4*)(gx);                           \
+                    const half4 x1 = *(device const half4*)(gx + 4);                       \
+                    a4[t] += w0 * x0 + w1 * x1;                                            \
+                }                                                                          \
+            }                                                                              \
+        }                                                                                  \
+    }                                                                                      \
+    _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                       \
+        const float4 a = float4(a4[t]);                                                    \
+        const float ssum = simd_sum((a.x + a.y) + (a.z + a.w));                            \
+        if (lane == 0) y[(size_t)t * out_f + row] = (half)ssum;                            \
+    }                                                                                      \
+}
+Q4_GEMV_KS_U4H4(q4_gemv_k3_u4h4, 3)
+
 // R output rows per threadgroup.  Every output row of the sweep loads the whole
 // input row, so x traffic is out_dim times the input size - far more L1/L2 load
 // traffic than the 4-bit weights themselves.  Loading x once per group and reusing
@@ -538,6 +602,7 @@ pub const K_Q4_GEMV_K3: &str = "q4_gemv_k3";
 pub const K_Q4_GEMV_K4: &str = "q4_gemv_k4";
 pub const K_Q4_GEMV_K3_U4: &str = "q4_gemv_k3_u4";
 pub const K_Q4_GEMV_K3_U4H: &str = "q4_gemv_k3_u4h";
+pub const K_Q4_GEMV_K3_U4H4: &str = "q4_gemv_k3_u4h4";
 pub const K_Q4_GEMV_K3_R2: &str = "q4_gemv_k3_r2";
 pub const K_Q4_GEMV_K3_R3: &str = "q4_gemv_k3_r3";
 pub const K_Q4_GEMV_K3_R2U: &str = "q4_gemv_k3_r2u";

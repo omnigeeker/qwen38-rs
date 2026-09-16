@@ -81,3 +81,20 @@ one holds is exactly what mains power would settle.
 The same lever is not exhausted: the nibble extract + convert is now the largest remaining block
 (16 of ~40 instructions), and accumulating a whole group in half before widening would remove 7 of
 the 8 widenings per group.
+
+## Follow-up in the same round: the half4 accumulator loses
+
+`dot(half4,half4)` collapses four lanes to a scalar, twice per word per row, and a lane only owns
+`n_groups/32` groups (K=5120 is 80 groups over 32 lanes), so the accumulator could in principle stay
+a half4 and be collapsed once at the end.  Screened as `q4_gemv_k3_u4h4` against `u4h` in the same
+paired sweep (10 rounds):
+
+```
+k3 + u4 + half dots   median 0.8319  calibrated 0.8257  wins 9/10
+k3 + u4 + half4 acc   median 0.8417  calibrated 0.8354  wins 9/10
+k3 (baseline dup)     median 1.0075  (CALIBRATION)
+```
+
+Element-wise accumulation is 1.2% *slower* than the scalar form it replaces: `w0*x0 + w1*x1` cannot
+fuse into an FMA chain the way the reduction can.  Production keeps `u4h`; the arm stays in the bench
+as a closed candidate.

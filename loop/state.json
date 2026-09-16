@@ -1168,6 +1168,24 @@
         "deliverable": "q4_gemv_k3_u4h and q4_gemv_h in crates/qw-metal/src/msl.rs, wired in crates/qw-model/src/runner.rs"
       },
       "next": "Same lever, not exhausted: after this change the nibble extract + convert is the largest remaining block (16 of ~40 instructions per group/word/lane), and accumulating a whole group in half before widening removes 7 of the 8 widenings per group. Screen both against the bench (the u4h arm stays in the bench list as a reference), integrate only what clears the calibrated screen, then re-run parity + accept.sh. Also: TILE=4 should be re-costed now that the per-row ALU is cheaper - its marginal row cost has dropped, which is the one thing that could flip the round-002 conclusion"
+    },
+    {
+      "round": 49.5,
+      "title": "Closed within round 049: the half4 element-wise accumulator (q4_gemv_k3_u4h4), which removes the 16 horizontal dot reductions per group, screens 1.2% SLOWER than the scalar-accumulator half form (calibrated 0.8354 vs 0.8257, both 9/10) because w0*x0 + w1*x1 cannot fuse into an FMA chain. Production stays on u4h. Also re-costed TILE with the cheaper ALU: bench k=2 55.31, k=3 61.54, k=4 75.46 ms (cool state); TILE=4 is still worse than TILE=3 for the full pass, so round 002's choice holds",
+      "tok_s": 19.77,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "no change - candidate rejected",
+        "G4": "pass (runtime unchanged from the accepted round-049 state)"
+      },
+      "evidence": {
+        "half4_acc": "paired sweep 10 rounds: u4h 0.8319 raw / 0.8257 calibrated 9/10 vs u4h4 0.8417 / 0.8354 9/10, instrument bias 1.0075 => the element-wise form is 1.2% slower",
+        "tile_recost": "with the half kernel, bench sweep k=2 55.31 ms, k=3 61.54 ms, k=4 75.46 ms (cool state, stray processes cleared first - there were 3 and they faked the first k=4 reading at 109.74 ms). Marginal row ~14 ms cool; against TILE=3's 128.5 ms hot pass at 2.54 tokens, TILE=4 adds a GEMV row, a non-GEMV row and a third draft step for 2.90 tokens and loses",
+        "stray_processes": "3 stray qwen38 processes were present and corrupted the first k=4 sweep reading (109.74 ms vs 75.46 ms after clearing). The stray check before timing stays mandatory"
+      },
+      "next": "The instruction diet is close to exhausted for this kernel shape: the extract+convert is ~16 of ~40 instructions per group/word/lane and is irreducible, the x loads are 6 (minimum for 3 rows at 8+8 bytes), and both accumulator alternatives measured worse than the shipped form. Remaining candidates: (a) simdgroup_matrix with threadgroup staging, which moves the per-row dots off the ALU entirely; (b) an all-half k=1/k=3 pair re-checked for TILE=4 now that the marginal row is cheaper. Mains power still gates any absolute claim about 50 tok/s"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

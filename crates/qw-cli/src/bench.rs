@@ -94,8 +94,8 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         let variants: [(&str, &str, usize); 5] = [
             ("k3 (baseline)", qw_metal::msl::K_Q4_GEMV_K3, 1),
             ("k3 + u4 (16B) loads", qw_metal::msl::K_Q4_GEMV_K3_U4, 1),
-            ("k3 + u4, 2 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R2U, 2),
             ("k3 + u4 + half dots", qw_metal::msl::K_Q4_GEMV_K3_U4H, 1),
+            ("k3 + u4 + half4 acc", qw_metal::msl::K_Q4_GEMV_K3_U4H4, 1),
             ("k3 (baseline dup)", qw_metal::msl::K_Q4_GEMV_K3, 1),
         ];
         // On this machine the GPU clock swings by 4x on the timescale of a single
