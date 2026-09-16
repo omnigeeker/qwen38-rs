@@ -87,10 +87,15 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         // at a reproducible clock plateau).  What is left untested is the other way to
         // buy memory-level parallelism: more bytes in flight per instruction, i.e. a
         // 16-byte uint4 weight load instead of 8 bytes.
-        let variants: [(&str, &str, usize); 3] = [
+        // The 4th entry is a duplicate of the baseline.  Its ratio against the primary
+        // baseline is the instrument's calibration: a value away from 1.0000 means the
+        // method has an order or drift bias, and any candidate's number has to be read
+        // against that, not against 1.0000.
+        let variants: [(&str, &str, usize); 4] = [
             ("k3 (baseline)", qw_metal::msl::K_Q4_GEMV_K3, 1),
             ("k3 + u4 (16B) loads", qw_metal::msl::K_Q4_GEMV_K3_U4, 1),
             ("k3 + u4, 2 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R2U, 2),
+            ("k3 (baseline dup)", qw_metal::msl::K_Q4_GEMV_K3, 1),
         ];
         // On this machine the GPU clock swings by 4x on the timescale of a single
         // sweep (battery + Low Power Mode), so absolute times mean nothing.  Measure
@@ -134,19 +139,40 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         }
         let mut base_ms: Vec<f64> = Vec::new();
+        // The last entry is a duplicate of the baseline, so its ratio is the
+        // instrument's own bias - the order and drift inside a round.  Round 045
+        // measured that bias at 0.9649, meaning the raw ratios flattered every
+        // candidate by ~3.5% and sent round 044 chasing a 7% "win" that is really
+        // ~1.2%.  Every ratio is therefore reported both raw and calibrated, and the
+        // calibrated column is the one to believe.
+        let bias = {
+            let last = &ratios[variants.len() - 1];
+            if last.is_empty() {
+                1.0
+            } else {
+                last[last.len() / 2]
+            }
+        };
         for (i, (label, _n, gr)) in variants.iter().enumerate() {
             if i == 0 {
                 println!("  {label:<20} grid_rows={gr}  (paired baseline)");
+            } else if i + 1 == variants.len() {
+                let m = ratios[i][ratios[i].len() / 2];
+                println!(
+                    "  {:<20} grid_rows={}  median ratio {:.4}  wins {}/{}  (CALIBRATION: this is the instrument bias)",
+                    label, gr, m, wins[i], rounds
+                );
             } else {
                 let m = ratios[i][ratios[i].len() / 2];
                 println!(
-                    "  {:<20} grid_rows={}  median ratio {:.4}  wins {}/{}  ({})",
+                    "  {:<20} grid_rows={}  median ratio {:.4}  calibrated {:.4}  wins {}/{}  ({})",
                     label,
                     gr,
                     m,
+                    m / bias,
                     wins[i],
                     rounds,
-                    if m < 1.0 { "faster" } else { "slower" }
+                    if m / bias < 1.0 { "faster" } else { "slower" }
                 );
             }
         }

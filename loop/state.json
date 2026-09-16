@@ -1062,6 +1062,27 @@
         "harness_notes": "two apparent failures were my own extraction regex, not the engine: the steady-state line carries tokens/pass between the seconds and the ms/token fields, and tail -4 cuts the stderr diagnostics that are flushed before the buffered stdout text"
       },
       "next": "Run the interleaved steady-state A/B of /tmp/qwen38_base vs /tmp/qwen38_u4 (3 clean pairs, 400 tokens, alternating) to confirm the 7% sweep win end to end. Then continue on the same axis: u4 helped by doubling bytes in flight per load instruction, so the natural follow-on is a wider per-lane stride (more words per iteration, or two uint4 per iteration) before touching anything else. Mains power with Low Power Mode off is still required for any absolute throughput claim"
+    },
+    {
+      "round": 45,
+      "title": "Added a duplicate-baseline calibration arm to the paired sweep and found the instrument itself biased by ~3.5%, which means round 044's '7% win' for u4 is really ~1.7% (corrected end-to-end A/B over 4 alternating pairs: 0.9831). Also found why the model can never be measured cold: the prefill runs one pass per prompt token (12 passes, 0.5-2.8 s of sustained load) and triggers the throttle before any decode step is timed, which is the true source of round 042's unexplained 3.5x gap. This narrows the 50 tok/s target to the power-insensitive ~25 ms of non-sweep work",
+      "tok_s": 18.7,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "pass",
+        "G4": "accept.sh 12 passed 0 failed ACCEPTED (round 044, with u4 wired)"
+      },
+      "evidence": {
+        "instrument_bias": "a duplicate of the baseline (same kernel, same grid, same rounds) reads 0.9649 and 0.9559 against the primary baseline in two independent 30-60 round runs at the plateau, so order alternation does not cancel a ~3.5% bias favouring the non-baseline arms",
+        "calibrated_u4": "raw 0.9535 -> calibrated 0.9882 in run 1; raw 0.9521 -> calibrated 0.9960 in run 2. End-to-end interleaved A/B on the real model, 4 pairs with alternating order: median paired ratio 0.9831 (all 4 pairs favour u4) = +1.7% tok/s. So u4 is real but worth ~1.7%, not 7.0%",
+        "bench_now_calibrated": "the rows==9 paired sweep now includes the duplicate baseline as its last variant and prints every ratio both raw and calibrated; the calibrated column is the one that matches the model",
+        "why_never_cold": "150 s cooldown then a model run: steady-state 53.7 ms/token against a 53.4 plateau, with forward2 113.82 ms. The prefill runs one pass per prompt token (12 passes, 0.5-2.8 s of sustained GPU load) and triggers the throttle before any decode step is timed. The bench is cold unless burned, the model is always hot - the real explanation of round 042's 3.5x gap",
+        "pass_composition": "plateau 143.6 ms = sweep 119 (83%) + draft 9.7 (7%) + non-GEMV 8.6 (6%) + tail 3.0 + logits 2.5. dp divides by drafts (= passes*2), so the printed ms/pass values are per draft",
+        "the_real_target": "the non-sweep rest is ~24.6 ms at the plateau and ~27 ms on mains, i.e. nearly power-insensitive (dispatch/sync/latency bound, not bandwidth bound), and at mains it is 45% of the pass. Halving it is +12.5 ms = 42.4 -> ~51 tok/s. Composition: draft 9.7 (two MTP steps each with a host round trip for the argmax), non-GEMV 8.6, tail 3.0, logits 2.5"
+      },
+      "next": "Attack the power-insensitive rest, biggest first: (1) the draft's two host round trips - do the argmax on the GPU and keep both MTP steps in one command buffer by having the embedding gather read the token id from a GPU buffer, so no sync is needed between them; (2) the 1137 non-GEMV dispatches via the tiling fusions (rmsnorm_gated 144->48, rmsnorm_s 96->32, rope_partial 96->32, ewise_add into rmsnorm). Every candidate must be confirmed by an interleaved end-to-end A/B because the calibrated sweep is only a screen. Mains power with Low Power Mode off is still required for any absolute claim"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

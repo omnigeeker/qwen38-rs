@@ -54,3 +54,22 @@ runs.  The A/B is the first thing to run next round, on mains if available.  (Tw
 failures along the way were both my own extraction regex, not the engine: the steady-state line
 carries `tokens/pass` between the seconds and the ms/token field, and `tail -4` cuts stderr
 diagnostics that are flushed before the buffered stdout text.)
+
+## CORRECTION (round 045): the 7.0% was an uncalibrated instrument, the real win is ~1%
+
+Round 045 added a duplicate of the baseline to the paired sweep as a calibration arm - the same
+kernel, same grid, measured in the same rounds.  It read **0.9649** and **0.9559** against the
+primary baseline in two independent runs, i.e. the method itself prefers whatever is not the
+baseline by ~3.5%.  Order alternation does not cancel it.
+
+Correcting the u4 number with that bias:
+
+```
+raw        0.9535   1.2% "faster"  after dividing by the 0.9649 bias
+raw        0.9521   0.4% "faster"  after dividing by the 0.9559 bias
+```
+
+and the end-to-end interleaved A/B on the real model (4 pairs, orders alternating) gives
+**0.9831, i.e. +1.7% tok/s**, which agrees.  **So `q4_gemv_k3_u4` is worth about +1.7%, not the
+7.0% claimed above.**  The change is kept - it is a real, reproducible improvement and it costs
+nothing - but the claim in this file is wrong and the calibrated column is the one to read.
