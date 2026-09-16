@@ -1209,6 +1209,28 @@
       },
       "deliverable": "TILE=4 in crates/qw-model/src/runner.rs plus q4_gemv_k4_u4h in crates/qw-metal/src/msl.rs; q4_gemv_k3_u4hu2 and q4_gemv_k3_u4h4 remain as closed bench arms",
       "next": "The GEMV is 86% of the pass and 74% of that is the irreducible DRAM stream; the ALU part has now rejected three separate attacks. Mains is the only thing that can settle whether the target is met. If it is not, the remaining structural idea is simdgroup_matrix with threadgroup staging, which moves the per-row dots off the ALU entirely - but with M=3 against an 8x8 tile the useful fraction is 37% and every neighbouring attempt has regressed, so it needs a bench screen before any integration"
+    },
+    {
+      "round": 51,
+      "title": "The cost model is inverted: the verify batch is 135.43/114.58 ms (TILE=4/TILE=3) of which the GEMV is 121.93/101.28 and the non-GEMV 13.50/13.30. The non-GEMV is flat in rows, so GEMV(k)=39.5+20.6k - two thirds of the GEMV is row-scaling ALU, not the weight stream. QW_COOL_SLEEP added: idling 90 s after the prefill shows the k=1 forward at 30.90-31.04 ms streaming 14.41 GB in 26 ms = 554 GB/s = DRAM peak with the row ALU hidden, while the hot k=1 is ~130 ms - the throttle is on the MEMORY path (4.2x), not the cores (the per-row ALU is 23.8 cool vs 20.6 hot). This is why four rounds of kernel-shape attacks all failed. Rejected: TILE=6 (-8.63% median, 4/4 pairs, though 4.26 vs 3.41 tokens/pass), the half accumulator (0.8071 vs 0.8053), and simdgroup_matrix refuted on paper (0.23 vs 0.203 warp-inst per weight of staging). Nothing shipped; runtime identical to accepted b75f13e",
+      "tok_s": 20.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass (fmt clean)",
+        "G2": "runtime unchanged from b75f13e which was parity 6/6 + accept.sh 12/12",
+        "G3": "none shipped - all three candidates rejected",
+        "G4": "QW_COOL_SLEEP is a diagnostic only, inert unless set"
+      },
+      "evidence": {
+        "phase": "verify(1858) 135.43 ms mean over 30 batches = 88% of a ~158 ms pass; the in-code 'verify 47.06 ms/pass' print is misleading and must not be used",
+        "split": "GEMV-skipped 1361 dispatches = 13.50 ms (TILE=4) / 1137 = 13.30 ms (TILE=3) => non-GEMV flat in rows; GEMV 121.93 / 101.28 => marginal 20.6 ms per row",
+        "cool": "QW_COOL_SLEEP=90: k=1 forward 30.90/31.04 ms (554 GB/s = DRAM peak, ALU hidden), TILE=4 verify 105.6/105.8, non-GEMV 10.6; hot: k=1 ~130, verify 135.4, non-GEMV 13.5 => stream 4.2x, rows 1.28x",
+        "tile6": "4/4 pairs slower, ratios 1.0824/1.0972/1.0917/1.1504, median -8.63%; marginal row ~30 ms for 0.425 tokens vs the pass average 0.0209 tokens/ms",
+        "half_acc": "calibrated 0.8071 vs shipped 0.8053, 14/14 but a wash",
+        "matrix_refuted": "59 warp-inst per 256-weight k-tile of staging (8 W stores, 8+8 X, 2 barriers, 4 MMA) = 0.23 per weight vs the shipped 0.203 (52 lane-inst per 8 weights amortised across rows by registers); the 3-instruction nibble extract per weight happens either way and is already shared",
+        "ceiling": "round 001's measured 42.4 tok/s at mains x 1.065 (half dots, measured) x ~1.03 (TILE=4 amortising the term that is at a hard floor at mains) = 46-49 tok/s; the remaining gap is the per-row ALU, which the current kernel shape cannot reduce further (extract 0.094 warp-inst/weight irreducible for 4-bit; every accumulator alternative measured worse)"
+      },
+      "next": "The wall is the per-row ALU instruction rate, which does not improve with clock. Two directions remain: (a) a prefill that is not twelve sequential full-weight passes (QW_COOL_SLEEP proves those passes are what heats the part before the first timed token; batching them is a real end-to-end win of ~0.9 s per generation, though it does not move tok/s); (b) a weight format needing no extract, which costs bytes and is therefore only worth it if the stream stays under the ALU - measure before building. Mains remains the only condition that can verify the 50 tok/s target, and the machine has been on battery at 16% with Low Power Mode on for rounds 8-10"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
