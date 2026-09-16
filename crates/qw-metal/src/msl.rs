@@ -64,6 +64,59 @@ kernel void q4_gemv(
     }
 }
 
+// Same kernel as q4_gemv_h with both of its loads widened: the weights arrive as two
+// 16-byte uint4 instead of eight 4-byte words, and the eight halves the row needs for a
+// word come from one 16-byte uint4 instead of two 8-byte half4.  This is the path the
+// three MTP draft steps and the prefill take.  Same bits, same order of operations.
+kernel void q4_gemv_hx(
+    device const uint*   w      [[buffer(0)]],
+    device const ushort* scales [[buffer(1)]],
+    device const ushort* biases [[buffer(2)]],
+    device const half*   x      [[buffer(3)]],
+    device half*         y      [[buffer(4)]],
+    constant int&        K      [[buffer(5)]],
+    uint row  [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]])
+{
+    const int n_groups = K / GROUP_SIZE;
+    device const uint*   wp = w      + (size_t)row * (size_t)(K / 8);
+    device const ushort* sp = scales + (size_t)row * (size_t)n_groups;
+    device const ushort* bp = biases + (size_t)row * (size_t)n_groups;
+
+    float acc = 0.0f;
+    for (int g = (int)lane; g < n_groups; g += 32) {
+        const half s = (half)as_type<float>((uint)sp[g] << 16);
+        const half b = (half)as_type<float>((uint)bp[g] << 16);
+        device const uint4* gw4 = (device const uint4*)(wp + g * Q4_WORDS_PER_GROUP);
+        device const half*  gx  = x + g * GROUP_SIZE;
+        #pragma unroll
+        for (int wi2 = 0; wi2 < Q4_WORDS_PER_GROUP / 4; ++wi2) {
+            const uint4 w4 = gw4[wi2];
+            const uint wds[4] = {w4.x, w4.y, w4.z, w4.w};
+            #pragma unroll
+            for (int c = 0; c < 4; ++c) {
+                const uint word = wds[c];
+                const uint4 xv = *(device const uint4*)(gx + (wi2 * 4 + c) * 8);
+                const half4 x0 = as_type<half4>(xv.xy);
+                const half4 x1 = as_type<half4>(xv.zw);
+                const half4 q0 = half4((half)( word        & 0xFu),
+                                       (half)((word >>  4) & 0xFu),
+                                       (half)((word >>  8) & 0xFu),
+                                       (half)((word >> 12) & 0xFu));
+                const half4 q1 = half4((half)((word >> 16) & 0xFu),
+                                       (half)((word >> 20) & 0xFu),
+                                       (half)((word >> 24) & 0xFu),
+                                       (half)((word >> 28) & 0xFu));
+                acc += (float)(dot(q0 * s + b, x0) + dot(q1 * s + b, x1));
+            }
+        }
+    }
+    acc = simd_sum(acc);
+    if (lane == 0) {
+        y[row] = (half)acc;
+    }
+}
+
 // Same kernel and the same accumulation order as q4_gemv, but with the inner
 // product in half.  The plain (k=1) and spec (k=3) paths use different kernels for
 // the same linear, so their arithmetic has to stay identical or the two paths part
@@ -473,6 +526,69 @@ kernel void NAME(                                                               
 }
 Q4_GEMV_KS_U4HH(q4_gemv_k3_u4hh, 3)
 Q4_GEMV_KS_U4HH(q4_gemv_k4_u4hh, 4)
+
+// The x loads dominate the kernel's memory ops: per (group, word) the row loop issues
+// two 8-byte half4 loads per row, while the weights need only one 16-byte load for the
+// whole pass - 28.8 G loads against 3.6 G.  The eight halves a lane needs are sixteen
+// contiguous bytes, so one uint4 load covers them and the two half4s are reinterprets.
+// Same bits, same arithmetic, half the x loads.
+#define Q4_GEMV_KS_U4HX(NAME, NK)                                                         \
+kernel void NAME(                                                                         \
+    device const uint*   w      [[buffer(0)]],                                            \
+    device const ushort* scales [[buffer(1)]],                                            \
+    device const ushort* biases [[buffer(2)]],                                            \
+    device const half*   x      [[buffer(3)]],                                            \
+    device half*         y      [[buffer(4)]],                                            \
+    constant int&        K      [[buffer(5)]],                                            \
+    constant int&        k      [[buffer(6)]],                                            \
+    constant int&        out_f  [[buffer(7)]],                                            \
+    constant int&        R      [[buffer(8)]],                                            \
+    uint row  [[threadgroup_position_in_grid]],                                            \
+    uint lane [[thread_index_in_threadgroup]])                                            \
+{                                                                                         \
+    (void)k;                                                                              \
+    (void)R;                                                                              \
+    const int n_groups = K / GROUP_SIZE;                                                  \
+    device const uint4*  wp = (device const uint4*)(w + (size_t)row * (size_t)(K / 8));    \
+    device const ushort* sp = scales + (size_t)row * (size_t)n_groups;                     \
+    device const ushort* bp = biases + (size_t)row * (size_t)n_groups;                     \
+    float acc[NK];                                                                        \
+    _Pragma("unroll") for (int t = 0; t < NK; ++t) acc[t] = 0.0f;                          \
+    for (int g = (int)lane; g < n_groups; g += 32) {                                      \
+        const half sh = (half)as_type<float>((uint)sp[g] << 16);                           \
+        const half bh = (half)as_type<float>((uint)bp[g] << 16);                           \
+        device const uint4* gw = wp + (size_t)g * (Q4_WORDS_PER_GROUP / 4);                \
+        _Pragma("unroll") for (int wi = 0; wi < Q4_WORDS_PER_GROUP / 4; ++wi) {            \
+            const uint4 w4 = gw[wi];                                                       \
+            const uint wds[4] = {w4.x, w4.y, w4.z, w4.w};                                  \
+            _Pragma("unroll") for (int c = 0; c < 4; ++c) {                                \
+                const uint word = wds[c];                                                  \
+                const half4 w0 = half4((half)( word        & 0xFu),                        \
+                                       (half)((word >>  4) & 0xFu),                        \
+                                       (half)((word >>  8) & 0xFu),                        \
+                                       (half)((word >> 12) & 0xFu)) * sh + bh;             \
+                const half4 w1 = half4((half)((word >> 16) & 0xFu),                        \
+                                       (half)((word >> 20) & 0xFu),                        \
+                                       (half)((word >> 24) & 0xFu),                        \
+                                       (half)((word >> 28) & 0xFu)) * sh + bh;             \
+                _Pragma("unroll") for (int t = 0; t < NK; ++t) {                           \
+                    device const half* gx = x + (size_t)t * K + g * GROUP_SIZE             \
+                                          + (wi * 4 + c) * 8;                              \
+                    const uint4 xv = *(device const uint4*)(gx);                           \
+                    const half4 x0 = as_type<half4>(xv.xy);                                \
+                    const half4 x1 = as_type<half4>(xv.zw);                                \
+                    acc[t] += (float)(dot(w0, x0) + dot(w1, x1));                          \
+                }                                                                          \
+            }                                                                              \
+        }                                                                                  \
+    }                                                                                      \
+    _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                       \
+        const float a = simd_sum(acc[t]);                                                  \
+        if (lane == 0) y[(size_t)t * out_f + row] = (half)a;                               \
+    }                                                                                      \
+}
+Q4_GEMV_KS_U4HX(q4_gemv_k3_u4hx, 3)
+Q4_GEMV_KS_U4HX(q4_gemv_k4_u4hx, 4)
 Q4_GEMV_KS_U4H(q4_gemv_k6_u4h, 6)
 
 // The half4 form still spends a horizontal reduction per dot: `dot(half4,half4)`
@@ -730,6 +846,7 @@ kernel void ewise_add(
 /// Kernel entry names.
 pub const K_Q4_GEMV: &str = "q4_gemv";
 pub const K_Q4_GEMV_H: &str = "q4_gemv_h";
+pub const K_Q4_GEMV_HX: &str = "q4_gemv_hx";
 pub const K_Q4_GEMV_K: &str = "q4_gemv_k";
 pub const K_Q4_GEMV_KR: &str = "q4_gemv_kr";
 pub const K_Q4_GEMV_K2: &str = "q4_gemv_k2";
@@ -741,6 +858,8 @@ pub const K_Q4_GEMV_K4_U4H: &str = "q4_gemv_k4_u4h";
 pub const K_Q4_GEMV_K6_U4H: &str = "q4_gemv_k6_u4h";
 pub const K_Q4_GEMV_K3_U4HH: &str = "q4_gemv_k3_u4hh";
 pub const K_Q4_GEMV_K4_U4HH: &str = "q4_gemv_k4_u4hh";
+pub const K_Q4_GEMV_K3_U4HX: &str = "q4_gemv_k3_u4hx";
+pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
 pub const K_Q4_GEMV_K3_U4H4: &str = "q4_gemv_k3_u4h4";
 pub const K_Q4_GEMV_K3_U4HU2: &str = "q4_gemv_k3_u4hu2";
 pub const K_Q4_GEMV_K3_R2: &str = "q4_gemv_k3_r2";

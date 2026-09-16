@@ -417,7 +417,7 @@ impl Qwen38 {
         let kernels = {
             let mut b = dev.batch();
             Kernels {
-                q4_gemv: b.kernel(msl::COMMON, msl::K_Q4_GEMV_H)?,
+                q4_gemv: b.kernel(msl::COMMON, msl::K_Q4_GEMV_HX)?,
                 // Unblocked: see QLinear::encode_tile for why row blocking was tried
                 // and rejected.
                 // 16-byte weight loads instead of 8: the sweep is memory-latency bound and
@@ -427,8 +427,8 @@ impl Qwen38 {
                     msl::COMMON,
                     match TILE {
                         6 => msl::K_Q4_GEMV_K6_U4H,
-                        4 => msl::K_Q4_GEMV_K4_U4H,
-                        _ => msl::K_Q4_GEMV_K3_U4H,
+                        4 => msl::K_Q4_GEMV_K4_U4HX,
+                        _ => msl::K_Q4_GEMV_K3_U4HX,
                     },
                 )?,
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,

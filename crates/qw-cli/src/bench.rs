@@ -95,7 +95,7 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             ("k3 (baseline)", qw_metal::msl::K_Q4_GEMV_K3, 1),
             ("k3 + u4 (16B) loads", qw_metal::msl::K_Q4_GEMV_K3_U4, 1),
             ("k3 + u4 + half dots", qw_metal::msl::K_Q4_GEMV_K3_U4H, 1),
-            ("k3 + u4 + half acc", qw_metal::msl::K_Q4_GEMV_K3_U4HH, 1),
+            ("k3 + u4 + x16B load", qw_metal::msl::K_Q4_GEMV_K3_U4HX, 1),
             ("k3 (baseline dup)", qw_metal::msl::K_Q4_GEMV_K3, 1),
         ];
         // On this machine the GPU clock swings by 4x on the timescale of a single
