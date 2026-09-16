@@ -1103,6 +1103,27 @@
         "process": "stray-process check now belongs in front of every timed comparison"
       },
       "next": "No new speedup this round; u4 stands at +1.7%. The target remains the power-insensitive rest (~25 ms: draft 9.7, non-GEMV 8.6, tail 3.0, logits 2.5), where the only lever with real upside left is dispatch count - the fusions (rmsnorm_gated 144->48, rmsnorm_s 96->32, rope_partial 96->32, ewise_add into rmsnorm, silu_mul) remove ~416 of the 1137 non-GEMV dispatches. Note the logits readback is NOT worth optimising: the f32 widening is not the cost and reducing it measured negative"
+    },
+    {
+      "round": 47,
+      "title": "Batched four per-row dispatch families over TILE (1634 -> 1378 dispatches) and found a latent correctness trap: key_dim = hk*dk (6144) is not nkv*hd (1024), so the per-row k_norm/k_rope mix two row strides and no flattened index can satisfy both - caught by accept.sh's spec==plain 300-token check (291/300 differ, first at 4) while parity 6/6 passed. Kept only rmsnorm_gated, whose strides do match; it passed every gate (parity 6/6, accept.sh 12/12, dispatches 1634->1538) and then measured 1.04% SLOWER over 3 clean alternating pairs, so it was reverted too. The dispatch-count hypothesis that round 045's plan rested on is refuted",
+      "tok_s": 18.4,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6",
+        "G3": "no speedup claimed - both changes reverted",
+        "G4": "pass (accept.sh 12/12 with the gated hoist; tree returned to the round-046 state)"
+      },
+      "evidence": {
+        "batched": "four families batched over TILE by changing the grid to TILE*n*NT and dropping the per-row buf_offset: rmsnorm_gated 3->1 per layer, rmsnorm_s q_norm 3->1, rmsnorm_s k_norm 3->1, rope q+k 6->2. Dispatch count 1634 -> 1378, parity 6/6, but accept.sh failed: 'spec==plain: 291 of 300 tokens differ, first at 4'",
+        "the_trap": "runner.rs:982 defines key_dim = hk*dk = 48*128 = 6144 while the attention k row is nkv*hd = 4*256 = 1024. The per-row k_norm/k_rope pass row*(key_dim*2) as a byte offset, but the kernel addresses row*in_stride from the given base with in_stride = hd, so two different row strides live in one call and no flattened index (r*nkv+h) can satisfy both: (r*nkv+h)*hd is right for x and wrong for y. The q path has no mismatch (nh*hd*2 bytes == in_stride*nh), which is why only half the batching landed on wrong addresses",
+        "gate_value": "parity 6/6 passed with the bug present - six short greedy prompts never exercise a mis-strided row; only the 300-token spec==plain comparison caught it",
+        "gated_only": "rmsnorm_gated has no mismatch (value_dim = hv*dv, kernel row stride D = dv, so (r*hv+h)*dv is exactly the per-row address). Alone it passed parity 6/6, accept.sh 12/12 ACCEPTED and cut dispatches 1634 -> 1538",
+        "measured_regression": "3 clean alternating pairs: ratios 1.0132, 1.0104, 1.0066, median 1.0104 -> 1.04% SLOWER. Removing 96 dispatches (6% of the pass's dispatch count) cost 1%, so the dispatch count is not the lever",
+        "deliverable": "the key_dim trap is documented and the dispatch-count hypothesis is dead; no code change kept"
+      },
+      "next": "The ~25 ms non-sweep rest needs a new explanation before another attempt: it is demonstrably not reducible by dispatch batching, and the round-045 estimate that built the plan (7.6 us/dispatch) is refuted. Next step is to measure the rest directly rather than infer it - e.g. time forward2 with the non-GEMV dispatches filtered out at the plateau (the round-043 ablation, but re-run against the current u4 kernel and the steady-state protocol), and separately time the two MTP draft steps and the tail, so the 24.6 ms is attributed by measurement. If the k_norm/k_rope batching is revisited it needs the kernel change (row = idx/n_heads, head = idx%n_heads, plus a y_stride scalar), not a grid change. Mains power with Low Power Mode off is still required for any absolute claim"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
