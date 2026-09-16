@@ -64,6 +64,81 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         v
     };
 
+    // rows == 9: round-robin the k=3 kernel variants inside one process, so a
+    // comparison never pays the 14 GB weight load twice and thermal drift hits every
+    // variant equally.
+    if rows == 9 {
+        // Only near-equal candidates go in one round: a variant that is 30% slower
+        // swings the clock inside the round and corrupts the baseline it is paired
+        // against (R=6/R=8 spill and did exactly that).
+        let variants: [(&str, &str, usize); 4] = [
+            ("k3 (baseline)", qw_metal::msl::K_Q4_GEMV_K3, 1),
+            ("k3 + 2 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R2, 2),
+            ("k3 + 3 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R3, 3),
+            ("k3 + 4 rows/tg", qw_metal::msl::K_Q4_GEMV_K3_R4, 4),
+        ];
+        // On this machine the GPU clock swings by 4x on the timescale of a single
+        // sweep (battery + Low Power Mode), so absolute times mean nothing.  Measure
+        // every variant once per round together with the baseline and compare the
+        // paired ratio, which is immune to a multiplicative clock change, and count
+        // how many rounds each variant actually won.
+        let n = variants.len();
+        let rounds = iters.max(1);
+        let mut ratios: Vec<Vec<f64>> = vec![Vec::new(); n];
+        let mut wins = vec![0usize; n];
+        for round in 0..rounds {
+            let order: Vec<usize> = if round % 2 == 0 {
+                (0..n).collect()
+            } else {
+                (0..n).rev().collect()
+            };
+            let mut t = vec![0.0f64; n];
+            for i in order {
+                let (_label, name, grid_rows) = variants[i];
+                let t0 = Instant::now();
+                {
+                    let mut batch = dev.batch();
+                    let kernel = batch.kernel(qw_metal::msl::COMMON, name)?;
+                    for l in &linears {
+                        let x = &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1;
+                        let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
+                        l.encode_kr(&mut batch, &kernel, x, y, 3, grid_rows);
+                    }
+                    batch.finish(true);
+                }
+                t[i] = t0.elapsed().as_secs_f64() * 1000.0;
+            }
+            for i in 1..n {
+                ratios[i].push(t[i] / t[0]);
+                if t[i] < t[0] {
+                    wins[i] += 1;
+                }
+            }
+        }
+        for v in ratios.iter_mut() {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        }
+        let mut base_ms: Vec<f64> = Vec::new();
+        for (i, (label, _n, gr)) in variants.iter().enumerate() {
+            if i == 0 {
+                println!("  {label:<20} grid_rows={gr}  (paired baseline)");
+            } else {
+                let m = ratios[i][ratios[i].len() / 2];
+                println!(
+                    "  {:<20} grid_rows={}  median ratio {:.4}  wins {}/{}  ({})",
+                    label,
+                    gr,
+                    m,
+                    wins[i],
+                    rounds,
+                    if m < 1.0 { "faster" } else { "slower" }
+                );
+            }
+        }
+        base_ms.clear();
+        return Ok(());
+    }
+
     let mut best_ms = f64::INFINITY;
     for _ in 0..iters.max(1) {
         let t0 = Instant::now();
@@ -80,7 +155,13 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 };
                 batch.kernel(qw_metal::msl::COMMON, name)?
             } else if rows == 2 {
-                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_KR)?
+                // k=3 with 16-byte weight loads
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K3_U4)?
+            } else if rows == 3 {
+                // k=3, two output rows per threadgroup (x loaded once, reused twice)
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K3_R2)?
+            } else if rows == 4 {
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K3_R4)?
             } else {
                 QLinear::kernel_k(&mut batch)?
             };
@@ -90,7 +171,14 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 if k == 1 {
                     l.encode(&mut batch, &kernel, x, y);
                 } else if rows >= 1 {
-                    l.encode_kr(&mut batch, &kernel, x, y, k, rows);
+                    // rows selects the *kernel*; the grid blocking is 1 except for the
+                    // row-blocked variants, which need out_f/R threadgroups.
+                    let grid_rows = match rows {
+                        3 => 2,
+                        4 => 4,
+                        _ => 1,
+                    };
+                    l.encode_kr(&mut batch, &kernel, x, y, k, grid_rows);
                 } else {
                     l.encode_k(&mut batch, &kernel, x, y, k);
                 }

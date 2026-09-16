@@ -418,6 +418,8 @@ impl Qwen38 {
             let mut b = dev.batch();
             Kernels {
                 q4_gemv: b.kernel(msl::COMMON, msl::K_Q4_GEMV)?,
+                // Unblocked: see QLinear::encode_tile for why row blocking was tried
+                // and rejected.
                 q4_gemv_tile: b.kernel(msl::COMMON, msl::K_Q4_GEMV_K3)?,
                 rmsnorm: b.kernel(msl::COMMON, msl::K_RMSNORM)?,
                 rmsnorm_ws: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS)?,
@@ -999,10 +1001,10 @@ impl Qwen38 {
             match &layer.kind {
                 Kind::Full(a) => {
                     // q (with output gate), k, v projections
-                    a.q.encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.qg, TILE);
+                    a.q.encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.qg, TILE);
                     b.barrier();
-                    a.k.encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pk, TILE);
-                    a.v.encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pv, TILE);
+                    a.k.encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pk, TILE);
+                    a.v.encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pv, TILE);
                     b.barrier();
                     for row in 0..TILE {
                         // q_norm: heads live at stride 2*hd inside the q_proj output
@@ -1114,7 +1116,7 @@ impl Qwen38 {
                         );
                     }
                     b.barrier();
-                    a.o.encode_k(
+                    a.o.encode_tile(
                         &mut b,
                         &kernels.q4_gemv_tile,
                         &scratch.attn_gated,
@@ -1124,11 +1126,11 @@ impl Qwen38 {
                 }
                 Kind::Gdn(g) => {
                     g.in_z
-                        .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.z, TILE);
+                        .encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.z, TILE);
                     g.in_b
-                        .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.b, TILE);
+                        .encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.b, TILE);
                     g.in_a
-                        .encode_k(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.a, TILE);
+                        .encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.a, TILE);
                     let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two();
                     let slot0 = (t - 1).rem_euclid(conv_ring as i32) as usize;
                     // Phase 1: project all TILE rows in one launch into the staging
@@ -1136,7 +1138,7 @@ impl Qwen38 {
                     // order and reduces each row with the same simd_sum as the k=1
                     // kernel, so every row is bit-identical to its own launch - but
                     // the weights are read once instead of TILE times.
-                    g.in_qkv.encode_k(
+                    g.in_qkv.encode_tile(
                         &mut b,
                         &kernels.q4_gemv_tile,
                         &scratch.h,
@@ -1226,7 +1228,7 @@ impl Qwen38 {
                         );
                         b.barrier();
                     }
-                    g.out_proj.encode_k(
+                    g.out_proj.encode_tile(
                         &mut b,
                         &kernels.q4_gemv_tile,
                         &scratch.gdn_gated,
@@ -1255,14 +1257,14 @@ impl Qwen38 {
                     .scalar(4, eps),
             );
             b.barrier();
-            layer.gate.encode_k(
+            layer.gate.encode_tile(
                 &mut b,
                 &kernels.q4_gemv_tile,
                 &scratch.h,
                 &scratch.mlp_gate,
                 TILE,
             );
-            layer.up.encode_k(
+            layer.up.encode_tile(
                 &mut b,
                 &kernels.q4_gemv_tile,
                 &scratch.h,
@@ -1281,7 +1283,7 @@ impl Qwen38 {
                 .buf(2, &scratch.mlp_act),
             );
             b.barrier();
-            layer.down.encode_k(
+            layer.down.encode_tile(
                 &mut b,
                 &kernels.q4_gemv_tile,
                 &scratch.mlp_act,
@@ -1321,7 +1323,7 @@ impl Qwen38 {
                 .scalar(4, eps),
         );
         b.barrier();
-        lm_head.encode_k(
+        lm_head.encode_tile(
             &mut b,
             &kernels.q4_gemv_tile,
             &scratch.h,

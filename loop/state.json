@@ -975,6 +975,29 @@
         "stray_process": "a leftover `qwen38 serve --addr 127.0.0.1:8088` from an earlier round (old CLI flag) was holding 18.7 GB; killed"
       },
       "next": "keep cutting the 1425 non-GEMV dispatches, in order of size: ewise_add 128 (fuse the residual add into the following rmsnorm), rmsnorm_gated 144 and rmsnorm_s 96 (batch over TILE - these are heavy reduction kernels, so unlike kv_append/gate_mul in round 038 the row decode should amortise), rope_partial 96, and merging the MLP gate/up GEMVs (64). Re-derive the absolute tok/s only on mains power with Low Power Mode off"
+    },
+    {
+      "round": 41,
+      "title": "Discovered q4_gemv_kr never implemented row blocking ((void)R), implemented true row blocking (R=2..8 + uint4 variants) plus a paired bench sweep mode, and found it ~5% SLOWER end-to-end (8 interleaved pairs, 6/8 slower); reverted. Also corrected round 040: the marginal row cost is superlinear (+1.20/+3.83/+6.00 ms), so the sweep is latency- not FLOP-bound, and the measurement environment (battery + Low Power Mode) makes both absolute numbers and best-of-N/B paired micro-sweeps unreliable",
+      "tok_s": 43.2,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass",
+        "G2": "parity 6/6 + spec==plain byte-for-byte 300 tokens, plain identical to round 037",
+        "G3": "row blocking rejected: median paired ratio 1.0481 over 8 interleaved pairs, 6/8 slower",
+        "G4": "pass"
+      },
+      "evidence": {
+        "census": "decode pass now 1634 dispatches (was 1922); q4_gemv_k3 497 (30%)",
+        "marginal_row": "with the correct unrolled kernels: k=1 27.94, k=2 29.14 (+1.20), k=3 32.97 (+3.83), k=4 38.97 (+6.00) ms. Superlinear, and k=3 moves 86.4 GFLOP in 32.97 ms = 2.6 TFLOP/s, an order of magnitude below peak, so the sweep is latency/memory limited - round 040's 'marginal row is at the fp32 ALU peak' was wrong",
+        "kr_never_blocked": "crates/qw-metal/src/msl.rs:145 is `(void)R;` - q4_gemv_kr discards R and is only q4_gemv_k with uint4 weight loads. Round 039's 'row blocking was falsified' conclusion rested on a kernel that does not block",
+        "implementation": "Q4_GEMV_KS_R(NAME, NK, R): R output rows per threadgroup, x loaded once per group and held across all R rows, dividing the x load traffic (which is out_dim times the input size) by R while reading each row's weights once. Per-row accumulation order is bit-identical to q4_gemv_k3. Also Q4_GEMV_KS_U4 (16-byte weight loads) and `bench --rows 9` (paired sweep of candidates vs baseline in one process)",
+        "sweep_flips": "run A R4 0.8866 (35/40); run B R4 0.9516 (32/40) with R6 1.3283 (1/40) and R8 1.2058 (2/40); run C R4 0.8734 (59/60); run D (same binary, same command, 40 s later) R4 1.0340 (18/60). R6/R8 spill badly, and including a much-slower variant poisons the paired baseline within a round",
+        "e2e_verdict": "8 interleaved pairs vs the round-040 binary: ratios 0.9823/1.7597/1.0465/1.1875/0.9040/1.0559/1.0478/1.0483, median 1.0481, 6/8 slower. Every pair whose baseline was not an outlier (58-66 ms/token) has R=4 slower by 4-19%. Reverted",
+        "why_sweep_disagrees": "the sweep reuses ONE input buffer for all 497 linears, so x stays cache-hot and the traffic row blocking removes is understated; in the model the same kernel also covers linears with tiny out_f (GDN a/b projections are 48 rows), where blocking leaves the grid nearly empty",
+        "environment": "battery + powermode 1 all round. Same binary, same sweep: 27.9 / 33.0 / 58.5 / 70.6 / 113.5 ms across the session; one variant's samples inside one run spanned 65-294 ms. Absolute tok/s is not comparable across sessions, and relative claims need >=6 tightly interleaved model-level pairs. A 50 tok/s verification needs mains power with Low Power Mode off"
+      },
+      "next": "Do not spend more rounds on ~5% kernel experiments until the machine is on mains power: they cannot be resolved. The solid, measurement-independent facts to build on are the 1634-dispatch census (only 497 GEMV) and the superlinear marginal-row curve. The largest non-GEMV blocks remain ewise_add 128, rmsnorm_gated 144, rmsnorm 129, rmsnorm_nw_tile 96, rmsnorm_s 96, rope_partial 96; fusing the residual add into the following rmsnorm and batching the per-row reduction kernels over TILE are the next candidates. Ask the user to plug in and turn off Low Power Mode before any further throughput claim"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

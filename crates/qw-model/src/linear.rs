@@ -98,6 +98,29 @@ impl<'a> QLinear<'a> {
         batch.encode(d);
     }
 
+    /// Single switch point for the `TILE`-token verify GEMV.
+    ///
+    /// Row blocking was tried here - `TILE_ROWS` output rows per threadgroup, which
+    /// divides the x load traffic by that factor - and measured about 5% SLOWER
+    /// end-to-end in the model over 8 tightly interleaved pairs (6 of 8 slower, and
+    /// slower in every pair where the baseline itself was not an outlier), even
+    /// though the isolated sweep behind `bench --rows 9` preferred it.  The sweep
+    /// reuses one input buffer for all 497 linears, so x stays cache-hot there and
+    /// the very traffic row blocking removes is understated; in the model the kernel
+    /// also has to cover linears with tiny `out_f` (the GDN a/b projections are 48
+    /// rows), where blocking leaves the grid nearly empty.  The variants stay in
+    /// msl.rs, and `--rows 9` can revisit them if the reading is ever reversed.
+    pub fn encode_tile(
+        &self,
+        batch: &mut CommandBatch,
+        kernel: &Kernel,
+        x: &GpuBuffer,
+        y: &GpuBuffer,
+        k: usize,
+    ) {
+        self.encode_k(batch, kernel, x, y, k);
+    }
+
     /// Multi-token GEMV with `rows` output rows per threadgroup and the x slice
     /// held in registers (benchmark A/B switch, see `qwen38 bench --rows`).
     pub fn encode_kr(
