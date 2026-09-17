@@ -23,11 +23,12 @@ struct Kernels {
     /// Compile-time k=2 specialisation (round 6): the runtime-k kernel spills
     /// its accumulators to thread-local memory.
     q4_gemv_tile: Kernel,
+    /// 16-row grid-mapped variant, for batch passes wider than `TILE`.
+    q4_gemv_b16: Kernel,
     rmsnorm: Kernel,
     rmsnorm_ws: Kernel,
     rmsnorm_nw: Kernel,
     rmsnorm_tile: Kernel,
-    conv1d_ring_tile: Kernel,
     rmsnorm_gated: Kernel,
     rope: Kernel,
     silu_mul: Kernel,
@@ -100,6 +101,10 @@ struct Layer {
 /// Scratch buffers, all fp16 unless stated.
 /// Number of tokens a single forward pass can carry (see docs/PLAN_K2.md).
 pub const TILE: usize = 4;
+
+/// Widest row tile a single pass can carry.  `TILE` is the speculative-verify
+/// width; a batch-serving pass puts one row per sequence in the same structure.
+pub const BATCH_MAX: usize = 16;
 
 struct Scratch {
     x: GpuBuffer,
@@ -362,7 +367,7 @@ impl Qwen38 {
         // change until the k=2 kernels are wired in.  `window` is deliberately
         // not doubled - it is the 4-row convolution history shared across steps,
         // not a per-token activation tile.
-        let tile = TILE;
+        let tile = BATCH_MAX;
         let scratch = Scratch {
             x: dev.buffer(h * 2 * tile),
             h: dev.buffer(h * 2 * tile),
@@ -454,6 +459,7 @@ impl Qwen38 {
                 // 16-byte weight loads instead of 8: the sweep is memory-latency bound and
                 // this buys memory-level parallelism per instruction.  Round 043 paired
                 // sweep at a reproducible clock plateau: median ratio 0.9304, 76/80 wins.
+                q4_gemv_b16: b.kernel(msl::COMMON, msl::K_Q4_GEMV_B16)?,
                 q4_gemv_tile: b.kernel(
                     msl::COMMON,
                     match TILE {
@@ -466,7 +472,6 @@ impl Qwen38 {
                 rmsnorm_ws: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS)?,
                 rmsnorm_nw: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_NW)?,
                 rmsnorm_tile: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_TILE)?,
-                conv1d_ring_tile: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_TILE)?,
                 rmsnorm_gated: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_GATED)?,
                 rope: b.kernel(msl::FUSED, msl::K_ROPE_PARTIAL)?,
                 silu_mul: b.kernel(msl::FUSED, msl::K_SILU_MUL)?,
@@ -606,6 +611,54 @@ impl Qwen38 {
             zero(&m.k_cache);
             zero(&m.v_cache);
         }
+    }
+
+    /// Zero one sequence slot's recurrent state, leaving every other slot alone.
+    ///
+    /// The KV cache needs no reset: attention at position `p` reads entries
+    /// `0..=p` and `p` was written by `kv_append` in the same pass, so a stale
+    /// entry beyond the sequence's own position is never reached.  The GDN state
+    /// and the convolution ring are different - they are running summaries, not
+    /// position-indexed tables - so a slot that is handed to a new request has to
+    /// start them from zero.
+    ///
+    /// This is what makes the slot pool recyclable.  Without it a served slot
+    /// could only be reused by zeroing every slot, which would destroy the state
+    /// of the requests still running in the others.
+    pub fn reset_seq(&mut self, seq: usize) -> Result<()> {
+        if seq >= self.batch {
+            return Ok(());
+        }
+        // One staging slice of zeros, reused for every layer and both buffers.
+        // `state_stride` is the larger of the two (the convolution ring is a
+        // couple of hundred KB against a few MB), and `copy_off` reads the source
+        // from offset 0, so a single stage of the larger size covers both.
+        let stage = self.dev.buffer(self.state_stride.max(2));
+        zero(&stage);
+        let mut b = CommandBatch::new(&mut self.dev);
+        let k = b.kernel(qw_metal::msl_ops::GDN, qw_metal::msl_ops::K_COPY)?;
+        for layer in &self.layers {
+            if let Kind::Gdn(g) = &layer.kind {
+                for (buf, stride) in [(&g.state, self.state_stride), (&g.window, self.win_stride)] {
+                    if stride == 0 {
+                        continue;
+                    }
+                    // copy_off moves `half` elements, so lengths and offsets are
+                    // in halves, not bytes.
+                    let n = stride / 2;
+                    b.encode(
+                        Dispatch::new(&k, (n, 1, 1), (256, 1, 1))
+                            .buf(0, &stage)
+                            .buf(1, buf)
+                            .scalar(2, n as i32)
+                            .scalar(3, 0)
+                            .scalar(4, (seq * stride / 2) as i32),
+                    );
+                }
+            }
+        }
+        b.finish(true);
+        Ok(())
     }
 
     /// Make the recurrent state match the longest accepted prefix of a verify
@@ -1047,6 +1100,51 @@ impl Qwen38 {
     /// stays per-row inside a single loop because its `in_proj_qkv` writes into
     /// the shared four-row convolution window.
     pub fn forward2(&mut self, pos: usize) -> Result<()> {
+        let rows: Vec<(usize, usize)> = (0..TILE).map(|r| (0, pos + r)).collect();
+        self.forward_rows(&rows)
+    }
+
+    /// Run `n` rows through a SINGLE weight sweep, where row `i` belongs to
+    /// sequence `rows[i].0` at position `rows[i].1`.
+    ///
+    /// With `n == n` and every row on sequence 0 this is the speculative verify
+    /// pass and is byte-for-byte what it always was.  With one row per sequence it
+    /// is the batch-serving pass: the projections still read all 14.4 GB of
+    /// weights exactly once for the whole tile - which is the entire point, since
+    /// that is what makes 16 tokens cost one sweep instead of sixteen - while
+    /// every per-row dispatch picks up its own sequence's state through a byte
+    /// offset.
+    ///
+    /// The row count is capped at `BATCH_MAX`, and a pass may only carry more than
+    /// `n` rows when they are DISTINCT sequences: the convolution ring has to
+    /// hold `conv_k` rows plus everything the pass writes, which one position per
+    /// sequence satisfies and sixteen consecutive positions of one sequence does
+    /// not.
+    pub fn forward_rows(&mut self, rows: &[(usize, usize)]) -> Result<()> {
+        let n = rows.len();
+        anyhow::ensure!(
+            n > 0 && n <= BATCH_MAX,
+            "rows must be 1..={BATCH_MAX}, got {n}"
+        );
+        if n > TILE {
+            for (i, r) in rows.iter().enumerate() {
+                anyhow::ensure!(
+                    r.0 < self.batch,
+                    "row {i} uses sequence {} of {}",
+                    r.0,
+                    self.batch
+                );
+                for o in rows.iter().skip(i + 1) {
+                    anyhow::ensure!(o.0 != r.0, "a {n}-row pass needs distinct sequences");
+                }
+            }
+        }
+        // Read the strides out before `self` is destructured, so the per-row
+        // dispatches below never have to borrow `self` again.
+        let kv_stride = self.kv_stride;
+        let win_stride = self.win_stride;
+        let st_stride = self.state_stride;
+        let snap_stride = self.snap_stride;
         let Self {
             cfg,
             dev,
@@ -1073,7 +1171,6 @@ impl Qwen38 {
         let rot_dim = cfg.rotary_dim() as i32;
         let eps = cfg.rms_norm_eps;
         let scale = 1.0f32 / (hd as f32).sqrt();
-        let t = (pos + 1) as i32;
         let max_t = self.max_t as i32;
 
         let mut b = CommandBatch::new(dev);
@@ -1081,7 +1178,7 @@ impl Qwen38 {
         for (i, layer) in layers.iter().enumerate() {
             // ---- pre-norm ----
             b.encode(
-                Dispatch::new(&kernels.rmsnorm, (TILE * (NT), 1, 1), (NT, 1, 1))
+                Dispatch::new(&kernels.rmsnorm, (n * (NT), 1, 1), (NT, 1, 1))
                     .buf(0, &scratch.x)
                     .buf(1, &layer.input_norm)
                     .buf(2, &scratch.h)
@@ -1092,12 +1189,33 @@ impl Qwen38 {
             match &layer.kind {
                 Kind::Full(a) => {
                     // q (with output gate), k, v projections
-                    a.q.encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.qg, TILE);
+                    a.q.encode_rows(
+                        &mut b,
+                        &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
+                        &scratch.h,
+                        &scratch.qg,
+                        n,
+                    );
                     b.barrier();
-                    a.k.encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pk, TILE);
-                    a.v.encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.pv, TILE);
+                    a.k.encode_rows(
+                        &mut b,
+                        &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
+                        &scratch.h,
+                        &scratch.pk,
+                        n,
+                    );
+                    a.v.encode_rows(
+                        &mut b,
+                        &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
+                        &scratch.h,
+                        &scratch.pv,
+                        n,
+                    );
                     b.barrier();
-                    for row in 0..TILE {
+                    for (row, _) in rows.iter().enumerate() {
                         // q_norm: heads live at stride 2*hd inside the q_proj output
                         // (each head emits [query | gate]).  Unlike the delta net
                         // there is NO extra query scale here — the reference only
@@ -1115,7 +1233,7 @@ impl Qwen38 {
                         );
                     }
                     b.barrier();
-                    for row in 0..TILE {
+                    for (row, _) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.rmsnorm_ws, (nkv * NT, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.pk, row * (nkv * hd * 2))
@@ -1129,7 +1247,7 @@ impl Qwen38 {
                         );
                     }
                     b.barrier();
-                    for row in 0..TILE {
+                    for (row, &(_, pos)) in rows.iter().enumerate() {
                         // partial RoPE (non-traditional pairing)
                         b.encode(
                             Dispatch::new(&kernels.rope, (nh * 64, 1, 1), (64, 1, 1))
@@ -1139,7 +1257,7 @@ impl Qwen38 {
                                 .scalar(3, hd as i32)
                                 .scalar(4, rot_dim)
                                 .scalar(5, cfg.rope_theta() as f32)
-                                .scalar(6, (pos + row) as i32),
+                                .scalar(6, pos as i32),
                         );
                         b.encode(
                             Dispatch::new(&kernels.rope, (nkv * 64, 1, 1), (64, 1, 1))
@@ -1149,31 +1267,31 @@ impl Qwen38 {
                                 .scalar(3, hd as i32)
                                 .scalar(4, rot_dim)
                                 .scalar(5, cfg.rope_theta() as f32)
-                                .scalar(6, (pos + row) as i32),
+                                .scalar(6, pos as i32),
                         );
                     }
                     b.barrier();
-                    for row in 0..TILE {
+                    for (row, &(seq, pos)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.k, row * (key_dim * 2))
                                 .buf_offset(1, &scratch.pv, row * (nkv * hd * 2))
-                                .buf(2, &a.k_cache)
-                                .buf(3, &a.v_cache)
-                                .scalar(4, (pos + row) as i32)
+                                .buf_offset(2, &a.k_cache, seq * kv_stride)
+                                .buf_offset(3, &a.v_cache, seq * kv_stride)
+                                .scalar(4, pos as i32)
                                 .scalar(5, max_t)
                                 .scalar(6, nkv as i32)
                                 .scalar(7, hd as i32),
                         );
                     }
                     b.barrier();
-                    for row in 0..TILE {
+                    for (row, &(seq, pos)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.q, row * (nh * hd * 2))
-                                .buf(1, &a.k_cache)
+                                .buf_offset(1, &a.k_cache, seq * kv_stride)
                                 .buf_offset(2, &scratch.scores, row * (nh * (max_t as usize) * 4))
-                                .scalar(3, t + row as i32)
+                                .scalar(3, (pos + 1) as i32)
                                 .scalar(4, max_t)
                                 .scalar(5, nh as i32)
                                 .scalar(6, nkv as i32)
@@ -1182,13 +1300,13 @@ impl Qwen38 {
                         );
                     }
                     b.barrier();
-                    for row in 0..TILE {
+                    for (row, &(seq, pos)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.attn_out, (nh * hd, 1, 1), (hd, 1, 1))
                                 .buf_offset(0, &scratch.scores, row * (nh * (max_t as usize) * 4))
-                                .buf(1, &a.v_cache)
+                                .buf_offset(1, &a.v_cache, seq * kv_stride)
                                 .buf_offset(2, &scratch.attn_out, row * (nh * hd * 2))
-                                .scalar(3, t + row as i32)
+                                .scalar(3, (pos + 1) as i32)
                                 .scalar(4, max_t)
                                 .scalar(5, nh as i32)
                                 .scalar(6, nkv as i32)
@@ -1196,7 +1314,7 @@ impl Qwen38 {
                         );
                     }
                     b.barrier();
-                    for row in 0..TILE {
+                    for (row, _) in rows.iter().enumerate() {
                         // out * sigmoid(gate) where gate sits after each head's query
                         b.encode(
                             Dispatch::new(&kernels.gate_mul, (nh * hd, 1, 1), (NT, 1, 1))
@@ -1207,59 +1325,90 @@ impl Qwen38 {
                         );
                     }
                     b.barrier();
-                    a.o.encode_tile(
+                    a.o.encode_rows(
                         &mut b,
                         &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
                         &scratch.attn_gated,
                         &scratch.proj_out,
-                        TILE,
+                        n,
                     );
                 }
                 Kind::Gdn(g) => {
-                    g.in_z
-                        .encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.z, TILE);
-                    g.in_b
-                        .encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.b, TILE);
-                    g.in_a
-                        .encode_tile(&mut b, &kernels.q4_gemv_tile, &scratch.h, &scratch.a, TILE);
+                    g.in_z.encode_rows(
+                        &mut b,
+                        &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
+                        &scratch.h,
+                        &scratch.z,
+                        n,
+                    );
+                    g.in_b.encode_rows(
+                        &mut b,
+                        &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
+                        &scratch.h,
+                        &scratch.b,
+                        n,
+                    );
+                    g.in_a.encode_rows(
+                        &mut b,
+                        &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
+                        &scratch.h,
+                        &scratch.a,
+                        n,
+                    );
                     let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two();
-                    let slot0 = (t - 1).rem_euclid(conv_ring as i32) as usize;
-                    // Phase 1: project all TILE rows in one launch into the staging
+                    // Phase 1: project all n rows in one launch into the staging
                     // buffer.  The tiled kernel walks the same groups in the same
                     // order and reduces each row with the same simd_sum as the k=1
                     // kernel, so every row is bit-identical to its own launch - but
-                    // the weights are read once instead of TILE times.
-                    g.in_qkv.encode_tile(
+                    // the weights are read once instead of n times.
+                    g.in_qkv.encode_rows(
                         &mut b,
                         &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
                         &scratch.h,
                         &scratch.qkv_cur,
-                        TILE,
+                        n,
                     );
                     b.barrier();
-                    // Phase 2: one convolution, then one pair of norms, for the
-                    // whole tile instead of one dispatch each per row.  The gdn
-                    // recurrence itself stays row by row because it is sequential.
-                    b.encode(
-                        Dispatch::new(
-                            &kernels.conv1d_ring_tile,
-                            (conv_dim * TILE, 1, 1),
-                            (NT, 1, 1),
-                        )
-                        .buf(0, &g.window)
-                        .buf(1, &g.conv_w)
-                        .buf(2, &scratch.conv_out)
-                        .scalar(3, conv_dim as i32)
-                        .scalar(4, slot0 as i32)
-                        .scalar(5, conv_ring as i32)
-                        .buf(6, &scratch.qkv_cur)
-                        .scalar(7, t - 1),
-                    );
+                    // Phase 2: one convolution PER ROW.  The tile-wide kernel shares
+                    // a single convolution window across the whole tile, which is
+                    // right for a verify pass (n consecutive positions of one
+                    // sequence) and wrong for a batch pass (n different sequences,
+                    // each with its own ring).  Each row's raw qkv is first moved out
+                    // of the staging buffer into its own ring slot - the single-row
+                    // path gets that for free by projecting straight into the window.
+                    for (row, &(seq, pos)) in rows.iter().enumerate() {
+                        let slot = pos % conv_ring;
+                        let woff = seq * win_stride;
+                        copy_dispatch(
+                            &mut b,
+                            &kernels.copy,
+                            &scratch.qkv_cur,
+                            row * conv_dim,
+                            &g.window,
+                            woff / 2 + slot * conv_dim,
+                            conv_dim,
+                        );
+                        b.encode(
+                            Dispatch::new(&kernels.conv1d_ring, (conv_dim, 1, 1), (NT, 1, 1))
+                                .buf_offset(0, &g.window, woff)
+                                .buf(1, &g.conv_w)
+                                .buf_offset(2, &scratch.conv_out, row * (conv_dim * 2))
+                                .scalar(3, conv_dim as i32)
+                                .scalar(4, slot as i32)
+                                .scalar(5, conv_ring as i32),
+                        );
+                    }
+                    b.barrier();
                     b.barrier();
                     let inv = 1.0f32 / (dk as f32).sqrt();
                     // q = inv^2 * rms_norm(q), k = inv * rms_norm(k)  (no weight)
                     b.encode(
-                        Dispatch::new(&kernels.rmsnorm_tile, (hk * TILE * NT, 1, 1), (NT, 1, 1))
+                        Dispatch::new(&kernels.rmsnorm_tile, (hk * n * NT, 1, 1), (NT, 1, 1))
                             .buf(0, &scratch.conv_out)
                             .buf(1, &scratch.q)
                             .scalar(2, dk as i32)
@@ -1271,7 +1420,7 @@ impl Qwen38 {
                             .scalar(8, hk as i32),
                     );
                     b.encode(
-                        Dispatch::new(&kernels.rmsnorm_tile, (hk * TILE * NT, 1, 1), (NT, 1, 1))
+                        Dispatch::new(&kernels.rmsnorm_tile, (hk * n * NT, 1, 1), (NT, 1, 1))
                             .buf_offset(0, &scratch.conv_out, key_dim * 2)
                             .buf(1, &scratch.k)
                             .scalar(2, dk as i32)
@@ -1284,7 +1433,7 @@ impl Qwen38 {
                     );
                     b.barrier();
                     // Phase 3: the recurrence itself, one row at a time.
-                    for row in 0..TILE {
+                    for (row, &(seq, _)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.gdn, (hv * dv, 1, 1), (dv, 1, 1))
                                 .buf_offset(0, &scratch.q, row * (nh * hd * 2))
@@ -1298,13 +1447,17 @@ impl Qwen38 {
                                 .buf_offset(4, &scratch.b, row * (hv * 2))
                                 .buf(5, &g.a_log)
                                 .buf(6, &g.dt_bias)
-                                .buf(7, &g.state)
+                                .buf_offset(7, &g.state, seq * st_stride)
                                 .buf_offset(8, &scratch.gdn_y, row * (value_dim * 2))
                                 .scalar(9, hk as i32)
                                 .scalar(10, hv as i32)
                                 .scalar(11, dk as i32)
                                 .scalar(12, dv as i32)
-                                .buf_offset(13, &g.snap, row * g.state.len_bytes())
+                                .buf_offset(
+                                    13,
+                                    &g.snap,
+                                    seq * snap_stride + row * (snap_stride / n),
+                                )
                                 .scalar(14, if self.spec_snap { 1 } else { 0 }),
                         );
                         b.barrier();
@@ -1319,19 +1472,20 @@ impl Qwen38 {
                         );
                         b.barrier();
                     }
-                    g.out_proj.encode_tile(
+                    g.out_proj.encode_rows(
                         &mut b,
                         &kernels.q4_gemv_tile,
+                        &kernels.q4_gemv_b16,
                         &scratch.gdn_gated,
                         &scratch.proj_out,
-                        TILE,
+                        n,
                     );
                 }
             }
             b.barrier();
             // residual
             b.encode(
-                Dispatch::new(&kernels.ewise_add, (TILE * (h), 1, 1), (NT, 1, 1))
+                Dispatch::new(&kernels.ewise_add, (n * (h), 1, 1), (NT, 1, 1))
                     .buf(0, &scratch.x)
                     .buf(1, &scratch.proj_out)
                     .buf(2, &scratch.x),
@@ -1340,7 +1494,7 @@ impl Qwen38 {
 
             // ---- MLP ----
             b.encode(
-                Dispatch::new(&kernels.rmsnorm, (TILE * (NT), 1, 1), (NT, 1, 1))
+                Dispatch::new(&kernels.rmsnorm, (n * (NT), 1, 1), (NT, 1, 1))
                     .buf(0, &scratch.x)
                     .buf(1, &layer.post_norm)
                     .buf(2, &scratch.h)
@@ -1348,25 +1502,27 @@ impl Qwen38 {
                     .scalar(4, eps),
             );
             b.barrier();
-            layer.gate.encode_tile(
+            layer.gate.encode_rows(
                 &mut b,
                 &kernels.q4_gemv_tile,
+                &kernels.q4_gemv_b16,
                 &scratch.h,
                 &scratch.mlp_gate,
-                TILE,
+                n,
             );
-            layer.up.encode_tile(
+            layer.up.encode_rows(
                 &mut b,
                 &kernels.q4_gemv_tile,
+                &kernels.q4_gemv_b16,
                 &scratch.h,
                 &scratch.mlp_up,
-                TILE,
+                n,
             );
             b.barrier();
             b.encode(
                 Dispatch::new(
                     &kernels.silu_mul,
-                    (TILE * (cfg.intermediate_size), 1, 1),
+                    (n * (cfg.intermediate_size), 1, 1),
                     (NT, 1, 1),
                 )
                 .buf(0, &scratch.mlp_gate)
@@ -1374,22 +1530,23 @@ impl Qwen38 {
                 .buf(2, &scratch.mlp_act),
             );
             b.barrier();
-            layer.down.encode_tile(
+            layer.down.encode_rows(
                 &mut b,
                 &kernels.q4_gemv_tile,
+                &kernels.q4_gemv_b16,
                 &scratch.mlp_act,
                 &scratch.proj_out,
-                TILE,
+                n,
             );
             b.barrier();
             b.encode(
-                Dispatch::new(&kernels.ewise_add, (TILE * (h), 1, 1), (NT, 1, 1))
+                Dispatch::new(&kernels.ewise_add, (n * (h), 1, 1), (NT, 1, 1))
                     .buf(0, &scratch.x)
                     .buf(1, &scratch.proj_out)
                     .buf(2, &scratch.x),
             );
             b.barrier();
-            for row in 0..TILE {
+            for (row, _) in rows.iter().enumerate() {
                 if *bf16_residual {
                     b.encode(
                         Dispatch::new(&kernels.round_bf16, (h, 1, 1), (NT, 1, 1))
@@ -1406,7 +1563,7 @@ impl Qwen38 {
         }
         // final norm for both rows in one dispatch, then the head
         b.encode(
-            Dispatch::new(&kernels.rmsnorm, (TILE * NT, 1, 1), (NT, 1, 1))
+            Dispatch::new(&kernels.rmsnorm, (n * NT, 1, 1), (NT, 1, 1))
                 .buf(0, &scratch.x)
                 .buf(1, final_norm)
                 .buf(2, &scratch.h)
@@ -1414,12 +1571,13 @@ impl Qwen38 {
                 .scalar(4, eps),
         );
         b.barrier();
-        lm_head.encode_tile(
+        lm_head.encode_rows(
             &mut b,
             &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
             &scratch.h,
             &scratch.logits,
-            TILE,
+            n,
         );
         self.last_dispatches = b.dispatches();
         b.finish(true);

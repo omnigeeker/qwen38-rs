@@ -1,5 +1,6 @@
 //! `qwen38` — command line entry point.
 
+mod batchcheck;
 mod bench;
 mod check;
 mod gen;
@@ -67,6 +68,17 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         rows: usize,
     },
+    /// Prove that one batched forward pass equals independent passes per row.
+    BatchCheck {
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
+        #[arg(long, default_value = "The capital of France is")]
+        prompt: String,
+        #[arg(long, default_value_t = 16)]
+        slots: usize,
+        #[arg(long, default_value_t = 512)]
+        max_t: usize,
+    },
     /// End-to-end parity gate against the mlx-lm oracle.
     Verify {
         #[arg(long, default_value = "loop/artifacts/oracle.json")]
@@ -127,6 +139,12 @@ fn main() -> Result<()> {
             samples,
             rows,
         } => check::run(&model_dir, tensor.as_deref(), samples, rows),
+        Cmd::BatchCheck {
+            model_dir,
+            prompt,
+            slots,
+            max_t,
+        } => batchcheck::run(&model_dir, &prompt, slots, max_t),
         Cmd::Verify { oracle, model_dir } => cmd_verify(oracle, model_dir),
         Cmd::Gen {
             model_dir,

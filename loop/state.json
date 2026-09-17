@@ -1363,6 +1363,25 @@
         "memory": "QW_BATCH=16 costs 16x the state memory, dominated by the full-attention KV cache; it is opt-in for that reason"
       },
       "next": "ONE forward still advances ONE sequence.  To advance 16 at once: raise the row count from TILE=4 to 16 (projections via the round-056 b16 kernel, scratch buffers widened, per-row (seq,pos) descriptors through rope/kv_append/attn/GDN).  Also needed: reset_seq(seq) so a finished request's slot can be reused, Mtp::load threading batch, then the continuous-batching scheduler and the server, then the tutorial rewrite."
+    },
+    {
+      "round": 58,
+      "title": "batch-16 round 4: the batched forward WORKS - one pass advances 16 sequences and is BIT-IDENTICAL to 16 independent passes.  Generalized forward2 into forward_rows(rows: &[(usize,usize)]), where row i belongs to sequence rows[i].0 at position rows[i].1: the projections read the whole 14.4 GB of weights ONCE for all 16 rows (the entire point), while every per-row dispatch (rope, kv_append, attention, GDN) picks up its own sequence's state through a byte offset.  Added QLinear::encode_rows to pick the kernel by row count, made the convolution per-row, widened scratch to BATCH_MAX=16, and added reset_seq(seq) so a slot can be recycled.  New gate: qwen38 batch-check.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, 13 test targets ok)",
+        "G2": "oracle parity 6/6; accept.sh 12/12 ACCEPTED; QW_SPEC=1 and QW_NO_SPEC=1 produce byte-identical greedy_ids, so the spec path (forward2 -> forward_rows at n=4) is unchanged by the per-row convolution rewrite",
+        "G3": "BATCH GATE PASSED: batch-check --slots 16 gives 16/16 slots with an identical greedy token against each slot's own independent run, worst |logit difference| 0.0000; --slots 4 likewise 4/4 at 0.0000.  The difference is EXACTLY ZERO because the b16 kernel accumulates each row in the same order as the single-row kernel, so batching provably does not change any output - not merely the sampled token, the logits themselves",
+        "G4": "n/a - the Engine still serves one job at a time"
+      },
+      "evidence": {
+        "bug_the_gate_caught": "the first run failed 12 of 16 slots, with slots 0-3 correct and 4-15 emitting token 0.  Cause: kernels.q4_gemv_tile is a COMPILE-TIME 4-row specialisation (K4_U4HX), so passing n=16 projected only the first four rows and left the rest of the tile stale.  Fixed by routing every projection through the new QLinear::encode_rows, which sends >TILE rows to the round-056 grid-mapped b16 kernel.  13 projection sites changed.",
+        "conv_is_per_row_now": "the tile-wide convolution shares one window across the tile, which is right for a verify pass (4 consecutive positions of one sequence) and wrong for a batch pass (16 different sequences with their own rings), so each row's raw qkv is copied from the staging buffer into its own ring slot with the existing copy_off kernel and convolved there.  The tile-wide convolution kernel is now dead and was deleted.",
+        "reset_seq": "zeroes only the GDN state and convolution ring of ONE slot.  The KV cache needs no reset because attention at position p reads entries 0..=p and p was just written by kv_append, so a stale entry is unreachable - that cuts the per-slot cleanup from ~700 MB to ~165 MB",
+        "order_matters": "before starting this I worked out that shipping a round-robin scheduler FIRST would have been a severe regression: plain decode costs 30.9 ms/token, so 16 rotating sequences take 494 ms per round and a single request would have become 21x slower.  The batched forward is a hard prerequisite for concurrency being a win rather than a throughput split."
+      },
+      "next": "wire the batched forward into the Engine: a 16-slot continuous-batching scheduler that admits up to 16 concurrent requests, prefills them, and advances every active slot with one forward_rows pass per token.  Then the tutorial rewrite (concurrency is still documented as 1 because the server still serializes), and MTP per-slot state if speculative decoding is to run alongside batching."
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

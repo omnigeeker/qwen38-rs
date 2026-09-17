@@ -169,6 +169,29 @@ impl<'a> QLinear<'a> {
         batch.encode(d);
     }
 
+    /// Project `rows` activation rows, dispatching to the kernel that can
+    /// actually do that many.  The tile kernels are compile-time specialisations
+    /// (`K4_U4HX` is exactly four rows - feeding it sixteen silently projects only
+    /// the first four and leaves the rest of the tile stale), so anything wider
+    /// has to go through the grid-mapped kernel, which puts the extra parallelism
+    /// in the grid and shares one weight row between consecutive threadgroups.
+    /// Both write `y[row * out_f + r]`, so callers cannot tell which one ran.
+    pub fn encode_rows(
+        &self,
+        batch: &mut CommandBatch,
+        tile_k: &Kernel,
+        batch_k: &Kernel,
+        x: &GpuBuffer,
+        y: &GpuBuffer,
+        rows: usize,
+    ) {
+        if rows <= crate::runner::TILE {
+            self.encode_tile(batch, tile_k, x, y, rows);
+        } else {
+            self.encode_b(batch, batch_k, x, y, rows);
+        }
+    }
+
     /// Compile (or fetch) the multi-token GEMV entry point.
     pub fn kernel_k(batch: &mut CommandBatch) -> Result<Kernel> {
         batch.kernel(msl::COMMON, msl::K_Q4_GEMV_K)
