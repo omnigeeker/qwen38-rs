@@ -196,6 +196,9 @@ impl Mtp {
             norm: norm_buf(dev, store, &l.mtp_norm(), 0.0)?,
             q_norm: norm_buf(dev, store, &attn("q_norm"), 0.0)?,
             k_norm: norm_buf(dev, store, &attn("k_norm"), 0.0)?,
+            // The MTP draft head keeps a single sequence's cache for now; batch
+            // serving runs the decoder only, and scaling this needs `batch`
+            // threaded into Mtp::load.
             k_cache: dev.buffer(nkv * max_t * hd * 2),
             v_cache: dev.buffer(nkv * max_t * hd * 2),
             hid: dev.buffer(h * 2),
@@ -238,6 +241,19 @@ pub struct Qwen38 {
     pub bf16_residual: bool,
     /// take per-row recurrent snapshots during a verify pass (QW_SPEC=1)
     pub spec_snap: bool,
+    /// Number of independent sequence slots whose recurrent and KV state is
+    /// allocated up front.  `load` allocates one slot; `load_batch` allocates
+    /// many, so several requests can hold live state at the same time instead of
+    /// queueing behind a single `reset()`.
+    pub batch: usize,
+    /// Per-sequence byte stride of each state buffer: its length divided by
+    /// `batch`.  Every dispatch that touches sequence state is offset by
+    /// `seq * stride`, which is what leaves the kernels untouched - from inside a
+    /// kernel the cache simply begins at this sequence's slice.
+    kv_stride: usize,
+    win_stride: usize,
+    state_stride: usize,
+    snap_stride: usize,
 }
 
 const NT: usize = 256;
@@ -299,6 +315,21 @@ fn copy_dispatch(
 
 impl Qwen38 {
     pub fn load(dir: &Path, max_t: usize) -> Result<Self> {
+        // QW_BATCH=16 allocates sixteen sequence slots instead of one.  It costs
+        // 16x the state memory (most of it the full-attention KV cache), so it is
+        // opt-in rather than the default.
+        let batch = std::env::var("QW_BATCH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|b| *b > 0)
+            .unwrap_or(1);
+        Self::load_batch(dir, max_t, batch)
+    }
+
+    /// Load with `batch` independent sequence slots allocated.  Every slot holds
+    /// a full set of recurrent state: GDN `state`, the convolution ring window,
+    /// and the full-attention KV cache.
+    pub fn load_batch(dir: &Path, max_t: usize, batch: usize) -> Result<Self> {
         let mut dev = GpuDevice::new()?;
         let cfg = ModelConfig::from_path(&dir.join("config.json"))?.text_config;
         let layout = WeightLayout::default();
@@ -372,9 +403,9 @@ impl Qwen38 {
                     norm_w: norm_buf(&dev, store, &layout.gdn_norm(i), 0.0)?,
                     a_log: f32_buf(&dev, &tensor_f32(&store.handle(&layout.gdn_a_log(i))?)?),
                     dt_bias: f32_buf(&dev, &tensor_f32(&store.handle(&layout.gdn_dt_bias(i))?)?),
-                    state: dev.buffer(hv * dv * dk * 4),
-                    window: dev.buffer(conv_ring * conv_dim * 2),
-                    snap: dev.buffer(hv * dv * dk * 4 * TILE),
+                    state: dev.buffer(hv * dv * dk * 4 * batch),
+                    window: dev.buffer(conv_ring * conv_dim * 2 * batch),
+                    snap: dev.buffer(hv * dv * dk * 4 * TILE * batch),
                 }))
             } else {
                 Kind::Full(Box::new(FullAttn {
@@ -384,8 +415,8 @@ impl Qwen38 {
                     o: QLinear::from_store(store, &layout.attn_o(i))?,
                     q_norm: norm_buf(&dev, store, &layout.attn_q_norm(i), 0.0)?,
                     k_norm: norm_buf(&dev, store, &layout.attn_k_norm(i), 0.0)?,
-                    k_cache: dev.buffer(nkv * max_t * hd * 2),
-                    v_cache: dev.buffer(nkv * max_t * hd * 2),
+                    k_cache: dev.buffer(batch * nkv * max_t * hd * 2),
+                    v_cache: dev.buffer(batch * nkv * max_t * hd * 2),
                 }))
             };
             layers.push(Layer {
@@ -471,7 +502,40 @@ impl Qwen38 {
             debug: None,
             bf16_residual: std::env::var("QW_BF16_ROUND").is_ok(),
             spec_snap: std::env::var("QW_SPEC").is_ok(),
+            batch,
+            kv_stride: 0,
+            win_stride: 0,
+            state_stride: 0,
+            snap_stride: 0,
         };
+        // Derive the per-sequence strides from the buffers that were just sized.
+        // Reading them back keeps this correct no matter how the sizes are
+        // computed, and a wrong stride cannot survive the slot gate: the same
+        // prompt run in two different slots has to produce the same output.
+        let (st, wn, sn, kv) = {
+            let (mut st, mut wn, mut sn, mut kv) = (0usize, 0usize, 0usize, 0usize);
+            for layer in &model.layers {
+                match &layer.kind {
+                    Kind::Gdn(g) => {
+                        if st == 0 {
+                            st = g.state.len_bytes() / batch;
+                            wn = g.window.len_bytes() / batch;
+                            sn = g.snap.len_bytes() / batch;
+                        }
+                    }
+                    Kind::Full(a) => {
+                        if kv == 0 {
+                            kv = a.k_cache.len_bytes() / batch;
+                        }
+                    }
+                }
+            }
+            (st, wn, sn, kv)
+        };
+        model.state_stride = st;
+        model.win_stride = wn;
+        model.snap_stride = sn;
+        model.kv_stride = kv;
         model.reset();
         Ok(model)
     }
@@ -632,6 +696,20 @@ impl Qwen38 {
 
     /// Run one decode step at `pos`; the caches must be at that position.
     pub fn forward(&mut self, pos: usize) -> Result<()> {
+        // QW_SLOT=<n> runs the pass against slot n's state.  With QW_BATCH=16 the
+        // same prompt in slot 0 and slot 7 must produce identical output, which is
+        // exactly what proves the per-sequence offsets are right.
+        let seq = std::env::var("QW_SLOT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        self.forward_seq(seq, pos)
+    }
+
+    /// One token of sequence `seq`, sitting at position `pos` of that sequence's
+    /// own state.  All the kernels stay single-sequence; the sequence is selected
+    /// purely with byte offsets into the state buffers.
+    pub fn forward_seq(&mut self, seq: usize, pos: usize) -> Result<()> {
         let Self {
             cfg,
             dev,
@@ -660,6 +738,9 @@ impl Qwen38 {
         let scale = 1.0f32 / (hd as f32).sqrt();
         let t = (pos + 1) as i32;
         let max_t = self.max_t as i32;
+        let kv_off = seq * self.kv_stride;
+        let win_off = seq * self.win_stride;
+        let st_off = seq * self.state_stride;
 
         let mut b = CommandBatch::new(dev);
         for (i, layer) in layers.iter().enumerate() {
@@ -736,8 +817,8 @@ impl Qwen38 {
                         Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
                             .buf(0, &scratch.k)
                             .buf(1, &scratch.pv)
-                            .buf(2, &a.k_cache)
-                            .buf(3, &a.v_cache)
+                            .buf_offset(2, &a.k_cache, kv_off)
+                            .buf_offset(3, &a.v_cache, kv_off)
                             .scalar(4, pos as i32)
                             .scalar(5, max_t)
                             .scalar(6, nkv as i32)
@@ -747,7 +828,7 @@ impl Qwen38 {
                     b.encode(
                         Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
                             .buf(0, &scratch.q)
-                            .buf(1, &a.k_cache)
+                            .buf_offset(1, &a.k_cache, kv_off)
                             .buf(2, &scratch.scores)
                             .scalar(3, t)
                             .scalar(4, max_t)
@@ -760,7 +841,7 @@ impl Qwen38 {
                     b.encode(
                         Dispatch::new(&kernels.attn_out, (nh * hd, 1, 1), (hd, 1, 1))
                             .buf(0, &scratch.scores)
-                            .buf(1, &a.v_cache)
+                            .buf_offset(1, &a.v_cache, kv_off)
                             .buf(2, &scratch.attn_out)
                             .scalar(3, t)
                             .scalar(4, max_t)
@@ -799,7 +880,7 @@ impl Qwen38 {
                         .buf_offset(1, g.in_qkv.scales.buf, g.in_qkv.scales.offset)
                         .buf_offset(2, g.in_qkv.biases.buf, g.in_qkv.biases.offset)
                         .buf(3, &scratch.h)
-                        .buf_offset(4, &g.window, slot * conv_dim * 2)
+                        .buf_offset(4, &g.window, win_off + slot * conv_dim * 2)
                         .scalar(5, g.in_qkv.in_f as i32),
                     );
                     g.in_z
@@ -811,7 +892,7 @@ impl Qwen38 {
                     b.barrier();
                     b.encode(
                         Dispatch::new(&kernels.conv1d_ring, (conv_dim, 1, 1), (NT, 1, 1))
-                            .buf(0, &g.window)
+                            .buf_offset(0, &g.window, win_off)
                             .buf(1, &g.conv_w)
                             .buf(2, &scratch.conv_out)
                             .scalar(3, conv_dim as i32)
@@ -854,7 +935,7 @@ impl Qwen38 {
                             .buf(4, &scratch.b)
                             .buf(5, &g.a_log)
                             .buf(6, &g.dt_bias)
-                            .buf(7, &g.state)
+                            .buf_offset(7, &g.state, st_off)
                             .buf(8, &scratch.gdn_y)
                             .scalar(9, hk as i32)
                             .scalar(10, hv as i32)

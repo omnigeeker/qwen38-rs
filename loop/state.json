@@ -1345,6 +1345,24 @@
         "k16_confirmed_dead": "the per-thread-row kernel measured 0.483x in the same paired run, reproducing round 055's 0.78x direction (the two runs differ in thermal state, so the ratios are not directly comparable, but both are below 1.0)"
       },
       "next": "the next lever is x reuse by blocking output rows: one threadgroup computing R output rows reuses a single x load R times, cutting the L2 x traffic by 1/R (~921 GB -> ~230 GB at R=4).  This is the opposite direction from the refuted k16 (R activations needing R x loads); here R output rows share ONE x load.  Also still to do: per-sequence KV/GDN/conv state, per-row (seq,pos) descriptors, the continuous-batching scheduler, server integration, and the tutorial rewrite once the engine actually serves batches"
+    },
+    {
+      "round": 57,
+      "title": "batch-16 round 3: per-sequence state partitioning is DONE and locked by a gate.  The scheduler, the batched forward and concurrent serving all share one prerequisite - the model must be able to hold 16 sequences' state at once - so that layer went in first.  A row-by-row read of the single-row forward showed only EIGHT sites touch sequence state (kv append, attention scores, attention out, the qkv write into the conv ring, the conv read, and the GDN recurrence), so giving each sequence a byte offset is enough: allocate state/window/snap/k_cache/v_cache for `batch` slots and pass buf_offset(i, buf, seq*stride) at those eight sites.  From inside a kernel the cache simply begins at that sequence's slice, so NO MSL kernel changed and `seq` never enters a kernel.  Added Qwen38::load_batch(dir, max_t, batch); load() keeps its old signature and means batch 1, so no call site changed.  QW_BATCH=<n> opts in.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, 13 test targets ok)",
+        "G2": "oracle verify parity 6/6 with batch=1, i.e. the default path (offsets are all zero) is byte-for-byte unchanged",
+        "G3": "SLOT GATE PASSED: QW_BATCH=16 with QW_SLOT=0 / 7 / 15 on the same prompt produce byte-identical greedy_ids and text, and they match the single-slot baseline.  A wrong stride would make slot 7 read or clobber another slot's memory and diverge immediately, so this is a real test of the offset arithmetic, not a smoke test",
+        "G4": "n/a - the engine still serves one job at a time"
+      },
+      "evidence": {
+        "ids": "[1358, 760, 6511, 314, 9338, 369, 11751, 13, ...] identical in all four configurations after filtering the timestamped log lines",
+        "false_start": "an earlier attempt at this gate passed QW_SKIP_KERNEL= (empty but still SET) and every kernel was skipped, so all four runs emitted token 0 and matched.  That gate was vacuous; it was caught and re-run.  A second attempt compared only the greedy_text line, which is empty because the model's output starts with a newline - also vacuous.  The gate now compares the full output with log lines filtered.",
+        "memory": "QW_BATCH=16 costs 16x the state memory, dominated by the full-attention KV cache; it is opt-in for that reason"
+      },
+      "next": "ONE forward still advances ONE sequence.  To advance 16 at once: raise the row count from TILE=4 to 16 (projections via the round-056 b16 kernel, scratch buffers widened, per-row (seq,pos) descriptors through rope/kv_append/attn/GDN).  Also needed: reset_seq(seq) so a finished request's slot can be reused, Mtp::load threading batch, then the continuous-batching scheduler and the server, then the tutorial rewrite."
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

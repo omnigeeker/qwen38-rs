@@ -192,3 +192,57 @@ xr    = tg % 16        // 第几条序列的激活
 * **教程更新**：`docs/TUTORIAL_zh.md` 与 `docs/AGENT_FRAMEWORKS_zh.md` 中
   "并发 = 1 / 多开进程无收益"的段落，要在功能真正可用后改写；
   在功能落地之前，教程只记录已实测的现状，不提前承诺。
+
+
+---
+
+## 7. 第三轮：每序列状态分区 —— **已完成并用门禁锁住** ✅
+
+调度器、批量前向、并发服务**三者共同的前置条件**是：模型必须能同时持有 16 条序列的状态。
+所以先把这一层做掉。
+
+### 做法：字节偏移，内核一行不改
+
+`forward2` 逐行读一遍发现，单行路径 `forward` 里真正触碰**序列状态**的只有 **8 个位置**：
+KV 追加、attention 打分、attention 输出、qkv 写入卷积环、卷积读取、GDN 递推态。
+于是**给每条序列一个字节偏移**就足够了：
+
+```
+kv_off   = seq * kv_stride      // KV cache
+win_off  = seq * win_stride     // 卷积环
+st_off   = seq * state_stride   // GDN 递推态
+```
+
+* 状态缓冲区一次性按 `batch` 份分配（`state` / `window` / `snap` / `k_cache` / `v_cache`）；
+* 每个 dispatch 用 `buf_offset(i, buf, seq * stride)` 把该序列的切片交给内核；
+* **从内核里看，缓存就是从这条序列的切片开始的** —— 所以 **MSL 内核完全不用改**，
+  也不需要把 `seq` 传进内核。
+
+新增 `Qwen38::load_batch(dir, max_t, batch)`；`load(dir, max_t)` 保持原样（= `batch 1`），
+所以所有既有调用点零改动。`QW_BATCH=16` 走批量分配（代价是 16 倍状态内存，主要是 KV cache，
+所以是 opt-in 而不是默认）。
+
+### 门禁：同一 prompt 在不同 slot 必须逐字节相同
+
+`QW_SLOT=<n>` 让一次前向跑在第 n 条序列的状态上。偏移只要错一点，
+slot 7 就会读到/写坏别的内存，输出**必然**立刻发散。实测：
+
+| 配置 | 输出 |
+|---|---|
+| 基线（无 QW_BATCH） | `greedy_ids: [1358, 760, 6511, 314, 9338, ...]` |
+| `QW_BATCH=16`（slot 0） | **完全相同** |
+| `QW_BATCH=16 QW_SLOT=7` | **完全相同** |
+| `QW_BATCH=16 QW_SLOT=15` | **完全相同** |
+
+同时 `verify --oracle` 保持 parity 6/6 —— 默认路径（batch=1，偏移恒为 0）行为逐字节未变。
+
+### 注意：这一轮**还没有**做到的事
+
+* **前向仍是一次一条序列**。`forward_seq(seq, pos)` 一次只推一个 token，
+  所以现在还不能"一次前向同时推进 16 条"——那需要把行数提到 16
+  （投影用 §3.5 的 b16 内核，scratch 缓冲区从 `TILE=4` 扩到 16，逐行操作用每行的 `(seq,pos)`）。
+* **MTP 草稿头仍是单序列的**（`Mtp::load` 没有 `batch` 参数），批量服务先用纯解码路径。
+* **slot 复用需要 `reset_seq`**：新请求进入某个 slot 前必须把该 slot 的状态清零，
+  目前只有整体 `reset()`。
+* **调度器与服务端未改**：`Engine` 仍然一次一个 Job。
+
