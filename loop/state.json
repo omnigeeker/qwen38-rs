@@ -1574,6 +1574,24 @@
         "arithmetic_closed": "1.236 ms x 16 full-attention layers = 19.8 ms per row against the 20.06 ms per row measured independently by pos-bench.",
         "measurement_trap": "the first end-to-end run after the fix read 335.4 s against a 199.2 s baseline and looked like a 68% regression; it was a non-paired comparison across machine states.  Alternating the two binaries showed the old one itself drifting between 174.0 s and 124.9 s, which is more than the effect being measured.  Kernel timings and end-to-end timings disagreed, and the measurement was at fault, not the code."
       }
+    },
+    {
+      "round": 70,
+      "title": "Closed the loop on how much the attn_out fix is actually worth, and the honest answer is smaller than the kernel numbers suggest.  Paired alternating A/B with the two binaries already on disk: at 2500 tokens old 174.0 / 124.9 s against new 114.5 / 111.8 s, at 4000 tokens old 248.5 / 93.0 s against new 87.7 / 81.6 s.  The new kernel won all four pairs, but the margin ranged from 1.12x to 2.83x, and the pair where BOTH binaries ran in a good state is only 1.12-1.14x.  So the end-to-end gain is about 1.1-1.3x, which does not meet the objective's 'significantly faster'.  This does not contradict the kernel measurement (attn_out 5.3x faster at T = 6000, where it was ~44% of the per-token cost): it means a degraded machine state amplifies a latency-bound kernel disproportionately.  In a good state attn_out was never the bottleneck, so fixing it saves little; in a bad state it dominates and fixing it is worth 2.8x.  The blocking obstacle is now that the noise is larger than the effect: the same old binary drifted between 93.0 s and 248.5 s across adjacent runs, a factor of 2.7, against an effect of 1.1-1.3x.  Chasing further optimisation before the measurement environment is stable is chasing noise.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "release build clean",
+        "G2": "accept.sh 12/12 ACCEPTED on the shipped fix",
+        "G3": "oracle parity 6/6 and batch-check 16/16 with worst |logit difference| 0.0000",
+        "G4": "paired alternating A/B, four pairs: new faster every time, but only 1.12-1.14x when both binaries ran in a good state.  Reported as-is rather than quoting the 2.83x."
+      },
+      "evidence": {
+        "good_state_gain_is_small": "pair 2 at both 2500 and 4000 tokens, where old and new both ran clean, gives 1.12x and 1.14x.",
+        "noise_exceeds_the_effect": "the old binary alone ranged 93.0 s to 248.5 s across adjacent runs (2.7x) against an effect of 1.1-1.3x.",
+        "why_kernel_and_end_to_end_disagree": "a latency-bound kernel is amplified by a degraded state and irrelevant in a good one, so the same fix is worth 2.8x or 1.1x depending on the state it is measured in.",
+        "next": "stabilise the measurement first - record powermode, power source, load average, GPU baseline and a fixed control measurement each run - because attn_scores and the projection are both already proven flat, so the remaining position cost is not inside a kernel that has been timed yet."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
