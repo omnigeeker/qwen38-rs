@@ -30,6 +30,72 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 /// the convolution ring, which holds `conv_k` history rows plus this many.
 const PREFILL_CHUNK: usize = qw_model::runner::TILE;
 
+/// A prefix cache that needs no storage of its own.
+///
+/// Two properties of the engine make this possible.  The KV cache is never cleared -
+/// `reset_seq` rewinds only the delta-net state and the convolution window - and
+/// positions are written once and read only up to the current position.  So if a new
+/// prompt begins with exactly the token sequence a slot has already consumed, that
+/// slot is *already* in the state the prefix would have produced, and the prefix can
+/// simply not be recomputed.  No snapshot, no copy, no eviction policy: either the
+/// slot's state matches the prefix or the slot is rewound as before.
+///
+/// This is the shape agent frameworks produce, because every turn re-sends the whole
+/// conversation, so the expensive part of the prompt has usually been seen already.
+#[derive(Default)]
+struct PrefixCache {
+    /// Per slot, the tokens its state currently represents: the prompt tokens it has
+    /// actually consumed followed by everything it generated.
+    hist: Vec<Option<Vec<u32>>>,
+    lookups: usize,
+    hits: usize,
+    reused: usize,
+    prompted: usize,
+}
+
+impl PrefixCache {
+    fn new(batch: usize) -> Self {
+        Self {
+            hist: (0..batch).map(|_| None).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// How many leading prompt tokens this slot can skip, which is all of them or
+    /// none of them: a partial match cannot be used, because the state corresponds to
+    /// the end of what the slot consumed and cannot be rewound to a middle position.
+    fn match_len(&self, slot: usize, ids: &[u32]) -> usize {
+        match &self.hist[slot] {
+            Some(h) if !h.is_empty() && h.len() <= ids.len() && ids[..h.len()] == h[..] => h.len(),
+            _ => 0,
+        }
+    }
+
+    fn record(&mut self, slot: usize, seq: Vec<u32>) {
+        self.hist[slot] = Some(seq);
+    }
+
+    fn forget(&mut self, slot: usize) {
+        self.hist[slot] = None;
+    }
+
+    /// The number worth quoting is the token-weighted one: a request that reuses nine
+    /// tenths of its prompt is a hit, but a request-count hit rate would hide that
+    /// almost all of the work was done twice.
+    fn report(&self, slot: usize, skip: usize, ids_len: usize) {
+        let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
+        tracing::info!(
+            "slot {slot}: prefix cache {} - skipped {skip} of {ids_len} prompt tokens ({:.0}%), cumulative KV hit rate {:.1}% of {} tokens over {} request(s), {} reused",
+            if skip > 0 { "HIT" } else { "miss" },
+            pct(skip, ids_len),
+            pct(self.reused, self.prompted),
+            self.prompted,
+            self.lookups,
+            self.hits,
+        );
+    }
+}
+
 /// How many requests the engine will hold in flight at once.  It matches the
 /// widest row tile the model can carry in one weight sweep.
 pub const MAX_BATCH: usize = 16;
@@ -183,6 +249,7 @@ fn prepare(
     job: Job,
     max_t: usize,
     slot: usize,
+    cache: &mut PrefixCache,
 ) -> Option<Active> {
     let text = match &job.prompt {
         Prompt::Text(s) => s.clone(),
@@ -210,12 +277,26 @@ fn prepare(
         )));
         return None;
     }
-    // The slot may have served an earlier request.  Its recurrent state has to go
-    // back to the initial condition first.
-    if let Err(e) = model.reset_seq(slot) {
-        let _ = job.pieces.send(Err(e.to_string()));
-        return None;
+    // If this prompt starts with exactly what the slot has already consumed, the
+    // slot is already in the right state and the whole prefix can be skipped.  Only
+    // a complete match can be used: the recurrent state corresponds to the end of
+    // what the slot consumed and cannot be rewound to a position in the middle.
+    let skip = cache.match_len(slot, &ids);
+    cache.lookups += 1;
+    cache.prompted += ids.len();
+    cache.reused += skip;
+    if skip > 0 {
+        cache.hits += 1;
+    } else {
+        // The slot may have served an unrelated request.  Its recurrent state has to
+        // go back to the initial condition first.
+        if let Err(e) = model.reset_seq(slot) {
+            let _ = job.pieces.send(Err(e.to_string()));
+            return None;
+        }
+        cache.forget(slot);
     }
+    cache.report(slot, skip, ids.len());
     let max_tokens = job.max_tokens.min(max_t - ids.len());
     if max_tokens < job.max_tokens {
         // Worth saying out loud: an agent framework that asks for 32000 tokens
@@ -237,8 +318,8 @@ fn prepare(
     Some(Active {
         job,
         ids,
-        pf: 0,
-        pos: 0,
+        pf: skip,
+        pos: skip,
         feed: 0,
         ready: false,
         dead: false,
@@ -264,6 +345,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         .min(PREFILL_CHUNK);
     tracing::info!("prefill chunk: {chunk_cap} token(s) per pass");
     let mut slots: Vec<Option<Active>> = (0..batch).map(|_| None).collect();
+    let mut cache = PrefixCache::new(batch);
     let mut waiting: VecDeque<Job> = VecDeque::new();
     loop {
         // ---- admit ----
@@ -286,7 +368,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             let Some(job) = waiting.pop_front() else {
                 break;
             };
-            if let Some(a) = prepare(model, tok, job, max_t, slot) {
+            if let Some(a) = prepare(model, tok, job, max_t, slot, &mut cache) {
                 *entry = Some(a);
             }
         }
@@ -398,7 +480,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         }
 
         // ---- retire ----
-        for entry in slots.iter_mut() {
+        for (slot, entry) in slots.iter_mut().enumerate() {
             let done = match entry.as_ref() {
                 Some(a) => a.dead || (a.ready && (a.emitted >= a.max_tokens || tok.is_eos(a.feed))),
                 None => false,
@@ -406,6 +488,14 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             if done {
                 if let Some(a) = entry.as_mut() {
                     emit(tok, a, true);
+                    // Record exactly what this slot consumed: the prompt tokens it
+                    // actually prefilled plus what it generated.  Recording the whole
+                    // prompt would be wrong for a request abandoned part way through
+                    // prefill, because the state would not correspond to it and the
+                    // next request would skip work it still needs.
+                    let mut seq: Vec<u32> = a.ids[..a.pf.min(a.ids.len())].to_vec();
+                    seq.extend_from_slice(&a.all);
+                    cache.record(slot, seq);
                 }
                 *entry = None;
             }

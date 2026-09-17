@@ -1469,6 +1469,24 @@
         "why_it_matters_for_agents": "a coding agent's prompt is ~6867 tokens, so at the measured 19-27 ms per token the first content token is minutes away.  Keeping the socket alive is what stops the framework from timing out and retrying, which is what the user saw as a freeze.",
         "the_target_remains_impossible": "25B activated parameters is 5e10 FLOPs per token and this GPU is about 20 TFLOPS, so the compute floor is ~2.5 ms per token: ~80 s for 32K.  One second would need ~1700 TFLOPS, about 85x this GPU.  Measured today: 19 ms per token after chunked prefill, still ~8x off the floor."
       }
+    },
+    {
+      "round": 64,
+      "title": "Prefix cache.  The engine needed no snapshot storage at all: the KV cache is never cleared and only the delta-net recurrence is rewound, so a slot whose consumed token sequence is a prefix of a new prompt is ALREADY in the right state and the prefix can simply not be recomputed.  Measured on the 6.9K prompt that OpenCode actually sends: cold 230.41 s, and the agent's next turn 1.38 s after skipping 6875 of 6890 tokens - 167x, against a target of 20 s.  Hit rate is logged per request and cumulatively, token-weighted rather than request-weighted, because a request-count rate hides that almost all the work was done twice.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, release build clean)",
+        "G2": "accept.sh re-run with nothing else on the machine",
+        "G3": "verified end to end on a 6866-token prompt, three sequential requests through the real HTTP server: cold 230.41 s (miss), byte-identical retry 324.36 s (miss), agent next turn with the assistant reply folded back in 1.38 s (HIT, 6875 of 6890 tokens skipped).  The engine log shows the same: 'prefix cache HIT - skipped 6875 of 6890 prompt tokens (100%)'",
+        "G4": "measured; the accepted target of 20 s is met many times over on the cached path, and not met on a cold first request, which physics bounds"
+      },
+      "evidence": {
+        "why_it_is_free": "reset_seq rewinds only the state and the window, never the KV cache, and positions are written once and read only up to the current position.  So a full-prefix match needs no copy: the slot is already correct.",
+        "why_token_weighted": "a request-count hit rate is misleading - one request reusing 90% of its prompt counts the same as one reusing 1%.",
+        "known_limitation": "a byte-identical retry misses.  After decoding, the slot's state sits at prompt + generated, past the prompt boundary, and a recurrent state cannot be rewound to a middle position, so only a complete match of the slot's history is usable.  Covering the retry case needs a prefill-boundary snapshot of state + window (about 179 MB per slot: 151 MB delta-net plus 28 MB window), which is next round's work and does not affect the agent path.",
+        "cold_start_unchanged": "the first request still pays the full prefill - 230.41 s for 6866 tokens here - because no cache exists yet.  Prefix caching removes repeat work, not the first pass."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

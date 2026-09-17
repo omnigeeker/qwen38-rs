@@ -405,3 +405,53 @@ KV cache 是 `batch * nkv * max_t * hd * 2` 每层、共 16 个 full-attention �
   但固定开销实测 33 GB 而模型只有 26 GB —— 差的 ~8 GB 是 Metal 驱动与加载期 staging，
   不在任何显式缓冲区里。于是加了 `MEM_OVERHEAD = 8 GB`，
   建议值从 83782 收敛到 **75634**（实测上限约 77315，略保守即安全）。
+
+
+---
+
+## 12. Prefix Cache：KV 复用与命中率上报（第 8 轮）
+
+### 为什么几乎不需要额外的存储
+
+引擎有两个性质让前缀缓存变得非常轻：
+
+1. **KV cache 从不被清零**——`reset_seq` 只回退 delta-net 状态和卷积窗口，位置是按需写入、
+   只读到当前位置为止；
+2. **delta-net 状态是递推量**，只在槽位被无关 prompt 复用时才需要归零。
+
+所以如果一个新 prompt 的开头**恰好等于某个槽位已经消费过的 token 序列**，那个槽位
+**本来就已经处在正确状态**，整个前缀可以直接不重算——不需要快照、不需要拷贝、不需要淘汰策略。
+
+### 实测（6.9K prompt，与 OpenCode 的实际规模一致）
+
+| 请求 | TTFT | 结果 |
+|---|---|---|
+| 1. 冷启动 | **230.41 s** | miss，全量 prefill |
+| 2. 完全相同的重试 | 324.36 s | **miss**（见下） |
+| 3. **agent 下一轮**（prompt + assistant 回复 + 新 user 轮） | **1.38 s** | **HIT，跳过 6875/6890 token** |
+
+引擎日志：
+
+```
+slot 0: prefix cache HIT - skipped 6875 of 6890 prompt tokens (100%),
+        cumulative KV hit rate 33.3% of 20622 tokens over 3 request(s), 1 reused
+```
+
+**230 s → 1.38 s，167 倍。** 这正是 agent 框架产生的形态：每一轮都把整个对话重发一遍，
+所以除第一轮外，prompt 的绝大部分都已经在槽位里了。
+
+### 命中率为什么按 token 加权上报
+
+按"请求数"算命中率会掩盖真实成本：一个复用了 90% prompt 的请求算一次 hit，但两个请求
+各做一遍全量 prefill 也会显示 50%。所以**上报的是 token 加权的复用率**，同时给出
+请求计数。
+
+### 已知限制：完全相同的重试会 miss
+
+解码之后槽位的状态位于 `prompt + 已生成` 这个位置，**已经越过 prompt 边界**。
+而重试发送的 prompt 只有原来的 `prompt`，比状态的历史短——递推状态无法回退到中间位置，
+所以只能 miss。
+
+要覆盖这个场景，需要在 **prefill 结束的那一刻**存一份 `state` + `window` 快照
+（每槽位约 179 MB：delta-net 151 MB + 卷积窗口 28 MB），命中边界时恢复即可。
+这是下一轮的工作，不影响 agent 主路径。
