@@ -1,17 +1,31 @@
-//! Generation backend: one thread owns the `Qwen38` engine and the tokenizer,
-//! and serves requests off a channel.
+//! Generation backend: one thread owns the `Qwen38` engine and the tokenizer, and
+//! serves up to `MAX_BATCH` requests concurrently.
 //!
 //! The Metal engine is not shareable across threads, and it must be loaded once
-//! (~10 s for the 4-bit weights) rather than per request.  So the model lives on
-//! a dedicated thread and every HTTP request becomes a job on a `mpsc` queue;
-//! generated text comes back as a stream of pieces.
+//! (~10 s for the 4-bit weights) rather than per request, so the model lives on a
+//! dedicated thread and every HTTP request becomes a job.
+//!
+//! Requests are not queued behind each other.  Up to `MAX_BATCH` of them hold live
+//! state at once, in one sequence slot each, and every round advances all active
+//! slots by one token with a SINGLE `forward_rows` pass - one read of the 14.4 GB
+//! of weights for the whole batch instead of one per request.  A single request
+//! therefore costs what it always did, and sixteen concurrent requests cost
+//! roughly one sweep per round between them rather than sixteen.
+//!
+//! Speculative decoding is off on this path: the MTP draft head still keeps a
+//! single sequence's state, so the batch runs plain decode.
 
 use anyhow::Result;
 use qw_engine::tokenizer::{Message, Tokenizer};
 use qw_model::runner::Qwen38;
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+
+/// How many requests the engine will hold in flight at once.  It matches the
+/// widest row tile the model can carry in one weight sweep.
+pub const MAX_BATCH: usize = 16;
 
 /// A prompt either arrives already rendered (OpenAI `/v1/completions`) or as
 /// chat messages that the tokenizer's template renders (`/v1/chat/completions`,
@@ -31,9 +45,27 @@ pub enum EngineEvent {
 pub struct Job {
     pub prompt: Prompt,
     pub max_tokens: usize,
-    /// Rows for the key/value and delta-net state.  `max_t` must cover the
-    /// prompt plus the completion.
     pub pieces: UnboundedSender<Result<EngineEvent, String>>,
+}
+
+/// One request holding a sequence slot.
+struct Active {
+    job: Job,
+    /// Prompt tokens, fed one per round until `pf` reaches the end.
+    ids: Vec<u32>,
+    pf: usize,
+    /// Next position to feed during decoding.
+    pos: usize,
+    /// The token produced for this slot by the last pass.  It is emitted and then
+    /// fed back in on the following round, which is where the causal model needs
+    /// it.
+    feed: u32,
+    /// Set once the prompt is fully in, which is what makes `feed` meaningful.
+    ready: bool,
+    all: Vec<u32>,
+    sent_len: usize,
+    emitted: usize,
+    max_tokens: usize,
 }
 
 /// Handle to the engine thread.  Cheap to clone.
@@ -46,13 +78,21 @@ impl Engine {
     /// Start the engine thread and block until the weights are loaded, so that
     /// the caller can honestly report readiness.
     pub fn spawn(model_dir: PathBuf, max_t: usize) -> Result<Self> {
+        // QW_BATCH=<n> narrows the width, which is worth doing on a small machine:
+        // every slot carries a full KV cache, so sixteen of them cost several GB
+        // more than one.
+        let batch = std::env::var("QW_BATCH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|b| *b > 0 && *b <= MAX_BATCH)
+            .unwrap_or(MAX_BATCH);
         let (tx, rx) = channel::<Job>();
         let (ready_tx, ready_rx) = channel::<Result<(), String>>();
         std::thread::Builder::new()
             .name("qw-engine".to_string())
             .spawn(move || {
                 let loaded = (|| -> Result<(Qwen38, Tokenizer)> {
-                    let model = Qwen38::load(&model_dir, max_t)?;
+                    let model = Qwen38::load_batch(&model_dir, max_t, batch)?;
                     let tok = Tokenizer::from_file(&model_dir.join("tokenizer.json"))?;
                     Ok((model, tok))
                 })();
@@ -66,17 +106,7 @@ impl Engine {
                         return;
                     }
                 };
-                while let Ok(job) = rx.recv() {
-                    let text = match &job.prompt {
-                        Prompt::Text(s) => s.clone(),
-                        Prompt::Chat(msgs) => tok.apply_chat_template(msgs),
-                    };
-                    if let Err(e) =
-                        run_job(&mut model, &tok, &text, job.max_tokens, max_t, &job.pieces)
-                    {
-                        let _ = job.pieces.send(Err(e.to_string()));
-                    }
-                }
+                serve(&mut model, &tok, rx, max_t, batch);
             })?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self { tx }),
@@ -100,99 +130,188 @@ impl Engine {
     }
 }
 
-/// Prompt tokens are pushed through the decode path one at a time (the causal
-/// model gives the same answer as a batched prefill), then tokens are emitted
-/// until EOS or the budget runs out.
-fn run_job(
+fn argmax(v: &[f32]) -> u32 {
+    let mut best = 0usize;
+    for (i, x) in v.iter().enumerate() {
+        if *x > v[best] {
+            best = i;
+        }
+    }
+    best as u32
+}
+
+/// Decode the running prefix and send whatever is new.
+///
+/// Decoding one id at a time mangles multi-byte characters that straddle two
+/// tokens, so the whole prefix is decoded and only the new suffix is emitted.
+/// Until the slot retires, a trailing U+FFFD is held back: the tokenizer produces
+/// one when a multi-byte character is split across a token boundary, and the rest
+/// of it only arrives with the next token.
+fn emit(tok: &Tokenizer, a: &mut Active, flush: bool) {
+    let full = tok.decode(&a.all, true).unwrap_or_default();
+    if full.len() <= a.sent_len || !full.is_char_boundary(a.sent_len) {
+        return;
+    }
+    let piece = &full[a.sent_len..];
+    let cut = if flush {
+        piece.len()
+    } else {
+        piece.trim_end_matches('\u{FFFD}').len()
+    };
+    if cut > 0 {
+        a.sent_len += cut;
+        let _ = a
+            .job
+            .pieces
+            .send(Ok(EngineEvent::Piece(piece[..cut].to_string())));
+    }
+}
+
+/// Turn a queued job into a live slot, or report why it cannot be served.
+fn prepare(
     model: &mut Qwen38,
     tok: &Tokenizer,
-    text: &str,
-    max_tokens: usize,
+    job: Job,
     max_t: usize,
-    pieces: &UnboundedSender<Result<EngineEvent, String>>,
-) -> Result<()> {
-    model.reset();
-    let ids = tok.encode(text, false)?;
+    slot: usize,
+) -> Option<Active> {
+    let text = match &job.prompt {
+        Prompt::Text(s) => s.clone(),
+        Prompt::Chat(msgs) => tok.apply_chat_template(msgs),
+    };
+    let ids = match tok.encode(&text, false) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = job.pieces.send(Err(e.to_string()));
+            return None;
+        }
+    };
     // Every row the decode touches has to exist: the KV cache and the delta-net
     // state were sized for `max_t` positions.  A prompt that already fills the
     // context, or a completion budget that would run past it, is rejected here
     // rather than silently walking off the end of the buffers.
-    if ids.len() >= max_t {
-        anyhow::bail!(
+    if ids.is_empty() || ids.len() >= max_t {
+        let _ = job.pieces.send(Err(format!(
             "prompt is {} tokens but the context is {max_t}; restart with a larger --max-ctx",
             ids.len()
-        );
+        )));
+        return None;
     }
-    let max_tokens = max_tokens.min(max_t - ids.len());
-    let _ = pieces.send(Ok(EngineEvent::Prompt(ids.len())));
-    // When the MTP head is present the drafts come from its own attention state,
-    // so the prefill has to warm that state alongside the target's: feed the head
-    // each token's predecessor exactly as the CLI does, or every draft is garbage
-    // and speculation only costs time.
-    let spec = model.has_mtp() && std::env::var("QW_NO_SPEC").is_err();
-    if spec {
-        model.enable_spec_snap();
+    // The slot may have served an earlier request.  Its recurrent state has to go
+    // back to the initial condition first.
+    if let Err(e) = model.reset_seq(slot) {
+        let _ = job.pieces.send(Err(e.to_string()));
+        return None;
     }
-    for (p, id) in ids.iter().enumerate() {
-        model.set_token(*id)?;
-        model.forward(p)?;
-        if spec && p + 1 < ids.len() {
-            model.mtp_step(ids[p + 1], p + 1, false)?;
+    let max_tokens = job.max_tokens.min(max_t - ids.len());
+    let _ = job.pieces.send(Ok(EngineEvent::Prompt(ids.len())));
+    Some(Active {
+        job,
+        ids,
+        pf: 0,
+        pos: 0,
+        feed: 0,
+        ready: false,
+        all: Vec::new(),
+        sent_len: 0,
+        emitted: 0,
+        max_tokens,
+    })
+}
+
+fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, batch: usize) {
+    let mut slots: Vec<Option<Active>> = (0..batch).map(|_| None).collect();
+    let mut waiting: VecDeque<Job> = VecDeque::new();
+    loop {
+        // ---- admit ----
+        // Block only when there is nothing at all to do.  Otherwise take whatever
+        // has already arrived, so a burst is batched instead of serialised.
+        if waiting.is_empty() && slots.iter().all(|s| s.is_none()) {
+            match rx.recv() {
+                Ok(j) => waiting.push_back(j),
+                // Every sender is gone, so the server is shutting down.
+                Err(_) => return,
+            }
         }
-    }
-    // Decoding one id at a time mangles multi-byte characters that straddle two
-    // tokens, so decode the running prefix and emit only what is new.
-    let mut all: Vec<u32> = Vec::new();
-    let mut sent_len = 0usize;
-    // Speculative decoding when the MTP head is present: the same step the CLI
-    // benchmark uses, so the endpoint serves at the tuned throughput.
-    let mut pos = ids.len();
-    let mut next = model.argmax();
-    let mut emitted = 0usize;
-    while emitted < max_tokens && !tok.is_eos(next) {
-        let mut step: Vec<u32> = Vec::new();
-        if spec {
-            let (p, n, _, _) = model.spec_step(pos, next, &mut step)?;
-            pos = p;
-            next = n;
-        } else {
-            step.push(next);
-            model.set_token(next)?;
-            model.forward(pos)?;
-            pos += 1;
-            next = model.argmax();
+        while let Ok(j) = rx.try_recv() {
+            waiting.push_back(j);
         }
-        let mut full_pass = false;
-        for t in step {
-            if tok.is_eos(t) || emitted >= max_tokens {
-                full_pass = true;
+        for (slot, entry) in slots.iter_mut().enumerate() {
+            if entry.is_some() {
+                continue;
+            }
+            let Some(job) = waiting.pop_front() else {
                 break;
+            };
+            if let Some(a) = prepare(model, tok, job, max_t, slot) {
+                *entry = Some(a);
             }
-            all.push(t);
-            emitted += 1;
         }
+
+        // ---- one batched pass over every slot that can take a step ----
+        let mut rows: Vec<(usize, usize)> = Vec::new();
+        let mut toks: Vec<u32> = Vec::new();
+        let mut row_slot: Vec<usize> = Vec::new();
+        for (slot, entry) in slots.iter_mut().enumerate() {
+            let Some(a) = entry.as_mut() else { continue };
+            let (token, pos) = if a.pf < a.ids.len() {
+                let (t, p) = (a.ids[a.pf], a.pf);
+                a.pf += 1;
+                (t, p)
+            } else if a.ready && a.emitted < a.max_tokens && !tok.is_eos(a.feed) {
+                let (t, p) = (a.feed, a.pos);
+                a.pos += 1;
+                a.all.push(t);
+                a.emitted += 1;
+                (t, p)
+            } else {
+                continue;
+            };
+            rows.push((slot, pos));
+            toks.push(token);
+            row_slot.push(slot);
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        let failed = match model
+            .set_tokens(&toks)
+            .and_then(|_| model.forward_rows(&rows))
         {
-            let full = tok.decode(&all, true).unwrap_or_default();
-            if full.len() > sent_len && full.is_char_boundary(sent_len) {
-                // Hold back a trailing U+FFFD: the tokenizer emits a replacement
-                // character when a multi-byte character is split across a token
-                // boundary, and the remaining bytes only arrive with the next token.
-                let piece = &full[sent_len..];
-                let cut = piece.trim_end_matches('\u{FFFD}').len();
-                if cut > 0 {
-                    sent_len += cut;
-                    if pieces
-                        .send(Ok(EngineEvent::Piece(piece[..cut].to_string())))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+            Ok(()) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        for (i, &slot) in row_slot.iter().enumerate() {
+            let Some(a) = slots[slot].as_mut() else {
+                continue;
+            };
+            if let Some(msg) = &failed {
+                let _ = a.job.pieces.send(Err(msg.clone()));
+                a.emitted = a.max_tokens;
+                continue;
             }
+            let next = argmax(&model.logits_row(i));
+            if a.pf >= a.ids.len() {
+                a.ready = true;
+            }
+            if a.ready {
+                a.feed = next;
+            }
+            emit(tok, a, false);
         }
-        if full_pass {
-            break;
+
+        // ---- retire ----
+        for entry in slots.iter_mut() {
+            let done = match entry.as_ref() {
+                Some(a) => a.ready && (a.emitted >= a.max_tokens || tok.is_eos(a.feed)),
+                None => false,
+            };
+            if done {
+                if let Some(a) = entry.as_mut() {
+                    emit(tok, a, true);
+                }
+                *entry = None;
+            }
         }
     }
-    Ok(())
 }
