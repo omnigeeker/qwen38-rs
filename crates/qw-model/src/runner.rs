@@ -82,6 +82,10 @@ struct Gdn {
     /// recovery is a full re-run of the accepted row, which costs more than the
     /// draft ever saves.
     snap: GpuBuffer,
+    /// Snapshot of `state` taken at the end of a prefill, per sequence.
+    cache_state: GpuBuffer,
+    /// Snapshot of `window` taken at the same moment, per sequence.
+    cache_window: GpuBuffer,
 }
 
 enum Kind {
@@ -561,6 +565,12 @@ impl Qwen38 {
                     state: dev.buffer(hv * dv * dk * 4 * batch),
                     window: dev.buffer(conv_ring * conv_dim * 2 * batch),
                     snap: dev.buffer(hv * dv * dk * 4 * TILE * batch),
+                    // Mirror of `state` and `window`, one slot's worth per sequence,
+                    // held for the prefix cache.  165 MB in total against the 14.4 GB
+                    // of weights, and it is what makes a prompt reusable after the
+                    // slot has gone on to decode.
+                    cache_state: dev.buffer(hv * dv * dk * 4 * batch),
+                    cache_window: dev.buffer(conv_ring * conv_dim * 2 * batch),
                 }))
             } else {
                 Kind::Full(Box::new(FullAttn {
@@ -804,6 +814,60 @@ impl Qwen38 {
                             .scalar(3, 0)
                             .scalar(4, (seq * stride / 2) as i32),
                     );
+                }
+            }
+        }
+        b.finish(true);
+        Ok(())
+    }
+
+    /// Copy one slot's recurrent state and convolution window aside, so the position
+    /// it is currently at can be returned to later.
+    ///
+    /// The delta-net recurrence is a running quantity and cannot be rewound, so the
+    /// only way back to a position a slot has already passed is to have kept a copy
+    /// from when it was there.  The prefix cache takes one of these the moment a
+    /// prompt has been fully prefilled, which is exactly the position a later request
+    /// will want to resume from.
+    pub fn save_prefix(&mut self, seq: usize) -> Result<()> {
+        self.copy_seq(seq, false)
+    }
+
+    /// Put a slot back at a position recorded by [`Self::save_prefix`].
+    ///
+    /// The copy is not consumed: it stays valid, so several requests can resume from
+    /// the same boundary.  The KV cache is deliberately left alone - it is keyed by
+    /// position, positions are written once, and a pass reads only up to the current
+    /// position, so entries past the boundary are simply never read and are
+    /// overwritten as the new prompt is prefilled.
+    pub fn load_prefix(&mut self, seq: usize) -> Result<()> {
+        self.copy_seq(seq, true)
+    }
+
+    fn copy_seq(&mut self, seq: usize, restore: bool) -> Result<()> {
+        if seq >= self.batch {
+            return Ok(());
+        }
+        let mut b = self.dev.batch();
+        let k = b.kernel(qw_metal::msl_ops::GDN, qw_metal::msl_ops::K_COPY)?;
+        // `copy_off` moves `half` elements, so lengths and offsets are in halves.
+        for layer in &self.layers {
+            if let Kind::Gdn(g) = &layer.kind {
+                for (live, saved, stride) in [
+                    (&g.state, &g.cache_state, self.state_stride),
+                    (&g.window, &g.cache_window, self.win_stride),
+                ] {
+                    if stride == 0 {
+                        continue;
+                    }
+                    let n = stride / 2;
+                    let off = seq * stride / 2;
+                    let (src, dst) = if restore {
+                        (saved, live)
+                    } else {
+                        (live, saved)
+                    };
+                    copy_dispatch(&mut b, &k, src, off, dst, off, n);
                 }
             }
         }

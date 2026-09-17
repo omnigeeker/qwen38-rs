@@ -1487,6 +1487,23 @@
         "known_limitation": "a byte-identical retry misses.  After decoding, the slot's state sits at prompt + generated, past the prompt boundary, and a recurrent state cannot be rewound to a middle position, so only a complete match of the slot's history is usable.  Covering the retry case needs a prefill-boundary snapshot of state + window (about 179 MB per slot: 151 MB delta-net plus 28 MB window), which is next round's work and does not affect the agent path.",
         "cold_start_unchanged": "the first request still pays the full prefill - 230.41 s for 6866 tokens here - because no cache exists yet.  Prefix caching removes repeat work, not the first pass."
       }
+    },
+    {
+      "round": 65,
+      "title": "Prefix cache round 2: implemented the end-of-prefill snapshot that would let a byte-identical retry hit, since after decoding the slot's state sits past the prompt boundary and a recurrence cannot be rewound.  save_prefix/load_prefix copy a slot's state and convolution window (165 MB in total, mirrored per slot) and restore them on a boundary match; the copy is not consumed, so one boundary serves several requests.  It builds clean but is NOT verified end to end - the cold prefill for the same 6866-token prompt has measured anywhere from 230 s to over 600 s on this machine, and the run meant to check it did not finish inside the round - so it is opt-in behind QW_PREFIX_SNAPSHOT=1 and the verified round-4 behaviour remains the default.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, release build clean)",
+        "G2": "accept.sh re-run with nothing else on the machine",
+        "G3": "NOT verified: the retry-hit path has not been observed working.  The default path was confirmed instead - the server logs 'prefix cache: saved-boundary snapshots off' and answers normally, which is the round-4 build's behaviour.",
+        "G4": "no new timing is claimed; the round-4 measurement (cold 230.41 s, agent next turn 1.38 s) stands as the verified result"
+      },
+      "evidence": {
+        "why_it_needs_a_copy": "the delta-net state is a running quantity; the only way back to a position a slot has already passed is a copy taken while it was there.",
+        "why_the_copy_is_kept": "a snapshot is not consumed by a hit, so one boundary can serve many requests, and a miss (which rewinds the live state) does not invalidate it.",
+        "why_it_is_not_the_default": "an unverified optimisation that can silently corrupt state is worse than a known miss.  The engine was confirmed alive during the slow run - a fresh small request on another slot was answered promptly - so the slowness was the machine, not a wedge, but 'slow machine' is not evidence that the copy is correct."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
