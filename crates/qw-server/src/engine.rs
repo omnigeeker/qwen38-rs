@@ -784,6 +784,19 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 }
             }
             if a.pf >= a.ids.len() {
+                if !a.ready {
+                    // Time to first token, which is the number an agent framework
+                    // actually feels.  The prompt is fully in and this pass is the
+                    // one that produces the answer's first token, so the elapsed
+                    // time here is exactly it - and until now only the total was
+                    // recorded, which made a warm hit indistinguishable from a cold
+                    // start in the log.
+                    tracing::info!(
+                        "slot {slot}: prompt in after {:.1}s (time to first token, {} tokens)",
+                        a.started.elapsed().as_secs_f64(),
+                        a.ids.len()
+                    );
+                }
                 a.ready = true;
             }
             if a.ready {

@@ -1726,6 +1726,25 @@
         "self_improving": "run 2 persisted new boundaries at 6124, 6380 and 6508, closer to the divergence.",
         "logproxy_caveat": "its reported first byte is the SSE stream's first byte, not the first content token."
       }
+    },
+    {
+      "round": 78,
+      "title": "Converged, and it reaches the objective.  Added a time-to-first-token log line, because until now only the total was recorded and a warm hit was indistinguishable from a cold start in the log.  Then three consecutive FRESH-process runs of real OpenCode against the same cache directory: run 3 skipped 6124 of 6893 (89%) with a TTFT of 21.1 s; run 4 skipped 6636 of 6894 (96%) at 14.8 s; run 5 skipped 6892 of 6894 (100%) at 0.2 s.  The whole opencode run went from 197 s cold to 6 s.  The self-improvement is visible in the log: each run persists new boundaries closer to the divergence point, so the skip ratio climbs 89% then 96% then 100%.  Run 5's 100% means that session's prompt was identical to a stored boundary for 6892 of its 6894 tokens, so the new session's hello did no cold prefill at all.  The settled behaviour is 89-100% skipped, commonly about 96%, giving a TTFT of 0.2-15 s rather than a single fixed number, because the divergence point moves slightly from session to session.  Oracle 6/6, batch-check 16/16, accept.sh 12 passed and 0 failed ACCEPTED.  All three parts of the plan are done: the snapshot save/restore was proven numerically correct (round 17 found the snapshot was taken at the prompt end where the first token's logits are not copied, and moving it before the final chunk gave bit-identical output at 15.5 s cold against 0.5 s warm); the KV, GDN state and convolution window are persisted keyed by token content at 165 MB plus 0.0655 MB per token, matching the 560 MB estimate for 6000 tokens; and a fresh process imports on a hit and prefills only the remainder.  The one thing left for the user to decide is whether the two environment variables become the default, since the disk cache occupies several GB and writing that to someone's home directory unasked is not appropriate.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "accept.sh 12 passed, 0 failed ACCEPTED",
+        "G4": "real OpenCode TTFT 0.2 s at 100% skip; 197 s cold -> 6 s"
+      },
+      "evidence": {
+        "convergence": "three fresh-process runs: 89% then 96% then 100% skipped, TTFT 21.1 s then 14.8 s then 0.2 s.",
+        "objective_met": "a new session's hello did no cold prefill at all: 6892 of 6894 tokens skipped.",
+        "settled_behaviour": "89-100% skipped, commonly about 96%, so TTFT 0.2-15 s, because the divergence point moves between sessions.",
+        "blob_formula": "165 MB fixed plus 0.0655 MB per token; 6000 tokens is about 560 MB as estimated.",
+        "left_to_decide": "whether QW_PREFIX_SNAPSHOT and QW_PREFIX_DISK become defaults, since the cache uses several GB of disk."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
