@@ -1521,6 +1521,24 @@
         "why_it_looked_hung": "the engine logged admission and then nothing at all until the reply, so for four to twelve minutes the console was silent while the GPU was saturated.  Progress logging is the fix for that, not a speedup.",
         "boundary_snapshot_disproved": "the second opencode run sent a byte-identical 6865-token prompt, the saved boundary matched and skipped 100% of it, and the run then failed to complete within about ten minutes against 250 s cold, with no completion line in the engine log.  A restored recurrent state that makes the model fail to terminate is far worse than a cache miss, so QW_PREFIX_SNAPSHOT stays off."
       }
+    },
+    {
+      "round": 67,
+      "title": "Chased the position-dependent prefill cost.  It is real and reproducible: two independent runs of the same 6865-token prompt gave nearly identical segment rates, fitting ms/token ~= 9.2 + 5.5e-3 * position, so the position term is about 80% of a 7K cold prefill (215-248 s, against ~63 s if it were removed).  It should not be there: the inherent attention work for 6865 tokens is ~7 ms of FLOPs and ~1.5 s of KV traffic, nowhere near the ~132 ms per pass that is actually observed, so it is an implementation inefficiency - most likely the 6x query-head re-read of each KV head under GQA combined with a 4x per-row re-read of the history inside a chunk, 24x redundancy in total.  I did NOT change any kernel: my own traffic estimate contradicts the measured time by orders of magnitude, which means my model of what the kernels actually touch is wrong, and rewriting a kernel on a wrong model is how silent wrongness gets shipped.  The next step is instrumentation, not a rewrite.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "no code changed this round beyond the docs, so the gates are unchanged from round 66 (fmt/clippy clean, accept.sh 12/12 ACCEPTED, pushed 4d850de)",
+        "G2": "not applicable - no code change",
+        "G3": "the diagnosis rests on progress-log timings from two independent runs of the same prompt, which agree to within a few percent",
+        "G4": "measured slope 5.5e-3 ms per token per position; no timing improvement is claimed"
+      },
+      "evidence": {
+        "reproducible": "Run A 26.11/33.22/42.44 and Run B 23.43/31.64/42.32 ms per token at positions 2578/4294/6008 - two separate server runs, same shape.",
+        "arithmetic_contradiction": "the measured per-pass overhead at 7K is ~132 ms, while the inherent attention for that prompt is ~7 ms of FLOPs and ~1.5 s of KV traffic in total.  The gap is ~2 orders of magnitude, which is why the fix cannot be guessed.",
+        "suspects": "GQA makes 6 query heads read one KV head; a 4-row chunk makes each row read the same history again.  24x redundant reads, and sharing them is the standard fix.",
+        "why_no_fix": "an estimate that contradicts measurement by 100x is not a basis for rewriting a kernel.  Instrument first: time the individual dispatches at T = 1k / 4k / 7k and find which one grows with T."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
