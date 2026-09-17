@@ -1435,6 +1435,23 @@
         "the_real_fix": "prefix caching, not a faster single prefill.  An agent re-sends its whole conversation every step, so step N pays a full prefill of N steps of history; caching the prefix turns every step after the first into a prefill of only the new tokens, which is the only route to sub-second TTFT in practice.  The machinery is partly there: the speculative snap buffer already snapshots the GDN recurrence, and the KV cache is position-indexed.",
         "instrument_discipline": "the thermal proxy is the engine load time; it went from 4.2 s to 19.4 s between the round-6 and round-7 measurements, which is why no round-7 timing is trusted."
       }
+    },
+    {
+      "round": 62,
+      "title": "TTFT round 2: chunked prefill is VERIFIED and now the default - a paired same-thermal-state A/B on a 1314-token prompt gave a TTFT of 130.08 s at one token per pass and 36.10 s at four, a 3.60x speedup, with byte-identical output.  The mechanism is bandwidth: a one-row pass still streams all 14.4 GB of weights, so feeding it a single token pays that entire read for one token, while the projection kernel computes four rows from the same read.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, release build clean)",
+        "G2": "accept.sh first reported 11/12 with the oracle parity step failing, but that was my own mistake: the A/B script was still running and competing for the GPU and the port.  Run directly, verify --oracle reports parity 6/6, and that same run had spec==plain byte-identical over 300 tokens and all four endpoint shapes passing.  accept.sh was then re-run with nothing else on the machine.",
+        "G3": "the A/B is paired within one machine state and alternated, which is the only form this project trusts: chunk=1 130.08 s, chunk=4 36.10 s, and both produced the identical string '<think>\\nWe need to answer the user'",
+        "G4": "measured 3.60x on prefill.  Not 4x because the four-row tile kernel does four rows of arithmetic on one weight read and is partly ALU-bound.  Wider chunks would be worse: the sixteen-row kernel is L2-bound at about 19 ms per row against about 6.9 ms per row here."
+      },
+      "evidence": {
+        "why_prefill_was_slow": "a one-row pass is bandwidth-bound and must stream all 14.4 GB of weights, roughly 29 ms at DRAM peak, and prefill was paying that once per prompt token.  Feeding four consecutive positions per pass reuses that single read, which is what the tile kernel was always built to do.",
+        "the_floor_still_stands": "even at the improved rate, 32K tokens cannot reach a one-second TTFT.  25B activated parameters is 5e10 FLOPs per token and this GPU is about 20 TFLOPS, so ~2.5 ms per token is the compute floor - about 80 s for 32K.  The measured 27.5 ms per token after this change is about 11x off that floor, so the remaining headroom is real but bounded.",
+        "process_lesson": "running a benchmark and the acceptance suite at the same time invalidates both.  The failing oracle parity looked like a regression and was not one; the direct re-run was clean."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

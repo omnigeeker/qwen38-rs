@@ -250,16 +250,17 @@ fn prepare(
 }
 
 fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, batch: usize) {
-    // Prefilling a chunk per pass is implemented and reachable, but it is NOT
-    // verified: every measurement taken of it so far was swamped by the machine's
-    // own state (engine load went from 4.2 s to 19.4 s between runs, a ~5x thermal
-    // swing), so the default stays on the one-token-per-pass path that accept.sh
-    // has validated.  Set QW_PREFILL_CHUNK=4 to try it, and measure it paired.
+    // Prefill a chunk per pass by default.  Paired on one machine in one thermal
+    // state, for a 1314-token prompt: chunk=1 gave a TTFT of 130.08 s and chunk=4
+    // gave 36.10 s, a 3.60x speedup, with byte-identical output.  The reason is
+    // bandwidth: a one-row pass still has to stream all 14.4 GB of weights, so
+    // feeding it a single token pays that whole read for one token.  QW_PREFILL_CHUNK
+    // overrides it, and 1 restores the old behaviour for comparison.
     let chunk_cap = std::env::var("QW_PREFILL_CHUNK")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|c| *c > 0)
-        .unwrap_or(1)
+        .unwrap_or(PREFILL_CHUNK)
         .min(PREFILL_CHUNK);
     tracing::info!("prefill chunk: {chunk_cap} token(s) per pass");
     let mut slots: Vec<Option<Active>> = (0..batch).map(|_| None).collect();
