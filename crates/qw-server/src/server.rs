@@ -157,8 +157,14 @@ fn to_messages(msgs: &[crate::openai::ChatMessage]) -> Vec<Message> {
         .collect()
 }
 
-/// The engine reports the prompt length first (for `usage`); the SSE encoders
-/// only care about text, so this adapter drops the metadata event.
+/// The engine reports the prompt length first (for `usage`), and that event is
+/// turned into an immediate empty piece rather than dropped.
+///
+/// Prefill is one full read of the weights per pass, so the first real token can be
+/// tens of seconds away.  Until now nothing at all was written to the client during
+/// that time, which is what made a framework sit there looking hung: nothing had
+/// arrived to show the request was alive.  Writing the opening `role` chunk the moment
+/// the job is admitted costs nothing and means the client has bytes immediately.
 fn text_only(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Result<EngineEvent, String>>,
 ) -> tokio::sync::mpsc::UnboundedReceiver<Result<String, String>> {
@@ -166,7 +172,7 @@ fn text_only(
     tokio::spawn(async move {
         while let Some(item) = rx.recv().await {
             let keep = match item {
-                Ok(EngineEvent::Prompt(_)) => None,
+                Ok(EngineEvent::Prompt(_)) => Some(Ok(String::new())),
                 Ok(EngineEvent::Piece(p)) => Some(Ok(p)),
                 Err(e) => Some(Err(e)),
             };
@@ -232,7 +238,14 @@ fn openai_sse(
         )),
         Ok(Event::default().data("[DONE]")),
     ]));
-    Sse::new(body).into_response()
+    Sse::new(body).keep_alive(keep_alive()).into_response()
+}
+
+/// A comment line every few seconds for as long as the stream is open.  A client
+/// waiting on a long prefill sees no data for tens of seconds; without this, an idle
+/// socket is indistinguishable from a dead one.
+fn keep_alive() -> axum::response::sse::KeepAlive {
+    axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(3))
 }
 
 /// Anthropic's event stream: `message_start`, then deltas, then `message_stop`.
@@ -294,7 +307,7 @@ fn anthropic_sse(
                 .event("message_stop")
                 .data(serde_json::json!({"type": "message_stop"}).to_string())),
         ]));
-    Sse::new(body).into_response()
+    Sse::new(body).keep_alive(keep_alive()).into_response()
 }
 
 async fn collect(

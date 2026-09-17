@@ -1452,6 +1452,23 @@
         "the_floor_still_stands": "even at the improved rate, 32K tokens cannot reach a one-second TTFT.  25B activated parameters is 5e10 FLOPs per token and this GPU is about 20 TFLOPS, so ~2.5 ms per token is the compute floor - about 80 s for 32K.  The measured 27.5 ms per token after this change is about 11x off that floor, so the remaining headroom is real but bounded.",
         "process_lesson": "running a benchmark and the acceptance suite at the same time invalidates both.  The failing oracle parity looked like a regression and was not one; the direct re-run was clean."
       }
+    },
+    {
+      "round": 63,
+      "title": "TTFT round 3: found why clients look hung regardless of speed.  The engine's Prompt(n) event - which arrives at admission, before any prefill - was being DROPPED by the SSE adapter, so the server wrote NOTHING to the client until the first token, tens of seconds later.  An idle socket is indistinguishable from a dead one, so OpenCode and KiloCode both sat there.  The Prompt event now becomes the opening role chunk, so the client has bytes immediately, and both SSE streams carry a 3 s keep-alive comment.  Measured on a 1314-token prompt: first byte 0.05 s (was 101 s of silence), 8 keep-alives during the prefill, and first CONTENT at 25.24 s.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, release build clean)",
+        "G2": "accept.sh re-run with nothing else on the machine",
+        "G3": "verified directly with a stream reader that timestamps the first line, the first keep-alive and the first non-empty content delta: 0.05 s / 8 comments / 25.24 s, with the generated text unchanged",
+        "G4": "measured; the wire-level first byte is 0.05 s but that is a role chunk, NOT the first content token - the honest TTFT is 25.24 s for 1314 tokens"
+      },
+      "evidence": {
+        "the_hang_was_not_only_speed": "even a fast prefill would have looked hung, because nothing was written until it finished.  The metadata event that already carried the prompt length was discarded by text_only, which is why the fix is three lines rather than a kernel.",
+        "why_it_matters_for_agents": "a coding agent's prompt is ~6867 tokens, so at the measured 19-27 ms per token the first content token is minutes away.  Keeping the socket alive is what stops the framework from timing out and retrying, which is what the user saw as a freeze.",
+        "the_target_remains_impossible": "25B activated parameters is 5e10 FLOPs per token and this GPU is about 20 TFLOPS, so the compute floor is ~2.5 ms per token: ~80 s for 32K.  One second would need ~1700 TFLOPS, about 85x this GPU.  Measured today: 19 ms per token after chunked prefill, still ~8x off the floor."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
