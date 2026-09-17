@@ -1072,3 +1072,71 @@ ACCEPTED**。
 - **没有用真实 OpenCode（6867 token）端到端跑过**。目前只在 HTTP API 层面用 1025 token 的合成
   prompt 验证。
 - **`QW_PREFIX_SNAPSHOT` 与 `QW_PREFIX_DISK` 都还是 opt-in（默认关）**，所以用户现在还得手动设置才有效。
+
+
+---
+
+## 24. 真实 OpenCode 端到端：分歧点在末尾，一列边界解决（第 19 轮）
+
+### 第一次端到端测试暴露了真问题
+
+用 `tools/logproxy.py`（8080 → 8081）接真实 OpenCode 跑了两轮：
+
+| | run 1 | run 2（全新进程） |
+|---|---|---|
+| 标题请求 550 | miss → 存盘 | **HIT (disk prefix) 100%** |
+| **主请求** | 6894 tokens | **6891 tokens → MISS** |
+
+**⇒ OpenCode 两次会话的 prompt 不是逐字节相同的**（chars 22457 对 22430）。
+
+### 不需要再跑一次就能定位：两个 `.pfx` 的头部就存着 token ids
+
+直接 diff 两个缓存文件的 ids：
+
+```
+first divergence at token index: 6566
+common prefix: 6566 tokens = 95.3% of 6888
+run1 around: [3017, 902, 626, 11591, 51860, 768, 2600, 58873]
+run2 around: [3017, 902, 626, 11591,  1617, 50252, 5987, 2600]
+```
+
+**6566 / 6888 = 95.3% 完全相同，只有最后约 322 个 token 在变。**
+
+**⇒ 问题不是"无法复用"，而是"只存了末尾那一个边界，它落在分歧点之后，于是什么都匹配不上"。**
+
+### 修法：一列几何间隔的边界
+
+```rust
+const PREFIX_LADDER: [usize; 10] = [0, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096];
+```
+
+prefill 过程中，每当一个 chunk 跨过某个"距末尾 k 个 token"的阈值，就在那个 chunk 边界落一次盘——
+每个阈值恰好触发一次，间距在末尾附近故意更密（变化就发生在那里）。
+`store()` 以内容命名文件，**同一个前缀重复落盘是免费的**（文件已存在就直接返回），
+并加了按 mtime 的容量淘汰（`QW_PREFIX_DISK_MB`，默认 8 GB），因为 agent 的 prompt 每轮都在增长。
+
+### 端到端结果（真实 OpenCode，全新进程）
+
+| run 2（全新进程） | 跳过 | 完整请求 |
+|---|---|---|
+| 标题请求 550 | **548 / 550 (100%)** | 35.9 s → **11.6 s** |
+| **主请求 6893** | **6124 / 6893 (89%)** | **195.8 s → 32.7 s** |
+
+**`opencode run "hello"` 整体：197 s → 35 s。**
+
+而且 run 2 自己又落下了 6124 / 6380 / 6508 三个新边界——**缓存会自我改进**：
+会话积累得越多，边界就越靠近分歧点，TTFT 继续下降。
+
+门禁：oracle **6/6**、batch-check **16/16**、accept.sh **12 passed / 0 failed ACCEPTED**。
+
+### 关于 logproxy 的 "first byte"
+
+它报的 `first byte after 0.0s` 是 **SSE 流的第一个字节**（立刻到达），
+**不是首个内容 token 的延迟**。真正的 TTFT 要看服务端日志：命中后 prefill 769 个 token
+约 13 s。**这条要记住，别把 logproxy 的 first byte 当成 TTFT。**
+
+### 尚未完成
+
+- TTFT 目前约 **13 s**，还不是个位数。分歧点位置每次会话略有不同，
+  阶梯会在几轮之后收敛到更靠近分歧点的边界（run 2 已落下 6508），但**没有验证过收敛后的数字**。
+- `QW_PREFIX_SNAPSHOT` / `QW_PREFIX_DISK` 仍是 opt-in。

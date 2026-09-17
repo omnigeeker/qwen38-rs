@@ -55,6 +55,15 @@ enum Reuse {
     Disk(usize, Vec<u8>),
 }
 
+/// Distances from the end of a prompt at which a boundary is persisted.
+///
+/// One boundary at the very end is not enough.  Measured against real OpenCode,
+/// two sessions' prompts shared 6566 of 6888 tokens and diverged in the last
+/// ~320 - so a boundary at 6884 matches nothing, while one a little further
+/// back lands inside the shared region and lets the request resume there.
+/// The spacing is deliberately finer near the end, where the variation is.
+const PREFIX_LADDER: [usize; 10] = [0, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096];
+
 /// Prefixes on disk, keyed by content rather than by slot, so they outlive the
 /// process and are shared by every slot and every session.
 mod prefixes {
@@ -134,6 +143,13 @@ mod prefixes {
         }
 
         pub fn store(&self, ids: &[u32], blob: &[u8]) -> std::io::Result<()> {
+            let path = self.dir.join(format!("{:016x}-{}.pfx", fnv(ids), ids.len()));
+            // The content hash names the file, so an existing path means we
+            // already hold exactly this prefix.  Rewriting a 1.4 GB blob of
+            // identical bytes on every turn is pure waste.
+            if path.exists() {
+                return Ok(());
+            }
             let mut o = Vec::with_capacity(12 + ids.len() * 4 + blob.len());
             o.extend_from_slice(b"Q38DSK1\0");
             o.extend_from_slice(&(ids.len() as u32).to_le_bytes());
@@ -141,10 +157,47 @@ mod prefixes {
                 o.extend_from_slice(&t.to_le_bytes());
             }
             o.extend_from_slice(blob);
-            let path = self.dir.join(format!("{:016x}-{}.pfx", fnv(ids), ids.len()));
             let tmp = path.with_extension("tmp");
             std::fs::write(&tmp, &o)?;
-            std::fs::rename(&tmp, &path)
+            std::fs::rename(&tmp, &path)?;
+            self.evict()
+        }
+
+        /// Keep the directory bounded.
+        ///
+        /// An agent's prompt grows every turn, so it produces a fresh, slightly
+        /// longer prefix each time - without a cap this grows without limit.
+        /// Oldest first, by mtime, until the total is back under the cap.
+        fn evict(&self) -> std::io::Result<()> {
+            let mb: u64 = std::env::var("QW_PREFIX_DISK_MB")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8192);
+            let cap = mb * 1024 * 1024;
+            let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+            let mut total = 0u64;
+            for e in std::fs::read_dir(&self.dir)?.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("pfx") {
+                    continue;
+                }
+                let Ok(m) = e.metadata() else { continue };
+                total += m.len();
+                files.push((m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), p));
+            }
+            if total <= cap {
+                return Ok(());
+            }
+            files.sort_by_key(|(t, _, _)| *t);
+            for (_, len, p) in files {
+                if total <= cap {
+                    break;
+                }
+                if std::fs::remove_file(&p).is_ok() {
+                    total = total.saturating_sub(len);
+                }
+            }
+            Ok(())
         }
     }
 }
@@ -644,14 +697,23 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // (about 80 ms) and lets an ordinary prefill rebuild the state, the KV
                 // entries and the logits correctly.  The `pf > 0` guard keeps a short
                 // request from clobbering a long prompt's snapshot with an empty one.
-                if snapshot && a.pf > 0 && a.pf + take >= a.ids.len() {
+                let rem = a.ids.len() - a.pf;
+                let rem_after = rem - take;
+                // A boundary is due when this chunk crosses one of the ladder
+                // offsets, so each fires exactly once per prefill.  Re-persisting
+                // the same prefix is free: store() keys on content and returns
+                // early if the file is already there.
+                if snapshot
+                    && a.pf > 0
+                    && PREFIX_LADDER.iter().any(|&k| rem > k && rem_after <= k)
+                {
                     match model.save_prefix(slot) {
                         Ok(()) => {
                             cache.record_boundary(slot, a.ids[..a.pf].to_vec());
                             // And persist it, so the next process starts warm.
                             // Only for a prefix long enough to be a real agent
                             // system prompt: the blob costs about 0.1 MB a token.
-                            if a.pf >= 256 {
+                            if a.pf >= 128 {
                                 if let Ok(blob) = model.export_prefix(slot, a.pf) {
                                     if let Some(d) = prefixes::DiskPrefix::from_env() {
                                         match d.store(&a.ids[..a.pf], &blob) {

@@ -1706,6 +1706,26 @@
         "why_no_paired_ab": "a cache hit changes whether work happens at all, so output identity plus the skip ratio is the correct instrument.",
         "open": "no end-to-end run against real OpenCode at 6867 tokens, and both env vars are still opt-in."
       }
+    },
+    {
+      "round": 77,
+      "title": "Real OpenCode end-to-end, and it found the real problem.  Through tools/logproxy.py on 8080 forwarding to 8081, run 1 persisted and run 2 in a FRESH process hit the title request at 100% but MISSED the main 6891-token request.  The prompts are not byte-stable between sessions.  I did not need another run to find out where: the .pfx headers store the token ids, so diffing the two cache files gave the answer directly - first divergence at token 6566, so 6566 of 6888 tokens (95.3%) are shared and only the last ~322 vary.  So the problem was never that reuse was impossible; it was that I stored a single boundary at the very end, past the divergence, which therefore matched nothing.  The fix is a ladder of geometric offsets from the end, [0, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096]: during prefill, whenever a chunk crosses one of those thresholds a boundary is persisted at that chunk boundary, each firing exactly once, spaced more finely near the end where the variation lives.  store() names files by content hash so re-persisting an existing prefix is free, and there is mtime-based eviction under QW_PREFIX_DISK_MB (8 GB default) because an agent's prompt grows every turn.  End to end with real OpenCode in a fresh process: the 550-token title request hit 100% and went 35.9 s to 11.6 s; the 6893-token main request skipped 6124 tokens, 89%, and went 195.8 s to 32.7 s; the whole opencode run went 197 s to 35 s.  Run 2 also persisted new boundaries at 6124, 6380 and 6508, so the cache is self-improving and TTFT should keep falling as sessions accumulate.  Oracle 6/6, batch-check 16/16, accept.sh 12 passed 0 failed ACCEPTED.  One measurement caveat worth recording: logproxy's 'first byte' is the first byte of the SSE stream, which arrives immediately and is NOT the TTFT of the first content token; the server log's prefill timing is the real one, about 13 s after the hit.  Still open: TTFT is about 13 s rather than single digits, and the post-convergence number has not been measured, and both env vars are still opt-in.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "accept.sh 12 passed, 0 failed ACCEPTED",
+        "G4": "real OpenCode: main request 195.8 s -> 32.7 s, 89% skipped, fresh process"
+      },
+      "evidence": {
+        "prompt_not_stable": "run 1 main request 6894 tokens, run 2 6891; chars 22457 against 22430.",
+        "divergence": "first differing token index 6566 of 6888, so 95.3% is shared and only the last ~322 vary.",
+        "fix": "a ladder of geometric offsets from the end, each firing once when a chunk crosses it.",
+        "result": "fresh process: title 100% hit 35.9 s -> 11.6 s; main 89% hit 195.8 s -> 32.7 s; whole run 197 s -> 35 s.",
+        "self_improving": "run 2 persisted new boundaries at 6124, 6380 and 6508, closer to the divergence.",
+        "logproxy_caveat": "its reported first byte is the SSE stream's first byte, not the first content token."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
