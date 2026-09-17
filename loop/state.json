@@ -1299,6 +1299,26 @@
         "why_multiprocess_fails": "memory-bandwidth bound: 14.4 GB streamed per forward, 554 GB/s DRAM peak, ~130 GB/s when throttled"
       },
       "next": "batched prefill is the highest-value change available and it is nearly free to try: the verify kernels already compute 4 rows in one forward (q4_gemv_k4_u4hx), so feeding 4 prompt tokens per sweep should cut prefill ~4x, and a prefix cache across requests would take multi-turn agents from quadratic to linear. Both rest on 'batched rows equal single-row results', which is exactly the property open_issues/spec-plain-intermittent questions - so that flake should be settled first. Until then the practical guidance is: serialise agent calls, keep histories short, keep agent loops under ~6 turns, and set client timeouts above 600 s."
+    },
+    {
+      "round": 55,
+      "title": "batch-16 round 1: the 16-row kernel is numerically correct but SLOWER than serial, so the naive design is refuted.  Started the parallel-serving objective.  Added Q4_GEMV_KS_U4HX(q4_gemv_k16_u4hx, 16) - each threadgroup still produces one output row but consumes 16 activation rows, so one weight read could serve 16 tokens.  Added two gates: `check --rows N`, which pushes N DISTINCT activations through one weight read and compares every row against its own CPU reference (distinct inputs turn any cross-row contamination into a gross error), and `bench --rows 18 --tokens 16`, a paired in-process full-model comparison of one 16-row sweep against 16 single-row sweeps.  Result: correctness passes on all 8 representative tensors (norm_err 0.27-1.39%, Metal JIT 159 ms), but performance is 0.78x - ONE k16 sweep costs 635.60 ms against 30.9 ms for one single-row sweep, i.e. 20.6x the time for 16x the tokens, so the whole batch is 22% SLOWER than serving the 16 tokens serially.  Effective bandwidth 22.7 GB/s against 466 GB/s for the single-row kernel, so the kernel is not bandwidth-bound at all.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass (fmt, clippy -D warnings, 27 workspace tests)",
+        "G2": "check --rows 16: 8/8 tensors within 5% of the per-row CPU reference; check --rows 4: 8/8; single-row check and oracle parity 6/6 unchanged",
+        "G3": "REFUTED: bench --rows 18 --tokens 16 gives gain_raw 0.777, calibration 0.994, gain_calibrated 0.782",
+        "G4": "n/a - the feature is not shippable in this form"
+      },
+      "evidence": {
+        "k16_correct": "check --rows 16: norm_err 0.31/0.86/0.43/1.39/0.27/1.27/0.40/0.27 % on the 8 tensors; JIT 159 ms",
+        "k16_slow": "batch16 635.60 ms vs serial 494.13 ms for the same 16 tokens (14.4 GB of weights either way); duplicate k16 632.02 ms",
+        "root_cause": "per weight chunk (8 weights = two uint4 loads) the k1 kernel issues ONE x load; the k16 kernel issues SIXTEEN.  Weight bytes dominate but x INSTRUCTIONS dominate the instruction stream, so the kernel degrades from bandwidth-bound to load-instruction-bound, on top of 16 live accumulators of register pressure",
+        "why_batching_is_still_right": "process-level parallelism cannot share the weight read (measured 0.99x for two processes); only row-level batching inside one dispatch can, so the axis is right and only this kernel structure is wrong",
+        "instrument": "bench --rows 18 alternates k16 / 16xk1 / k16dup inside one process; the dup calibrates the method at 0.994, so the 0.78x is real"
+      },
+      "next": "next design: keep the k1 per-thread structure exactly (one accumulator, one x load per weight chunk) and get the weight reuse from L2 instead of from per-thread registers - make the threadgroup id carry both row and activation index (row = tg/16, xr = tg%16) so 16 consecutive threadgroups share one weight row and DRAM serves it once.  Expected: time close to ONE k1 sweep for 16 tokens.  Risk: if L2 does not hold the row, it degrades to exactly the serial case, so the downside is bounded.  Numbers to beat: >1.0x calibrated on bench --rows 18."
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

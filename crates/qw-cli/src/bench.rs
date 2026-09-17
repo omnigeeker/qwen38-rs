@@ -181,6 +181,93 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         return Ok(());
     }
 
+    // rows == 18: batch-16 against the serial alternative, both producing the same
+    // 16 tokens.  One sweep of the 16-row kernel (16 tokens per weight read) against
+    // 16 sweeps of the production single-row kernel (1 token per weight read).  The
+    // two are alternated inside one process, because on this box the clock moves by
+    // up to 4x within a single run and a cross-process A/B is meaningless.  Run it
+    // with --tokens 16 so the activation buffers are 16 rows wide.
+    if rows == 18 {
+        const SERIAL: usize = 16;
+        if k != SERIAL {
+            anyhow::bail!("--rows 18 needs --tokens {SERIAL} (buffers are {k} rows wide)");
+        }
+        let mut t = [f64::INFINITY; 3]; // 0 = batch-16, 1 = 16 serial sweeps, 2 = batch-16 dup
+        for r in 0..3usize {
+            let order: [usize; 3] = if r % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] };
+            for which in order {
+                let t0 = Instant::now();
+                {
+                    let mut batch = dev.batch();
+                    match which {
+                        1 => {
+                            let kern =
+                                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_HX)?;
+                            for _ in 0..SERIAL {
+                                for l in &linears {
+                                    let x = &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1;
+                                    let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
+                                    l.encode(&mut batch, &kern, x, y);
+                                }
+                            }
+                        }
+                        _ => {
+                            let kern = batch
+                                .kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K16_U4HX)?;
+                            for l in &linears {
+                                let x = &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1;
+                                let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
+                                l.encode_k(&mut batch, &kern, x, y, SERIAL);
+                            }
+                        }
+                    }
+                    batch.finish(true);
+                }
+                t[which] = t[which].min(t0.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        let tok = |ms: f64| SERIAL as f64 * 1000.0 / ms;
+        println!(
+            "batch-16 vs serial over the full {:.1} GB of quantised weights, {SERIAL} tokens either way",
+            total_bytes as f64 / 1e9
+        );
+        println!("{:<40} {:>10} {:>10}", "variant", "ms/sweep", "tok/s");
+        println!(
+            "{:<40} {:>10.2} {:>10.1}",
+            "k16: 16 tokens from 1 weight read",
+            t[0],
+            tok(t[0])
+        );
+        println!(
+            "{:<40} {:>10.2} {:>10.1}",
+            format!("k1 x{SERIAL}: 1 token per weight read"),
+            t[1],
+            tok(t[1])
+        );
+        println!(
+            "{:<40} {:>10.2} {:>10.1}",
+            "k16 again (instrument bias)",
+            t[2],
+            tok(t[2])
+        );
+        let raw = t[1] / t[0];
+        let bias = t[2] / t[0];
+        println!(
+            "\nthroughput gain {raw:.2}x raw, {:.2}x after the duplicate's own bias of {bias:.3}",
+            raw / bias
+        );
+        println!(
+            "{{\"batch16_ms\": {:.2}, \"serial_ms\": {:.2}, \"gain_raw\": {:.3}, \"calibration\": {:.3}, \"gain_calibrated\": {:.3}, \"tokens\": {}}}",
+            t[0],
+            t[1],
+            raw,
+            bias,
+            raw / bias,
+            SERIAL
+        );
+        return Ok(());
+    }
+
     // QW_BENCH_BURN=<seconds>: hammer the GPU with the same sweep until the deadline
     // before timing anything.  If the in-situ/in-isolation gap is the clock dropping
     // under sustained load rather than anything about the kernels, this reproduces it.

@@ -589,6 +589,11 @@ kernel void NAME(                                                               
 }
 Q4_GEMV_KS_U4HX(q4_gemv_k3_u4hx, 3)
 Q4_GEMV_KS_U4HX(q4_gemv_k4_u4hx, 4)
+// 16 independent activations per weight read: the whole point of batch-16
+// serving.  Each threadgroup still computes ONE output row, but consumes 16
+// input rows, so the 14.4 GB weight stream is amortised over 16 tokens instead
+// of 1.  `acc[16]` plus the 2x half4 temporaries is the register cost.
+Q4_GEMV_KS_U4HX(q4_gemv_k16_u4hx, 16)
 Q4_GEMV_KS_U4H(q4_gemv_k6_u4h, 6)
 
 // The half4 form still spends a horizontal reduction per dot: `dot(half4,half4)`
@@ -860,6 +865,7 @@ pub const K_Q4_GEMV_K3_U4HH: &str = "q4_gemv_k3_u4hh";
 pub const K_Q4_GEMV_K4_U4HH: &str = "q4_gemv_k4_u4hh";
 pub const K_Q4_GEMV_K3_U4HX: &str = "q4_gemv_k3_u4hx";
 pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
+pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";
 pub const K_Q4_GEMV_K3_U4H4: &str = "q4_gemv_k3_u4h4";
 pub const K_Q4_GEMV_K3_U4HU2: &str = "q4_gemv_k3_u4hu2";
 pub const K_Q4_GEMV_K3_R2: &str = "q4_gemv_k3_r2";

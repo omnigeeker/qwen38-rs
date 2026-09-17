@@ -48,6 +48,9 @@ loop/               the iteration protocol, state machine, per-round records
   Framework: OpenAI/Anthropic SDKs, LangChain/LangGraph, LlamaIndex, AutoGen, CrewAI,
   Aider, Continue, Cline/Roo, OpenHands, Dify, n8n, Open WebUI, Cherry Studio, Zed,
   Claude Code — each with a copy-paste config and a way to verify it.
+* **[docs/PLAN_BATCH16.md](docs/PLAN_BATCH16.md)** — 并行推理 / batch-16: why the
+  parallel axis has to be the batch dimension, what the first 16-row kernel measured,
+  and the L2-sharing design that replaces it.
 * **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the forward pass, the
   speculative loop and the Metal kernels fit together.
 * **[loop/LOOP.md](loop/LOOP.md)** — the per-round protocol and the performance record.

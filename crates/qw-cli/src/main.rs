@@ -62,6 +62,10 @@ enum Cmd {
         tensor: Option<String>,
         #[arg(long, default_value_t = 0)]
         samples: usize,
+        /// batch this many independent activations through one weight read and
+        /// check every row (0/1 = the original single-row check)
+        #[arg(long, default_value_t = 1)]
+        rows: usize,
     },
     /// End-to-end parity gate against the mlx-lm oracle.
     Verify {
@@ -121,7 +125,8 @@ fn main() -> Result<()> {
             model_dir,
             tensor,
             samples,
-        } => check::run(&model_dir, tensor.as_deref(), samples),
+            rows,
+        } => check::run(&model_dir, tensor.as_deref(), samples, rows),
         Cmd::Verify { oracle, model_dir } => cmd_verify(oracle, model_dir),
         Cmd::Gen {
             model_dir,
@@ -265,14 +270,14 @@ fn cmd_verify(oracle: PathBuf, model_dir: PathBuf) -> Result<()> {
             "verify: no oracle at {} — running real-weight kernel check",
             oracle.display()
         );
-        return check::run(&model_dir, None, 8);
+        return check::run(&model_dir, None, 8, 1);
     }
     // Token-for-token parity against mlx-lm is the real correctness gate.
     match gen::check_against_oracle(&model_dir, &oracle, 2048, None) {
         Ok(()) => Ok(()),
         Err(e) => {
             eprintln!("parity failed ({e}); falling back to the kernel-level check");
-            check::run(&model_dir, None, 8)?;
+            check::run(&model_dir, None, 8, 1)?;
             Err(e)
         }
     }
