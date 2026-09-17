@@ -1592,6 +1592,25 @@
         "why_kernel_and_end_to_end_disagree": "a latency-bound kernel is amplified by a degraded state and irrelevant in a good one, so the same fix is worth 2.8x or 1.1x depending on the state it is measured in.",
         "next": "stabilise the measurement first - record powermode, power source, load average, GPU baseline and a fixed control measurement each run - because attn_scores and the projection are both already proven flat, so the remaining position cost is not inside a kernel that has been timed yet."
       }
+    },
+    {
+      "round": 71,
+      "title": "Closed out with the honest magnitude.  Added tools/mstate.sh so every measurement records powermode, power source, load, swap, GPU utilisation and stray qwen38 count; all of this round's numbers were taken in comparable states.  Refuted the max_t hypothesis: the same position with max_t 4096 against 32768 differs by only 6-7%, reproducibly in both pairs, so the position cost is not the KV allocation crowding the weight sweep.  Found that my earlier baselines were mostly measured in degraded states - the same position now reads 16.2-18.3 ms per token where the recorded baseline was 30.50, a factor of 1.7-1.9 that is entirely machine state.  The decisive measurement at the objective's size, interleaved old against new in a good state: 6000 tokens took 173.9 s before and 138.8 s after, 1.25x.  Across all six good-state pairs the fix is worth 1.02x to 1.52x and grows with prompt length, which is exactly the signature of attn_out scaling with T.  The position slope halved, from about 4.0e-3 to 1.9e-3 ms per token per position, and the position term fell from about 80% of the per-token cost to about 40%.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "release build clean",
+        "G2": "accept.sh 12 passed / 0 failed ACCEPTED",
+        "G3": "oracle parity 6/6 cases PASS; batch-check 16/16 identical, worst |logit difference| 0.0000",
+        "G4": "interleaved old/new at 6000 tokens in a good state: 173.9 s against 138.8 s, 1.25x.  Six good-state pairs total 1.02x-1.52x, increasing with prompt length."
+      },
+      "evidence": {
+        "objective_size": "6000 tokens, 1.25x, both runs in a comparable recorded state.",
+        "position_slope": "halved from ~4.0e-3 to 1.9e-3 ms/token/position; position share of cost down from ~80% to ~40%.",
+        "max_t_refuted": "4096 vs 32768 at the same position: 16.22 vs 17.11 and 17.10 vs 18.28 ms/token.",
+        "baselines_were_degraded": "pos 3000 at 4 rows reads 16.2-18.3 ms/token now against a recorded baseline of 30.50.",
+        "why_not_more": "the remaining position term is about 40% of the cost, but attn_scores and the projection are both already proven flat with T, so what is left is not in a kernel that has been timed.  Meanwhile the same binary drifts 93.0 s to 248.5 s between adjacent runs, a factor of 2.7, against a remaining effect far smaller than that, so further optimisation would be chasing noise until the measurement environment is stable."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
