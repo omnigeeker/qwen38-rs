@@ -1631,6 +1631,25 @@
         "prefill_path_underperforms": "82.4 ms per 4-row pass over 14.41 GB = 175 GB/s, 40% of achievable.",
         "why_10s_is_impossible": "24.7 TB of weight traffic at the measured 438 GB/s ceiling is 56 s; 10 s needs 2.47 TB/s."
       }
+    },
+    {
+      "round": 73,
+      "title": "Completed the quantitative picture, and it settles both questions.  bench --tokens k gives the effective bandwidth of each path: k=1 477.5 GB/s, k=2 281.2, k=4 172.4, k=8 86.2.  Prefill uses k=4, and 6867 tokens at its 20.89 ms/token is 143 s, against the 138.8 s measured for 6000 tokens - so prefill is essentially nothing but the GEMV weight sweep, and attention, GDN, convolution and sampling are rounding error.  Ten seconds needs 1.46 ms/token, which is 14x better than the k=4 rate and 20x better than even the k=1 rate, so it is not reachable on this machine.  The real bug is that the multi-row kernel is issue-bound rather than bandwidth-bound: at 172 GB/s it is running 2.8x below the 477 GB/s that k=1 proves the hardware can do, and the source's own note about round 055 records the same failure in extreme form.  Get k=4 back to bandwidth-bound at 7.5 ms/token and the 6867 token prefill is about 52 s, which is the real ceiling here.  Also corrected a methodology error from last round: attn-bench puts a barrier between every dispatch, which inflates the apparent fixed cost per dispatch, so the claim that attn_scores costs 0.381 ms fixed was not trustworthy and I did not change any kernel on the strength of it.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "no code change this round",
+        "G2": "n/a",
+        "G3": "n/a",
+        "G4": "measured effective bandwidth k=1/2/4/8 = 477.5/281.2/172.4/86.2 GB/s"
+      },
+      "evidence": {
+        "prefill_is_all_gemv": "6867 tokens x 20.89 ms/token at k=4 = 143 s against 138.8 s measured.",
+        "ten_seconds_needs_1_46ms": "10 s / 6867 = 1.46 ms/token; k=4 delivers 20.89 and k=1 delivers 30.18.",
+        "multi_row_is_issue_bound": "the tile kernel reads the weights once, so most of the 83.58 ms k=4 sweep is arithmetic and x-load issue, not the ~30 ms of bandwidth.",
+        "real_ceiling": "at the bandwidth bound, 30.18/4 = 7.5 ms/token gives 6867 x 7.5 ms = 52 s.",
+        "methodology_correction": "attn-bench barriers between dispatches inflate per-dispatch fixed cost, so last round's attn_scores attribution was unreliable and no kernel was changed on it."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
