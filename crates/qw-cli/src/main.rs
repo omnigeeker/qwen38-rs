@@ -35,6 +35,11 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value = "qwen3.8-27b-fp4")]
         model_id: String,
+        /// Context rows for the key/value and delta-net state.  A request's
+        /// prompt plus its completion has to fit inside this, so this is the
+        /// ceiling agent frameworks see on total conversation length.
+        #[arg(long, default_value_t = 8192)]
+        max_ctx: usize,
     },
     /// Benchmark decode throughput (tok/s).
     Bench {
@@ -104,7 +109,8 @@ fn main() -> Result<()> {
             model_dir,
             port,
             model_id,
-        } => cmd_serve(model_dir, port, model_id),
+            max_ctx,
+        } => cmd_serve(model_dir, port, model_id, max_ctx),
         Cmd::Bench {
             model_dir,
             iters,
@@ -234,15 +240,20 @@ fn cmd_info(model_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(model_dir: PathBuf, port: u16, model_id: String) -> Result<()> {
+fn cmd_serve(model_dir: PathBuf, port: u16, model_id: String, max_ctx: usize) -> Result<()> {
     eprintln!("loading engine from {} ...", model_dir.display());
     let t0 = std::time::Instant::now();
-    let engine = qw_server::engine::Engine::spawn(model_dir.clone(), 4096)?;
-    eprintln!("engine ready in {:.1}s", t0.elapsed().as_secs_f32());
+    let engine = qw_server::engine::Engine::spawn(model_dir.clone(), max_ctx)?;
+    eprintln!(
+        "engine ready in {:.1}s (context {max_ctx} tokens)",
+        t0.elapsed().as_secs_f32()
+    );
     let label = model_dir.to_string_lossy().to_string();
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let state = qw_server::AppState::new(model_id, label).with_engine(engine);
+        let state = qw_server::AppState::new(model_id, label)
+            .with_max_ctx(max_ctx)
+            .with_engine(engine);
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         qw_server::serve(state, addr).await
     })

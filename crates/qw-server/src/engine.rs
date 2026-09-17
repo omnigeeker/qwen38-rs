@@ -71,7 +71,9 @@ impl Engine {
                         Prompt::Text(s) => s.clone(),
                         Prompt::Chat(msgs) => tok.apply_chat_template(msgs),
                     };
-                    if let Err(e) = run_job(&mut model, &tok, &text, job.max_tokens, &job.pieces) {
+                    if let Err(e) =
+                        run_job(&mut model, &tok, &text, job.max_tokens, max_t, &job.pieces)
+                    {
                         let _ = job.pieces.send(Err(e.to_string()));
                     }
                 }
@@ -106,10 +108,22 @@ fn run_job(
     tok: &Tokenizer,
     text: &str,
     max_tokens: usize,
+    max_t: usize,
     pieces: &UnboundedSender<Result<EngineEvent, String>>,
 ) -> Result<()> {
     model.reset();
     let ids = tok.encode(text, false)?;
+    // Every row the decode touches has to exist: the KV cache and the delta-net
+    // state were sized for `max_t` positions.  A prompt that already fills the
+    // context, or a completion budget that would run past it, is rejected here
+    // rather than silently walking off the end of the buffers.
+    if ids.len() >= max_t {
+        anyhow::bail!(
+            "prompt is {} tokens but the context is {max_t}; restart with a larger --max-ctx",
+            ids.len()
+        );
+    }
+    let max_tokens = max_tokens.min(max_t - ids.len());
     let _ = pieces.send(Ok(EngineEvent::Prompt(ids.len())));
     // When the MTP head is present the drafts come from its own attention state,
     // so the prefill has to warm that state alongside the target's: feed the head

@@ -27,6 +27,9 @@ pub struct AppState {
     pub model_dir: String,
     /// Set once the Metal engine is loaded; endpoints report 503 until then.
     pub ready: bool,
+    /// Rows of key/value and delta-net state the engine was loaded with.  A
+    /// request's prompt plus its completion has to fit inside this.
+    pub max_ctx: usize,
     engine: Option<Engine>,
 }
 
@@ -36,8 +39,16 @@ impl AppState {
             model_id: model_id.into(),
             model_dir: model_dir.into(),
             ready: false,
+            max_ctx: 8192,
             engine: None,
         }
+    }
+
+    /// Tell the handlers how much context the engine actually has, so they stop
+    /// clamping completions at an arbitrary 1024 that predates the flag.
+    pub fn with_max_ctx(mut self, max_ctx: usize) -> Self {
+        self.max_ctx = max_ctx;
+        self
     }
 
     /// Attach a loaded engine.  This is what flips `/health` to `ok`.
@@ -313,7 +324,7 @@ async fn chat_completions(
         return not_ready_openai("engine is still loading the 4-bit weights");
     };
     let messages = to_messages(&req.messages);
-    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, 1024);
+    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, st.max_ctx);
     let id = format!("chatcmpl-{}", now_secs());
     let created = now_secs();
     let rx = engine.submit(Prompt::Chat(messages), max_tokens);
@@ -346,7 +357,7 @@ async fn completions(
     let Some(engine) = st.engine.clone() else {
         return not_ready_openai("engine is still loading the 4-bit weights");
     };
-    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, 1024);
+    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, st.max_ctx);
     let id = format!("cmpl-{}", now_secs());
     let created = now_secs();
     let rx = engine.submit(Prompt::Text(req.prompt), max_tokens);
@@ -373,7 +384,7 @@ async fn messages(State(st): State<Arc<AppState>>, Json(req): Json<MessagesReque
         return not_ready_anthropic("engine is still loading the 4-bit weights");
     };
     let messages = to_messages(&req.to_chat_messages());
-    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, 1024);
+    let max_tokens = req.max_tokens.unwrap_or(256).clamp(1, st.max_ctx);
     let id = format!("msg_{}", now_secs());
     let rx = engine.submit(Prompt::Chat(messages), max_tokens);
     if req.stream.unwrap_or(false) {

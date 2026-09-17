@@ -1252,8 +1252,46 @@
         "u4hx_e2e": "cool decode t4 25.82/26.01 vs hx 26.20/25.52 tok/s (wash); k=1 forward ratios 0.9796/0.9939/1.0080 (~1% faster)"
       },
       "next": "The u4hx effect is under the end-to-end instrument's resolution, so it needs a longer paired run if it is to be quoted. The larger open question is the mains figure: round 001's 42.4 tok/s times the two verified improvements (u4h x1.065 measured, TILE=4 worth more at mains than the +1.1% it is on battery because it amortises the memory stream) puts it at ~46-49. Closing that needs mains power, or a lever that is not the GEMV shape - the kernel has now had five structural changes tried and only the two that cut instructions per byte (u4, u4h) and the one that widened a load (u4hx) survived"
+    },
+    {
+      "round": 53,
+      "title": "Agent-integration documentation + the server gaps that blocked agent frameworks. Fixed three real defects: (1) max_tokens was clamped to 1024 for EVERY request, so any framework asking for 4096 had its output silently truncated; (2) the context was hardcoded to 4096 rows with no way to change it, and run_job never checked prompt+completion against it, so an over-long prompt would walk past the allocated KV/state rows - serve now takes --max-ctx and run_job rejects an over-long prompt with a clear error; (3) the engine sends no CORS headers. Wrote docs/TUTORIAL_zh.md (build -> weights -> verify -> serve -> all five routes -> capability table -> troubleshooting) and docs/AGENT_FRAMEWORKS_zh.md (25 frameworks, each with a copy-paste config, the right port, and a way to verify). Wrote tools/qwen_tool_shim.py: the engine ignores `tools`, so tool-using agents cannot work against it directly; the shim renders OpenAI `tools` into the Qwen3 function-calling prompt, parses <tool_call> back into OpenAI tool_calls, moves <think> into reasoning_content, and supports both buffered and SSE responses. Verified end to end: get_weather -> tool_calls[0].function={name:get_weather, arguments:{city:Beijing}}, finish_reason=tool_calls; a second turn fed the tool result back and got a prose answer; the SSE path emitted tool_call deltas; the Anthropic path passes through. Filed open_issues/spec-plain-intermittent: the spec==plain gate failed once in 6 runs and did not reproduce.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass (build clean)",
+        "G2": "parity 6/6 + GEMV vs CPU reference pass; accept.sh 11/12 - the spec==plain gate failed once and did not reproduce (open_issues/spec-plain-intermittent)",
+        "G3": "n/a (documentation + a server-gap fix, no kernel change)",
+        "G4": "shim verified end to end; cargo fmt/clippy clean; 27 workspace tests pass"
+      },
+      "evidence": {
+        "max_tokens_clamp": "was .clamp(1, 1024) in all three handlers; now .clamp(1, st.max_ctx)",
+        "max_ctx_flag": "serve --max-ctx, default 8192, plumbed to Engine::spawn and AppState; load time measured 12.1 s",
+        "context_guard": "run_job bails with 'prompt is N tokens but the context is M; restart with a larger --max-ctx'",
+        "shim_verified": "tool call round trip, second turn, SSE tool_call deltas, Anthropic passthrough (type=message)",
+        "model_behaviour": "the 4-bit model ends its own turn early (asked for 400, counted to 290; asked for 120 lines, gave 103) and emits <think> blocks; its EOS set {248046, 248044} matches config.json exactly, so this is model behaviour, not a server bug"
+      },
+      "next": "the spec==plain flake is the one open correctness question and outranks throughput work until it is characterised; the 50 tok/s target is unchanged and still needs a mains measurement"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
-  "goal": "raise single-decoder throughput target from 40 to 50 tok/s"
+  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
+  "open_issues": [
+    {
+      "id": "spec-plain-intermittent",
+      "opened_round": 53,
+      "severity": "correctness (low rate, unresolved)",
+      "summary": "accept.sh's `spec==plain: byte-identical over 300 tokens` gate FAILED once (230 of 300 tokens differ, first at 68) during this round's acceptance run, having passed 12/12 earlier in the same session. Not reproducible deterministically: 7 further plain/spec pairs on the same prompt were byte-identical (3 plain runs identical to each other, 4 spec runs identical to each other and to plain), including one pair run in exactly accept.sh's order (verify + check first).",
+      "evidence": {
+        "observed_failure": "accept.sh: 1 failure in 6 gate executions this session",
+        "not_reproduced": "plain1==plain2==plain3, spec1==spec2==spec3==spec4, plain==spec in 3 independent pairs, and again after verify+check",
+        "first_divergence": "token 68 of 300, then 230 of 300 differ (cascade)"
+      },
+      "hypotheses": [
+        "near-tie argmax: the batched verify computes 4 rows in one GEMV (q4_gemv_k4_u4hx) whose accumulation order differs from the single-row kernel (q4_gemv_hx), so when the top-2 logits are within rounding, spec and plain may legitimately choose different tokens",
+        "a race in the speculative path under load (the failure occurred on a hot, heavily loaded machine immediately after the verify and GEMV-reference gates); the prefill warms the MTP head's state with one mtp_step per prompt token, the most likely place for a timing-sensitive read"
+      ],
+      "next": "run the pair N>=10 times on a hot machine and count; if the tie hypothesis holds, compare the top-2 logit margins near the divergence point; if it is a race, instrument command-buffer completion in the mtp_step prefill loop"
+    }
+  ]
 }
