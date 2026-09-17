@@ -1319,6 +1319,32 @@
         "instrument": "bench --rows 18 alternates k16 / 16xk1 / k16dup inside one process; the dup calibrates the method at 0.994, so the 0.78x is real"
       },
       "next": "next design: keep the k1 per-thread structure exactly (one accumulator, one x load per weight chunk) and get the weight reuse from L2 instead of from per-thread registers - make the threadgroup id carry both row and activation index (row = tg/16, xr = tg%16) so 16 consecutive threadgroups share one weight row and DRAM serves it once.  Expected: time close to ONE k1 sweep for 16 tokens.  Risk: if L2 does not hold the row, it degrades to exactly the serial case, so the downside is bounded.  Numbers to beat: >1.0x calibrated on bench --rows 18."
+    },
+    {
+      "round": 56,
+      "title": "batch-16 round 2: the L2-sharing kernel WORKS - 1.666x over serial, 52.2 tok/s aggregate across 16 concurrent tokens.  Round 055 concluded the amortisation has to happen between threads rather than inside one, so `q4_gemv_b16` keeps the q4_gemv_hx body byte for byte (one accumulator, one 16-byte x load and two dots per weight chunk) and moves the parallelism into the grid: grid = 16*out_f threadgroups with row = tg/16 and xr = tg%16, so 16 consecutive threadgroup ids cover one weight row for 16 different activations.  DRAM fetches the row once and L2 serves the other 15.  Added encoder QLinear::encode_b (grid grows with the batch, unlike encode_k) and extended check --rows to verify BOTH batch-16 shapes, plus a four-arm paired bench.",
+      "tok_s": 52.2,
+      "end_to_end": false,
+      "gates": {
+        "G1": "pass (fmt, clippy -D warnings, 13 test targets ok)",
+        "G2": "check --rows 16: b16 passes all 8 tensors at the same norm_err as k16 (0.27-1.39%), i.e. identical accumulation order; single-row check and oracle parity 6/6 unchanged",
+        "G3": "PASSED: bench --rows 18 --tokens 16, gain_raw 1.576, calibration 0.946, gain_calibrated 1.666 (> 1.0 is the bar set in round 055)",
+        "G4": "n/a - kernel-level win; the engine does not serve batches yet"
+      },
+      "evidence": {
+        "b16_ms": 306.45,
+        "k16_ms": 634.04,
+        "serial_ms": 482.89,
+        "b16_dup_ms": 289.83,
+        "b16_tok_s": 52.2,
+        "serial_tok_s": 33.1,
+        "k16_tok_s": 25.2,
+        "jit": "b16 compiles in 24 ms against 159 ms for k16, consistent with far lower register pressure",
+        "single_sweep": 30.2,
+        "why_not_16x": "one b16 sweep is 10.2x a single sweep rather than 16x, so the weight amortisation is real but partial; under a one-threadgroup-per-output-row decomposition every output element still reads the whole activation row, so the x traffic through L2 is sum(out_f*K*2) = ~57.6 GB for one k1 sweep and ~921 GB for b16.  At 306 ms that puts L2 at ~3.0 TB/s, near the limit of this decomposition",
+        "k16_confirmed_dead": "the per-thread-row kernel measured 0.483x in the same paired run, reproducing round 055's 0.78x direction (the two runs differ in thermal state, so the ratios are not directly comparable, but both are below 1.0)"
+      },
+      "next": "the next lever is x reuse by blocking output rows: one threadgroup computing R output rows reuses a single x load R times, cutting the L2 x traffic by 1/R (~921 GB -> ~230 GB at R=4).  This is the opposite direction from the refuted k16 (R activations needing R x loads); here R output rows share ONE x load.  Also still to do: per-sequence KV/GDN/conv state, per-row (seq,pos) descriptors, the continuous-batching scheduler, server integration, and the tutorial rewrite once the engine actually serves batches"
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

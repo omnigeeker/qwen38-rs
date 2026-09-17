@@ -117,6 +117,73 @@ kernel void q4_gemv_hx(
     }
 }
 
+// Batch serving by GRID mapping, not by per-thread accumulators.
+//
+// The body below is q4_gemv_hx unchanged: one accumulator, one 16-byte x load and
+// two dots per weight chunk.  Round 055 measured what happens when instead each
+// thread holds one accumulator per activation (q4_gemv_k16_u4hx): the x loads go
+// from 1 to 16 per weight chunk, the kernel stops being bandwidth-bound (22.7 GB/s
+// against 466), and the whole batch comes out 22% slower than serial.
+//
+// Here the parallelism is in the grid: `B` consecutive threadgroup ids cover the
+// same output row for `B` different activations, so the weight row is fetched from
+// DRAM once and served the other B-1 times out of L2, while every thread keeps the
+// optimal one-accumulator shape.  If L2 does not hold the row the traffic is the
+// same as B separate sweeps, so the downside is bounded.
+kernel void q4_gemv_b16(
+    device const uint*   w      [[buffer(0)]],
+    device const ushort* scales [[buffer(1)]],
+    device const ushort* biases [[buffer(2)]],
+    device const half*   x      [[buffer(3)]],
+    device half*         y      [[buffer(4)]],
+    constant int&        K      [[buffer(5)]],
+    constant int&        B      [[buffer(6)]],
+    constant int&        out_f  [[buffer(7)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]])
+{
+    const int row = (int)(tg / (uint)B);
+    const int xr  = (int)(tg % (uint)B);
+    const int n_groups = K / GROUP_SIZE;
+    device const uint*   wp = w      + (size_t)row * (size_t)(K / 8);
+    device const ushort* sp = scales + (size_t)row * (size_t)n_groups;
+    device const ushort* bp = biases + (size_t)row * (size_t)n_groups;
+    device const half*   xb = x      + (size_t)xr  * (size_t)K;
+
+    float acc = 0.0f;
+    for (int g = (int)lane; g < n_groups; g += 32) {
+        const half s = (half)as_type<float>((uint)sp[g] << 16);
+        const half b = (half)as_type<float>((uint)bp[g] << 16);
+        device const uint4* gw4 = (device const uint4*)(wp + g * Q4_WORDS_PER_GROUP);
+        device const half*  gx  = xb + g * GROUP_SIZE;
+        #pragma unroll
+        for (int wi2 = 0; wi2 < Q4_WORDS_PER_GROUP / 4; ++wi2) {
+            const uint4 w4 = gw4[wi2];
+            const uint wds[4] = {w4.x, w4.y, w4.z, w4.w};
+            #pragma unroll
+            for (int c = 0; c < 4; ++c) {
+                const uint word = wds[c];
+                const uint4 xv = *(device const uint4*)(gx + (wi2 * 4 + c) * 8);
+                const half4 x0 = as_type<half4>(xv.xy);
+                const half4 x1 = as_type<half4>(xv.zw);
+                const half4 q0 = half4((half)( word        & 0xFu),
+                                       (half)((word >>  4) & 0xFu),
+                                       (half)((word >>  8) & 0xFu),
+                                       (half)((word >> 12) & 0xFu));
+                const half4 q1 = half4((half)((word >> 16) & 0xFu),
+                                       (half)((word >> 20) & 0xFu),
+                                       (half)((word >> 24) & 0xFu),
+                                       (half)((word >> 28) & 0xFu));
+                acc += (float)(dot(q0 * s + b, x0) + dot(q1 * s + b, x1));
+            }
+        }
+    }
+    acc = simd_sum(acc);
+    if (lane == 0) {
+        y[(size_t)xr * (size_t)out_f + row] = (half)acc;
+    }
+}
+
 // Same kernel and the same accumulation order as q4_gemv, but with the inner
 // product in half.  The plain (k=1) and spec (k=3) paths use different kernels for
 // the same linear, so their arithmetic has to stay identical or the two paths part
@@ -866,6 +933,7 @@ pub const K_Q4_GEMV_K4_U4HH: &str = "q4_gemv_k4_u4hh";
 pub const K_Q4_GEMV_K3_U4HX: &str = "q4_gemv_k3_u4hx";
 pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
 pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";
+pub const K_Q4_GEMV_B16: &str = "q4_gemv_b16";
 pub const K_Q4_GEMV_K3_U4H4: &str = "q4_gemv_k3_u4h4";
 pub const K_Q4_GEMV_K3_U4HU2: &str = "q4_gemv_k3_u4hu2";
 pub const K_Q4_GEMV_K3_R2: &str = "q4_gemv_k3_r2";

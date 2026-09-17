@@ -33,11 +33,26 @@ fn rng_vec(n: usize, seed: u64) -> Vec<f16> {
         .collect()
 }
 
-/// Which batched kernel implements a given row count.
-fn batched_kernel(rows: usize) -> Result<&'static str> {
+/// Every implementation of a given batch width.  Both batch-16 shapes are checked:
+/// the per-thread-row one (16 accumulators, refuted on performance in round 055)
+/// and the L2-sharing one (grid mapping, one accumulator).  Correctness is a
+/// separate question from speed - a fast kernel that computes the wrong thing is
+/// worth nothing - so both are held to the same per-row CPU reference here.
+fn batched_impls(rows: usize) -> Result<Vec<(&'static str, &'static str, bool)>> {
     Ok(match rows {
-        4 => qw_metal::msl::K_Q4_GEMV_K4_U4HX,
-        16 => qw_metal::msl::K_Q4_GEMV_K16_U4HX,
+        4 => vec![(
+            "u4hx per-thread rows",
+            qw_metal::msl::K_Q4_GEMV_K4_U4HX,
+            false,
+        )],
+        16 => vec![
+            (
+                "k16 per-thread rows",
+                qw_metal::msl::K_Q4_GEMV_K16_U4HX,
+                false,
+            ),
+            ("b16 grid-shared (L2)", qw_metal::msl::K_Q4_GEMV_B16, true),
+        ],
         other => bail!("--rows {other} has no batched kernel (implemented: 4, 16)"),
     })
 }
@@ -65,7 +80,10 @@ pub fn run(model_dir: &Path, which: Option<&str>, samples: usize, rows: usize) -
     }
 
     if rows > 1 {
-        return run_batched(&mut dev, &store, &targets, rows);
+        for (label, kname, uses_b) in batched_impls(rows)? {
+            run_batched(&mut dev, &store, &targets, rows, label, kname, uses_b)?;
+        }
+        return Ok(());
     }
 
     let mut failures = 0usize;
@@ -134,14 +152,16 @@ pub fn run(model_dir: &Path, which: Option<&str>, samples: usize, rows: usize) -
 }
 
 /// `rows` independent activations through one weight read, verified per row.
+#[allow(clippy::too_many_arguments)]
 fn run_batched(
     dev: &mut GpuDevice,
     store: &WeightStore,
     targets: &[String],
     rows: usize,
+    label: &str,
+    kname: &'static str,
+    uses_b: bool,
 ) -> Result<()> {
-    let kname = batched_kernel(rows)?;
-
     // How long the JIT takes to build a 16-row kernel is itself a risk worth
     // knowing about: it happens once per process, at startup.
     let compile_ms = {
@@ -151,7 +171,7 @@ fn run_batched(
         batch.finish(false);
         t0.elapsed().as_secs_f64() * 1000.0
     };
-    println!("batched kernel {kname} (rows={rows}), Metal JIT compiled in {compile_ms:.0} ms\n");
+    println!("== {label}: kernel {kname} (rows={rows}), Metal JIT compiled in {compile_ms:.0} ms");
     println!(
         "{:<46} {:>7} {:>9} {:>9} {:>8} {:>9} {:>9} {:>8} {:>8}",
         "tensor",
@@ -193,7 +213,11 @@ fn run_batched(
             {
                 let mut b = dev.batch();
                 let k = b.kernel(qw_metal::msl::COMMON, kname)?;
-                linear.encode_k(&mut b, &k, &bx, &by, rows);
+                if uses_b {
+                    linear.encode_b(&mut b, &k, &bx, &by, rows);
+                } else {
+                    linear.encode_k(&mut b, &k, &bx, &by, rows);
+                }
                 b.finish(true);
             }
             batch_ms = batch_ms.min(t0.elapsed().as_secs_f64() * 1000.0);

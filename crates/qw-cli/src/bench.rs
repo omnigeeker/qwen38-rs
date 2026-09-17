@@ -182,25 +182,32 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
     }
 
     // rows == 18: batch-16 against the serial alternative, both producing the same
-    // 16 tokens.  One sweep of the 16-row kernel (16 tokens per weight read) against
-    // 16 sweeps of the production single-row kernel (1 token per weight read).  The
-    // two are alternated inside one process, because on this box the clock moves by
-    // up to 4x within a single run and a cross-process A/B is meaningless.  Run it
-    // with --tokens 16 so the activation buffers are 16 rows wide.
+    // 16 tokens from the same 14.4 GB of weights.  Four arms, alternating inside one
+    // process because on this box the clock moves by up to 4x within a single run and
+    // a cross-process A/B is meaningless.  Run it with --tokens 16.
+    //
+    //   b16   one sweep, grid-mapped   16 tokens from 1 weight read   (round 056)
+    //   k16   one sweep, per-thread    16 tokens from 1 weight read   (round 055)
+    //   k1x16 sixteen ordinary sweeps  16 tokens from 16 weight reads
+    //   b16*  duplicate of the first, which is what calibrates the method
     if rows == 18 {
         const SERIAL: usize = 16;
         if k != SERIAL {
             anyhow::bail!("--rows 18 needs --tokens {SERIAL} (buffers are {k} rows wide)");
         }
-        let mut t = [f64::INFINITY; 3]; // 0 = batch-16, 1 = 16 serial sweeps, 2 = batch-16 dup
+        let mut t = [f64::INFINITY; 4];
         for r in 0..3usize {
-            let order: [usize; 3] = if r % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] };
+            let order: [usize; 4] = if r % 2 == 0 {
+                [0, 1, 2, 3]
+            } else {
+                [3, 2, 1, 0]
+            };
             for which in order {
                 let t0 = Instant::now();
                 {
                     let mut batch = dev.batch();
                     match which {
-                        1 => {
+                        2 => {
                             let kern =
                                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_HX)?;
                             for _ in 0..SERIAL {
@@ -211,13 +218,22 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                                 }
                             }
                         }
-                        _ => {
+                        1 => {
                             let kern = batch
                                 .kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K16_U4HX)?;
                             for l in &linears {
                                 let x = &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1;
                                 let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
                                 l.encode_k(&mut batch, &kern, x, y, SERIAL);
+                            }
+                        }
+                        _ => {
+                            let kern = batch
+                                .kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_B16)?;
+                            for l in &linears {
+                                let x = &xs.iter().find(|(n, _)| *n == l.in_f).unwrap().1;
+                                let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
+                                l.encode_b(&mut batch, &kern, x, y, SERIAL);
                             }
                         }
                     }
@@ -231,38 +247,39 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             "batch-16 vs serial over the full {:.1} GB of quantised weights, {SERIAL} tokens either way",
             total_bytes as f64 / 1e9
         );
-        println!("{:<40} {:>10} {:>10}", "variant", "ms/sweep", "tok/s");
         println!(
-            "{:<40} {:>10.2} {:>10.1}",
-            "k16: 16 tokens from 1 weight read",
+            "{:<42} {:>10} {:>10} {:>9}",
+            "arm", "ms/sweep", "tok/s", "vs b16"
+        );
+        let labels: [String; 4] = [
+            "b16  grid-shared, 1 weight read".to_string(),
+            "k16  per-thread, 1 weight read".to_string(),
+            format!("k1 x{SERIAL} serial, 16 weight reads"),
+            "b16  duplicate (calibration)".to_string(),
+        ];
+        for i in 0..4 {
+            println!(
+                "{:<42} {:>10.2} {:>10.1} {:>8.3}x",
+                labels[i],
+                t[i],
+                tok(t[i]),
+                t[0] / t[i]
+            );
+        }
+        let bias = t[3] / t[0];
+        println!(
+            "\nb16 over serial {:>.3}x raw, {:>.3}x calibrated (duplicate reads {bias:.3}x the original)",
+            t[2] / t[0],
+            (t[2] / t[0]) / bias
+        );
+        println!(
+            "{{\"b16_ms\": {:.2}, \"k16_ms\": {:.2}, \"serial_ms\": {:.2}, \"gain_raw\": {:.3}, \"calibration\": {:.3}, \"gain_calibrated\": {:.3}, \"tokens\": {}}}",
             t[0],
-            tok(t[0])
-        );
-        println!(
-            "{:<40} {:>10.2} {:>10.1}",
-            format!("k1 x{SERIAL}: 1 token per weight read"),
             t[1],
-            tok(t[1])
-        );
-        println!(
-            "{:<40} {:>10.2} {:>10.1}",
-            "k16 again (instrument bias)",
             t[2],
-            tok(t[2])
-        );
-        let raw = t[1] / t[0];
-        let bias = t[2] / t[0];
-        println!(
-            "\nthroughput gain {raw:.2}x raw, {:.2}x after the duplicate's own bias of {bias:.3}",
-            raw / bias
-        );
-        println!(
-            "{{\"batch16_ms\": {:.2}, \"serial_ms\": {:.2}, \"gain_raw\": {:.3}, \"calibration\": {:.3}, \"gain_calibrated\": {:.3}, \"tokens\": {}}}",
-            t[0],
-            t[1],
-            raw,
+            t[2] / t[0],
             bias,
-            raw / bias,
+            (t[2] / t[0]) / bias,
             SERIAL
         );
         return Ok(());

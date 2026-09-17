@@ -145,6 +145,30 @@ impl<'a> QLinear<'a> {
         batch.encode(d);
     }
 
+    /// Batch-`b` GEMV where one weight row is shared by `b` consecutive
+    /// threadgroups (see `msl::q4_gemv_b16`).  `x` is `[b][in_f]`, `y` is
+    /// `[b][out_f]`.  Unlike `encode_k` the grid grows with the batch, because the
+    /// parallelism is what buys the L2 reuse.
+    pub fn encode_b(
+        &self,
+        batch: &mut CommandBatch,
+        kernel: &Kernel,
+        x: &GpuBuffer,
+        y: &GpuBuffer,
+        b: usize,
+    ) {
+        let d = Dispatch::new(kernel, (b * self.out_f * 32, 1, 1), (32, 1, 1))
+            .buf_offset(0, self.weight.buf, self.weight.offset)
+            .buf_offset(1, self.scales.buf, self.scales.offset)
+            .buf_offset(2, self.biases.buf, self.biases.offset)
+            .buf(3, x)
+            .buf(4, y)
+            .scalar(5, self.in_f as i32)
+            .scalar(6, b as i32)
+            .scalar(7, self.out_f as i32);
+        batch.encode(d);
+    }
+
     /// Compile (or fetch) the multi-token GEMV entry point.
     pub fn kernel_k(batch: &mut CommandBatch) -> Result<Kernel> {
         batch.kernel(msl::COMMON, msl::K_Q4_GEMV_K)
