@@ -176,6 +176,13 @@ struct Active {
     sent_len: usize,
     emitted: usize,
     max_tokens: usize,
+    /// When the request was admitted.  A cold agent prompt can take minutes to
+    /// produce its first token, and until now the log said nothing between
+    /// admission and the answer, so a working request was indistinguishable from a
+    /// hung one - which is exactly how it was being reported.
+    started: std::time::Instant,
+    /// Last prefill milestone reported, as a percentage.
+    logged_pct: usize,
 }
 
 /// Handle to the engine thread.  Cheap to clone.
@@ -390,6 +397,8 @@ fn prepare(
         sent_len: 0,
         emitted: 0,
         max_tokens,
+        started: std::time::Instant::now(),
+        logged_pct: 0,
     })
 }
 
@@ -547,6 +556,19 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 continue;
             }
             let next = argmax(&model.logits_row(i));
+            if a.pf < a.ids.len() {
+                let pct = a.pf * 100 / a.ids.len().max(1);
+                if pct >= a.logged_pct + 25 {
+                    a.logged_pct = pct;
+                    tracing::info!(
+                        "slot {slot}: prefill {}/{} ({}%) after {:.1}s",
+                        a.pf,
+                        a.ids.len(),
+                        pct,
+                        a.started.elapsed().as_secs_f64()
+                    );
+                }
+            }
             if a.pf >= a.ids.len() {
                 if !a.ready && snapshot {
                     // The recurrent state sits exactly at the end of the prompt right
@@ -576,6 +598,13 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             if done {
                 if let Some(a) = entry.as_mut() {
                     emit(tok, a, true);
+                    tracing::info!(
+                        "slot {slot}: done - {}/{} prompt tokens prefilled, {} generated, {:.1}s total",
+                        a.pf.min(a.ids.len()),
+                        a.ids.len(),
+                        a.emitted,
+                        a.started.elapsed().as_secs_f64()
+                    );
                     // Record exactly what this slot consumed: the prompt tokens it
                     // actually prefilled plus what it generated.  Recording the whole
                     // prompt would be wrong for a request abandoned part way through

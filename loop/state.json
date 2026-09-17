@@ -1504,6 +1504,23 @@
         "why_the_copy_is_kept": "a snapshot is not consumed by a hit, so one boundary can serve many requests, and a miss (which rewinds the live state) does not invalidate it.",
         "why_it_is_not_the_default": "an unverified optimisation that can silently corrupt state is worse than a known miss.  The engine was confirmed alive during the slow run - a fresh small request on another slot was answered promptly - so the slowness was the machine, not a wedge, but 'slow machine' is not evidence that the copy is correct."
       }
+    },
+    {
+      "round": 66,
+      "title": "The hang is not a hang.  Reproducing two concurrent agent-sized requests exactly as OpenCode and KiloCode send them, both COMPLETED with correct output - the 550-token title request at 118.4 s and the 6867-token main request at 718.9 s to first token.  So the engine is alive and computing; a cold agent prompt simply needs minutes of prefill, and the log said nothing between admission and the answer, so a working request was indistinguishable from a dead one.  Added prefill progress at each 25% milestone and a completion line, then drove the real OpenCode client end to end: 'opencode run hello' answered correctly in 248.0 s cold, with the progress visible in the console throughout.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, release build clean)",
+        "G2": "accept.sh re-run",
+        "G3": "verified with the real client, not a simulation: opencode run \"hello\" against a server on the port OpenCode is configured for answered with the correct reply, and the console showed prefill 25/50/75% milestones and a completion line",
+        "G4": "measured: 6865 prompt tokens, 248.0 s cold, 26-43 ms per token during prefill.  Earlier in the same session the same shape took 718.9 s, so the machine-state variance is still the dominant uncertainty."
+      },
+      "evidence": {
+        "not_a_deadlock": "both concurrent requests ran to completion with correct text, and the measured completion times match the recorded prefill rate - a deadlock does not finish.",
+        "why_it_looked_hung": "the engine logged admission and then nothing at all until the reply, so for four to twelve minutes the console was silent while the GPU was saturated.  Progress logging is the fix for that, not a speedup.",
+        "boundary_snapshot_disproved": "the second opencode run sent a byte-identical 6865-token prompt, the saved boundary matched and skipped 100% of it, and the run then failed to complete within about ten minutes against 250 s cold, with no completion line in the engine log.  A restored recurrent state that makes the model fail to terminate is far worse than a cache miss, so QW_PREFIX_SNAPSHOT stays off."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

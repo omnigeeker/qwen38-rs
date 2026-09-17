@@ -473,3 +473,62 @@ miss 也不会使它失效。
 轮次 7 的分块 prefill 也是同样的处理。
 
 因此默认配置下**已知限制不变**：完全相同的重试仍然 miss（约 324 s），agent 主路径不受影响。
+
+
+---
+
+## 13. "卡死"的真相：不是死，是冷启动 prefill 要几分钟（第 9 轮）
+
+用户报告 OpenCode 和 KiloCode 输入 hello 都卡住，控制台停在：
+
+```
+slot 0: prompt 550 tokens, up to 32000 to generate
+slot 1: prompt is 6867 tokens, so max_tokens is cut from 32000 to 25901
+```
+
+### 复现：两个 agent 规模的并发请求
+
+```
+[title-550tok] FIRST TOKEN after 118.4s   DONE after 125.7s   ✓
+[main-6867tok] FIRST TOKEN after 718.9s   DONE after 721.8s   ✓
+```
+
+**两个都完成了，输出都正确。所以不是死锁，是慢。** 但 12 分钟的首 token，
+在用户看来和卡死没有区别——**而且引擎在接纳请求之后不再输出任何日志**，
+没有任何办法区分"在跑"和"死了"。这是真正该修的部分。
+
+### 修复：进度与完成日志（已生效）
+
+```
+slot 0: prefill 140/550 (25%) after 11.3s
+slot 0: prefill 276/550 (50%) after 20.8s
+slot 0: done - 550/550 prompt tokens prefilled, 43 generated, 48.2s total
+slot 1: prefill 1720/6865 (25%) after 73.5s
+slot 1: prefill 5152/6865 (75%) after 175.3s
+slot 1: done - 6865/6865 prompt tokens prefilled, 28 generated, 248.0s total
+```
+
+### OpenCode 端到端验证（真实客户端）
+
+```
+> build · qwen3.8-27b-fp4
+<think>
+The user sent an empty message. I should respond with a greeting.
+</think>
+
+Hi! How can I help you today?
+```
+
+**能响应，冷启动 248 s（4.1 分钟）。** 第二次起若命中前缀缓存则接近秒级。
+
+### 一个重要的反证：边界快照仍然不可信
+
+第二次 `opencode run "hello"` 发出**完全相同**的 6865 token prompt，边界快照命中：
+
+```
+slot 1: prefix cache HIT (saved boundary) - skipped 6865 of 6865 prompt tokens (100%)
+```
+
+**但这次运行在约 10 分钟后仍未完成，而冷启动只需 250 s，且引擎日志没有 `done` 行。**
+恢复出的递推状态很可能不正确，导致模型不收敛、跑向 25903 的 max_tokens。
+**因此 `QW_PREFIX_SNAPSHOT` 保持默认关闭**——命中日志好看，结果不对，这是最危险的一类问题。
