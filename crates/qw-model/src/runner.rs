@@ -214,6 +214,155 @@ impl Mtp {
 
 /// Where the quantised MTP head lives: `$QW_MTP_DIR`, else a sibling of the
 /// model directory.  `None` means the engine runs without MTP.
+/// Resident bytes of the safetensors shards under `dir`.
+fn weights_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("safetensors"))
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// Physical memory, or 0 when it cannot be determined.
+fn physical_bytes() -> u64 {
+    std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// What a given `max_t` and batch width cost, split into the part that does not
+/// grow with the context (weights and delta-net state) and the part that does.
+struct Budget {
+    /// Resident weights, including the MTP head.
+    weights: u64,
+    /// Per slot: the delta-net recurrence, its convolution ring, and the
+    /// speculative rollback snapshot, which is TILE copies of the recurrence.
+    per_slot: u64,
+    /// Per token across the whole batch: both caches of every full-attention
+    /// layer, the attention score buffer, and the MTP head's own cache.
+    per_token: u64,
+}
+
+/// Driver and load-time staging overhead that is in none of the buffers above.
+/// Measured on this machine: resident size is 41 GB at ctx 8192 and 65 GB at ctx
+/// 32768, i.e. 33 GB fixed plus 1.0 MB per token.  The token slope matches the
+/// model almost exactly, but the modelled fixed cost is only ~26 GB, so about 8 GB
+/// of the process is the Metal driver and staging rather than cache.  Ignoring that
+/// would make the advice this check prints optimistic by about 12%.
+const MEM_OVERHEAD: u64 = 8 << 30;
+
+impl Budget {
+    fn fixed(&self) -> u64 {
+        self.weights + self.per_slot + MEM_OVERHEAD
+    }
+    fn total(&self, max_t: usize) -> u64 {
+        self.fixed() + self.per_token * max_t as u64
+    }
+}
+
+fn budget(cfg: &crate::config::TextConfig, dir: &Path, batch: usize) -> Budget {
+    let hd = cfg.head_dim;
+    let nkv = cfg.num_key_value_heads;
+    let hv = cfg.linear_num_value_heads;
+    let (dk, dv) = (cfg.linear_key_head_dim, cfg.linear_value_head_dim);
+    let key_dim = cfg.linear_num_key_heads * dk;
+    let conv_dim = key_dim * 2 + hv * dv;
+    let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two();
+    let (mut n_full, mut n_gdn) = (0usize, 0usize);
+    for i in 0..cfg.num_hidden_layers {
+        if cfg.is_linear_layer(i) {
+            n_gdn += 1;
+        } else {
+            n_full += 1;
+        }
+    }
+    let per_token = (2 * n_full * nkv * hd * 2 * batch
+        + cfg.num_attention_heads * 4 * BATCH_MAX
+        + 2 * nkv * hd * 2) as u64;
+    let per_slot = (n_gdn * hv * dv * dk * 4
+        + n_gdn * conv_ring * conv_dim * 2
+        + n_gdn * hv * dv * dk * 4 * TILE) as u64
+        * batch as u64;
+    let weights = weights_bytes(dir) + mtp_dir(dir).map(|d| weights_bytes(&d)).unwrap_or(0);
+    Budget {
+        weights,
+        per_slot,
+        per_token,
+    }
+}
+
+/// Refuse a configuration the machine cannot hold, instead of dying silently.
+///
+/// Every slot carries its own KV cache and all of them are allocated up front, so
+/// the cost is `max-ctx x batch`.  Overshoot and the OS kills the process while it
+/// is still allocating - no error, no message, the port never bound - and the only
+/// symptom is `curl: (7) Failed to connect to 127.0.0.1 port 8080`.  That is a
+/// miserable way to find out that `--max-ctx 1000000` wants a terabyte, so say so
+/// plainly, before touching a single weight.
+fn check_memory(
+    cfg: &crate::config::TextConfig,
+    dir: &Path,
+    max_t: usize,
+    batch: usize,
+) -> Result<()> {
+    let phys = physical_bytes();
+    if phys == 0 {
+        return Ok(()); // cannot tell; do not block a load we cannot judge
+    }
+    let b = budget(cfg, dir, batch);
+    let needed = b.total(max_t);
+    // Leave a margin: the OS and the Metal driver need room too, and the failure
+    // mode when they do not get it is a kill, not an error.
+    let ceiling = (phys as f64 * 0.85) as u64;
+    if needed <= ceiling {
+        return Ok(());
+    }
+    let gb = |bytes: u64| bytes as f64 / 1073741824.0;
+    // Widest context that fits, at this width and at one slot, capped at what the
+    // model itself supports.
+    let fits = |width: usize| -> usize {
+        let bb = budget(cfg, dir, width);
+        let room = (ceiling as f64 - bb.fixed() as f64).max(0.0) as u64;
+        ((room / bb.per_token.max(1)) as usize).min(cfg.max_position_embeddings)
+    };
+    let at_width = fits(batch);
+    let at_one = fits(1);
+    let mut msg = format!(
+        "max-ctx {max_t} does not fit: it needs about {:.0} GB and this machine has {:.0} GB.\n\
+         \x20 {:.0} GB of weights, {:.0} GB of KV cache, {:.0} GB of delta-net state.\n\
+         \x20 The KV cache costs {} KB per token for the whole batch of {batch}, i.e. {:.0} KB\n\
+         \x20 per token PER SLOT.  Every slot keeps its own and they are all allocated up\n\
+         \x20 front, so the cost is multiplied by both max-ctx and the batch width.",
+        gb(needed),
+        gb(phys),
+        gb(b.weights),
+        gb(b.per_token * max_t as u64),
+        gb(b.per_slot),
+        b.per_token / 1024,
+        b.per_token as f64 / 1024.0 / batch as f64,
+    );
+    if max_t > cfg.max_position_embeddings {
+        msg.push_str(&format!(
+            "\n\x20 Note the model itself only supports {} tokens.",
+            cfg.max_position_embeddings
+        ));
+    }
+    msg.push_str(&format!(
+        "\n\x20 Largest that fits at batch {batch}: --max-ctx {at_width} (about {:.0} GB).\n\
+         \x20 Or QW_BATCH=1 --max-ctx {at_one} (about {:.0} GB), trading concurrency for context.",
+        gb(budget(cfg, dir, batch).total(at_width)),
+        gb(budget(cfg, dir, 1).total(at_one)),
+    ));
+    bail!(msg)
+}
+
 fn mtp_dir(dir: &Path) -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("QW_MTP_DIR") {
         return Some(std::path::PathBuf::from(p));
@@ -337,6 +486,7 @@ impl Qwen38 {
     pub fn load_batch(dir: &Path, max_t: usize, batch: usize) -> Result<Self> {
         let mut dev = GpuDevice::new()?;
         let cfg = ModelConfig::from_path(&dir.join("config.json"))?.text_config;
+        check_memory(&cfg, dir, max_t, batch)?;
         let layout = WeightLayout::default();
         // The store must outlive every QLinear; the model is process-lifetime.
         let store: &'static WeightStore = Box::leak(Box::new(
