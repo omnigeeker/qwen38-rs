@@ -43,7 +43,7 @@ const PREFILL_CHUNK: usize = qw_model::runner::TILE;
 /// This is the shape agent frameworks produce, because every turn re-sends the whole
 /// conversation, so the expensive part of the prompt has usually been seen already.
 /// What a slot can skip for a given prompt, and where that comes from.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Reuse {
     /// Nothing reusable; the slot has to be rewound and the prompt run in full.
     None,
@@ -51,6 +51,102 @@ enum Reuse {
     Live(usize),
     /// A copy taken at the end of an earlier prefill; it has to be restored first.
     Boundary(usize),
+    /// A prefix persisted by an earlier **process**, with its serialised state.
+    Disk(usize, Vec<u8>),
+}
+
+/// Prefixes on disk, keyed by content rather than by slot, so they outlive the
+/// process and are shared by every slot and every session.
+mod prefixes {
+    use std::io::Read;
+    use std::path::PathBuf;
+
+   pub struct DiskPrefix {
+        dir: PathBuf,
+    }
+
+    fn fnv(ids: &[u32]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &t in ids {
+            for b in t.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    impl DiskPrefix {
+        pub fn from_env() -> Option<Self> {
+            let dir = PathBuf::from(std::env::var("QW_PREFIX_DISK").ok()?);
+            std::fs::create_dir_all(&dir).ok()?;
+            Some(Self { dir })
+        }
+
+        /// Longest stored prefix that `ids` starts with, plus its blob.
+        ///
+        /// Reads the header first and only pulls in the blob once the ids match,
+        /// because a blob is a few hundred megabytes and the directory holds one
+        /// file per distinct prompt.
+        pub fn find(&self, ids: &[u32]) -> Option<(usize, Vec<u8>)> {
+            let entries = std::fs::read_dir(&self.dir).ok()?;
+            let mut best: Option<(usize, Vec<u8>)> = None;
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("pfx") {
+                    continue;
+                }
+                let Some((n, stored, mut f)) = Self::header(&p) else {
+                    continue;
+                };
+                if n == 0 || n > ids.len() || stored[..] != ids[..n] {
+                    continue;
+                }
+                if best.as_ref().is_some_and(|(bn, _)| n <= *bn) {
+                    continue;
+                }
+                let mut blob = Vec::new();
+                if f.read_to_end(&mut blob).is_ok() {
+                    best = Some((n, blob));
+                }
+            }
+            best
+        }
+
+        fn header(p: &std::path::Path) -> Option<(usize, Vec<u32>, std::fs::File)> {
+            let mut f = std::fs::File::open(p).ok()?;
+            let mut h = [0u8; 12];
+            f.read_exact(&mut h).ok()?;
+            if &h[0..8] != b"Q38DSK1\0" {
+                return None;
+            }
+            let n = u32::from_le_bytes(h[8..12].try_into().unwrap()) as usize;
+            if n == 0 || n > 1 << 22 {
+                return None;
+            }
+            let mut raw = vec![0u8; n * 4];
+            f.read_exact(&mut raw).ok()?;
+            let ids = raw
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            Some((n, ids, f))
+        }
+
+        pub fn store(&self, ids: &[u32], blob: &[u8]) -> std::io::Result<()> {
+            let mut o = Vec::with_capacity(12 + ids.len() * 4 + blob.len());
+            o.extend_from_slice(b"Q38DSK1\0");
+            o.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+            for t in ids {
+                o.extend_from_slice(&t.to_le_bytes());
+            }
+            o.extend_from_slice(blob);
+            let path = self.dir.join(format!("{:016x}-{}.pfx", fnv(ids), ids.len()));
+            let tmp = path.with_extension("tmp");
+            std::fs::write(&tmp, &o)?;
+            std::fs::rename(&tmp, &path)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -332,9 +428,18 @@ fn prepare(
             None => Reuse::None,
         }
     };
+    // Nothing in memory, but an earlier process may have left this prefix on
+    // disk.  Keyed by content, so a fresh session finds it cold.
+    let reuse = match reuse {
+        Reuse::None => match prefixes::DiskPrefix::from_env().and_then(|d| d.find(&ids)) {
+            Some((n, blob)) => Reuse::Disk(n, blob),
+            None => Reuse::None,
+        },
+        other => other,
+    };
     let skip = match reuse {
         Reuse::None => 0,
-        Reuse::Live(n) | Reuse::Boundary(n) => n,
+        Reuse::Live(n) | Reuse::Boundary(n) | Reuse::Disk(n, _) => n,
     };
     cache.lookups += 1;
     cache.prompted += ids.len();
@@ -349,6 +454,17 @@ fn prepare(
             }
             cache.forget(slot);
             ""
+        }
+        Reuse::Disk(n, ref blob) => {
+            // Write the stored state straight into this slot's slice.  Only
+            // positions 0..n are touched; the prefill that follows overwrites
+            // anything past n, so no clearing is needed.
+            if let Err(e) = model.import_prefix(slot, n, blob) {
+                let _ = job.pieces.send(Err(e.to_string()));
+                return None;
+            }
+            cache.hits += 1;
+            " (disk prefix)"
         }
         Reuse::Live(_) => " (live state)",
         Reuse::Boundary(_) => {
@@ -530,7 +646,26 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // request from clobbering a long prompt's snapshot with an empty one.
                 if snapshot && a.pf > 0 && a.pf + take >= a.ids.len() {
                     match model.save_prefix(slot) {
-                        Ok(()) => cache.record_boundary(slot, a.ids[..a.pf].to_vec()),
+                        Ok(()) => {
+                            cache.record_boundary(slot, a.ids[..a.pf].to_vec());
+                            // And persist it, so the next process starts warm.
+                            // Only for a prefix long enough to be a real agent
+                            // system prompt: the blob costs about 0.1 MB a token.
+                            if a.pf >= 256 {
+                                if let Ok(blob) = model.export_prefix(slot, a.pf) {
+                                    if let Some(d) = prefixes::DiskPrefix::from_env() {
+                                        match d.store(&a.ids[..a.pf], &blob) {
+                                            Ok(()) => tracing::info!(
+                                                "slot {slot}: persisted {} tokens ({} MB) to disk",
+                                                a.pf,
+                                                blob.len() / (1024 * 1024)
+                                            ),
+                                            Err(e) => tracing::warn!("prefix store: {e}"),
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Err(e) => {
                             let _ = a.job.pieces.send(Err(e.to_string()));
                         }

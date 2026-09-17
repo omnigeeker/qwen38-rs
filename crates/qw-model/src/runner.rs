@@ -844,6 +844,87 @@ impl Qwen38 {
         self.copy_seq(seq, true)
     }
 
+    /// Serialise everything a later *process* needs to resume slot `seq` at
+    /// `pos`: the GDN recurrent state and convolution window of every linear
+    /// layer, and the KV entries for positions `0..pos` of every full layer.
+    ///
+    /// The KV cache is head-major - `k[hk * max_t * hd + t * hd + d]` - so one
+    /// head's live prefix is a single contiguous run.  That makes both
+    /// directions a memcpy per head rather than a per-position gather.
+    ///
+    /// Layers are walked twice, all linear layers then all full ones, and
+    /// `import_prefix` must walk them in exactly the same order.
+    pub fn export_prefix(&mut self, seq: usize, pos: usize) -> Result<Vec<u8>> {
+        let nkv = self.cfg.num_key_value_heads;
+        let hd = self.cfg.head_dim;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"Q38PFX1\0");
+        out.extend_from_slice(&(pos as u64).to_le_bytes());
+        for layer in &self.layers {
+            if let Kind::Gdn(g) = &layer.kind {
+                for (buf, stride) in [(&g.state, self.state_stride), (&g.window, self.win_stride)] {
+                    if stride == 0 {
+                        continue;
+                    }
+                    out.extend_from_slice(&buf.read_at(seq * stride, stride));
+                }
+            }
+        }
+        for layer in &self.layers {
+            if let Kind::Full(a) = &layer.kind {
+                for cache in [&a.k_cache, &a.v_cache] {
+                    for hk in 0..nkv {
+                        let off = seq * self.kv_stride + hk * self.max_t * hd * 2;
+                        out.extend_from_slice(&cache.read_at(off, pos * hd * 2));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Inverse of [`Self::export_prefix`].  Only positions `0..pos` are written;
+    /// everything past `pos` is left as it was and is overwritten by the prefill
+    /// that follows, which is why the KV cache needs no clearing.
+    pub fn import_prefix(&mut self, seq: usize, pos: usize, blob: &[u8]) -> Result<()> {
+        let nkv = self.cfg.num_key_value_heads;
+        let hd = self.cfg.head_dim;
+        anyhow::ensure!(blob.len() >= 16, "prefix blob: too short");
+        anyhow::ensure!(&blob[0..8] == b"Q38PFX1\0", "prefix blob: bad magic");
+        let stored = u64::from_le_bytes(blob[8..16].try_into().unwrap()) as usize;
+        anyhow::ensure!(
+            stored == pos,
+            "prefix blob holds position {stored}, asked to restore {pos}"
+        );
+        let mut o = 16usize;
+        for layer in &self.layers {
+            if let Kind::Gdn(g) = &layer.kind {
+                for (buf, stride) in [(&g.state, self.state_stride), (&g.window, self.win_stride)] {
+                    if stride == 0 {
+                        continue;
+                    }
+                    anyhow::ensure!(o + stride <= blob.len(), "prefix blob: truncated state");
+                    buf.write_at(seq * stride, &blob[o..o + stride]);
+                    o += stride;
+                }
+            }
+        }
+        for layer in &self.layers {
+            if let Kind::Full(a) = &layer.kind {
+                for cache in [&a.k_cache, &a.v_cache] {
+                    for hk in 0..nkv {
+                        let off = seq * self.kv_stride + hk * self.max_t * hd * 2;
+                        let n = pos * hd * 2;
+                        anyhow::ensure!(o + n <= blob.len(), "prefix blob: truncated kv");
+                        cache.write_at(off, &blob[o..o + n]);
+                        o += n;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn copy_seq(&mut self, seq: usize, restore: bool) -> Result<()> {
         if seq >= self.batch {
             return Ok(());

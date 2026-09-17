@@ -58,6 +58,41 @@ impl GpuBuffer {
         }
     }
 
+    /// Copy `bytes` into this buffer starting at `byte_offset`.
+    ///
+    /// `copy_from` can only write from offset 0, which is useless for restoring
+    /// one slot's slice of a batched buffer.  Metal backing here is CPU-visible
+    /// (`to_vec` already reads it directly), so this is a plain memcpy.
+    pub fn write_at(&self, byte_offset: usize, bytes: &[u8]) {
+        if byte_offset >= self.len {
+            return;
+        }
+        let n = bytes.len().min(self.len - byte_offset);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (self.buf.contents() as *mut u8).add(byte_offset),
+                n,
+            );
+        }
+    }
+
+    /// Copy `n` bytes out starting at `byte_offset`.
+    pub fn read_at(&self, byte_offset: usize, n: usize) -> Vec<u8> {
+        let n = n.min(self.len.saturating_sub(byte_offset));
+        let mut v = vec![0u8; n];
+        if n > 0 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    (self.buf.contents() as *const u8).add(byte_offset),
+                    v.as_mut_ptr(),
+                    n,
+                );
+            }
+        }
+        v
+    }
+
     /// Copy out `n` elements of `T` starting at `offset` elements.
     pub fn to_vec<T: Copy>(&self, offset: usize, n: usize) -> Vec<T> {
         let mut v = vec![unsafe { std::mem::zeroed() }; n];

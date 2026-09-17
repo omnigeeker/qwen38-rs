@@ -1687,6 +1687,25 @@
         "measured": "1025-token prompt, cold 15.5 s, boundary hit 0.5 s, 1024 of 1025 tokens skipped, outputs identical.",
         "disk_blob_estimate": "151 MB GDN state + 14 MB conv window + ~393 MB KV for 6000 positions = about 560 MB, or 0.2-0.3 s of SSD I/O."
       }
+    },
+    {
+      "round": 76,
+      "title": "Implemented and verified cross-process prefix persistence.  Three small pieces: GpuBuffer::write_at/read_at, because copy_from can only write from offset 0 and a whole-buffer write is useless for one slot's slice of a batched buffer (the Metal backing is CPU-visible already, so these are plain memcpys); Qwen38::export_prefix and import_prefix, which serialise a slot's GDN state and convolution window plus the KV entries for positions 0..pos (the KV cache is head-major, so one head's live prefix is a contiguous run and both directions are a memcpy per head rather than a per-position gather); and a DiskPrefix in the engine keyed by the CONTENT of the token sequence rather than by slot, so it survives the process and is shared by all slots.  find reads only the header and pulls the blob in only once the ids match, since each file is a few hundred megabytes.  On a hit import_prefix writes this slot's slice and skip = n; only 0..n is touched and the prefill overwrites the rest, so the KV needs no clearing, the same argument as the in-memory path.  It only persists at pos >= 256 because a blob costs about 0.1 MB a token.  Verified cross-process: process 1 cold 15.5 s and then persisted 1024 tokens at 215 MB; a FRESH process 2 served the same prompt in 0.9 s with the log reading prefix cache HIT (disk prefix) - skipped 1024 of 1025 prompt tokens (100%), and the outputs are token-for-token identical.  215 MB per 1024 tokens is 0.21 MB per token, matching the 560 MB estimate for 6000 tokens.  Oracle parity 6/6, batch-check 16/16 at worst logit difference 0.0000, accept.sh 12 passed and 0 failed ACCEPTED.  Deliberately did NOT use a paired A/B here: a cache hit is not a comparison of two implementations but a semantic change from doing work to not doing it, and the right instruments are output identity and the skip ratio in the log.  Still open: no end-to-end run against real OpenCode at 6867 tokens, and both environment variables are still opt-in, so the user gets nothing until they set them.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16, worst |logit difference| 0.0000",
+        "G3": "accept.sh 12 passed, 0 failed ACCEPTED",
+        "G4": "cross-process: cold 15.5 s, fresh process 0.9 s, outputs identical, 100% skip"
+      },
+      "evidence": {
+        "kv_layout": "head-major, kbase = kcache + hk*maxT*D, so a head's live prefix is one contiguous run.",
+        "blob_size": "215 MB for 1024 tokens, 0.21 MB per token, so about 560 MB for 6000.",
+        "cross_process": "a fresh process served the identical prompt in 0.9 s, log: prefix cache HIT (disk prefix) - skipped 1024 of 1025 tokens (100%).",
+        "why_no_paired_ab": "a cache hit changes whether work happens at all, so output identity plus the skip ratio is the correct instrument.",
+        "open": "no end-to-end run against real OpenCode at 6867 tokens, and both env vars are still opt-in."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

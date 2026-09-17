@@ -1023,3 +1023,52 @@ ACCEPTED**。
 | **合计** | **约 560 MB** |
 
 **按 2–3 GB/s 的 SSD 算是 0.2–0.3 s 的读写**，相对于 139 s 的冷 prefill 可以忽略。
+
+
+---
+
+## 23. 跨进程前缀缓存：已实现并验证（第 18 轮）
+
+### 设计
+
+三个部件，都很小：
+
+1. **`GpuBuffer::write_at` / `read_at`** —— `copy_from` 只能从偏移 0 写，对"批量缓冲区里某一个 slot
+   的切片"没用。Metal 的背面本来就是 CPU 可见的（`to_vec` 一直在直接读它），所以这两个就是普通 memcpy。
+2. **`Qwen38::export_prefix` / `import_prefix`** —— 把 `seq` 在位置 `pos` 的状态序列化成一块 blob：
+   每个 linear 层的 GDN 递推状态与卷积窗，加上每个 full 层位置 `0..pos` 的 K/V。
+   **KV 是 head-major（`k[hk*max_t*hd + t*hd + d]`），所以一个 head 的活跃前缀是一段连续区间**——
+   两个方向都是每 head 一次 memcpy，而不是按位置 gather。
+3. **`engine.rs` 里的 `prefixes::DiskPrefix`** —— 按**内容**（token 序列的 FNV 哈希）索引，不按 slot，
+   所以它跨进程存活、被所有 slot 和所有会话共享。`find` **先读头部、ids 匹配了才读 blob**，
+   因为目录里每个文件都是几百 MB。
+   盘上格式：`Q38DSK1\0` + `ids_len:u32` + ids + blob；写入先落 `.tmp` 再 rename。
+
+命中时 `Reuse::Disk(n, blob)` → `import_prefix` 写入该 slot 的切片 → `skip = n`。
+只写 `0..n`，之后由 prefill 覆盖，**所以 KV 不需要清理**（与内存版同一条理由）。
+只在 `pos >= 256` 时落盘：blob 约 0.1 MB/token，短前缀不值得写。
+
+### 验证：跨进程，全新进程
+
+| | 进程 | 耗时 | 日志 |
+|---|---|---|---|
+| p1 | 进程 1（冷） | **15.5 s** | 冷启动，随后 `persisted 1024 tokens (215 MB) to disk` |
+| p2 | **全新进程 2** | **0.9 s** | `prefix cache HIT (disk prefix) - skipped 1024 of 1025 tokens (100%)` |
+
+**输出逐 token 完全一致。** 实测 215 MB / 1024 token ≈ **0.21 MB/token**，
+与 6000 token 约 560 MB 的估算一致（GDN 状态 151 MB + 卷积窗 14 MB + KV 约 393 MB）。
+
+门禁：oracle parity **6/6**、batch-check **16/16 逐位一致（0.0000）**、accept.sh **12 passed / 0 failed
+ACCEPTED**。
+
+### 关于"配对 A/B"
+
+本节没有用交错配对 A/B，**这是有意的**：缓存命中不是两个实现的性能比较，而是一个
+"跳过 vs 不跳过"的语义变化。正确的仪器是**输出逐位一致 + 命中日志里的跳过比例**，
+两者都已给出。配对 A/B 仍然适用于将来任何内核或调度层面的改动。
+
+### 尚未完成
+
+- **没有用真实 OpenCode（6867 token）端到端跑过**。目前只在 HTTP API 层面用 1025 token 的合成
+  prompt 验证。
+- **`QW_PREFIX_SNAPSHOT` 与 `QW_PREFIX_DISK` 都还是 opt-in（默认关）**，所以用户现在还得手动设置才有效。
