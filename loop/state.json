@@ -1539,6 +1539,24 @@
         "suspects": "GQA makes 6 query heads read one KV head; a 4-row chunk makes each row read the same history again.  24x redundant reads, and sharing them is the standard fix.",
         "why_no_fix": "an estimate that contradicts measurement by 100x is not a basis for rewriting a kernel.  Instrument first: time the individual dispatches at T = 1k / 4k / 7k and find which one grows with T."
       }
+    },
+    {
+      "round": 68,
+      "title": "Built the instrumentation instead of guessing, and it refuted the optimisation I had proposed.  Added `qwen38 pos-bench`, which feeds synthetic tokens and times each pass, with --slots N letting N sequences each contribute a row so the marginal cost of rows 5..16 is measurable without touching the convolution ring.  Measured in one session over 6000 tokens: 1 row/pass costs 53.87 ms at pos 1000, 4 rows cost 98.07, 16 rows cost 413.42.  Scaling 4 -> 16 rows multiplies the pass cost by 4.96x for 4x the work - no amortisation at all, and at pos 6000 sixteen rows are outright worse (58.46 vs 47.15 ms per token).  The reason is that encode_rows sends n > 4 to q4_gemv_b16, which is no cheaper per row than the tile kernel (25.84 vs 27.47 ms/row at pos 1000), so the engine's existing chunk of 4 is already on the faster path.  Widening conv_ring to feed 16 rows would have been real correctness risk for zero gain, and the measurement stopped it.  Also corrected section 14: normalised per row, the position term is more consistent (3.9e-3 at 4 rows, 6.5e-3 at 16), so it is charged per ROW rather than per pass.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "clippy -D warnings clean; release build clean",
+        "G2": "accept.sh re-run after the CLI addition",
+        "G3": "pos-bench is measurement-only and does not touch the inference path; the numbers come from four sweeps in one session, so machine drift cannot explain the 4-to-16 comparison",
+        "G4": "no speed claim.  The result is negative: feeding 16 rows per pass is not faster than 4, so the remaining prize is only the position term, about 20 ms per row at pos 6000."
+      },
+      "evidence": {
+        "amortisation_is_only_in_the_first_four_rows": "1 -> 4 rows costs 1.8-2.0x for 4x the work, but 4 -> 16 rows costs 4.96x for 4x the work.",
+        "b16_is_not_cheaper": "q4_gemv_b16 runs 25.84 ms per row at pos 1000 against 27.47 for the tile kernel, so the engine's chunk of 4 is already the faster path.",
+        "position_term_is_per_row": "normalised per row the slope is 3.9e-3 ms/row/position at 4 rows and 6.5e-3 at 16 rows; normalised per pass the two differ by 6.6x, so per-row is the better description.",
+        "still_unexplained": "the ~20 ms per row added by pos 6000 is at least an order of magnitude above what GQA-redundant attention traffic can account for even at L2 bandwidth, so 'attention reads its history' is still unproven."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

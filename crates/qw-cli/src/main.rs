@@ -4,6 +4,7 @@ mod batchcheck;
 mod bench;
 mod check;
 mod gen;
+mod posbench;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -79,6 +80,21 @@ enum Cmd {
         #[arg(long, default_value_t = 512)]
         max_t: usize,
     },
+    /// Measure what one pass costs as a function of its position in the prompt.
+    PosBench {
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
+        #[arg(long, default_value_t = 6000)]
+        tokens: usize,
+        #[arg(long, default_value_t = 1)]
+        rows: usize,
+        #[arg(long, default_value_t = 1)]
+        slots: usize,
+        #[arg(long, default_value_t = 32768)]
+        max_t: usize,
+        #[arg(long, default_value_t = 500)]
+        report: usize,
+    },
     /// End-to-end parity gate against the mlx-lm oracle.
     Verify {
         #[arg(long, default_value = "loop/artifacts/oracle.json")]
@@ -145,6 +161,14 @@ fn main() -> Result<()> {
             slots,
             max_t,
         } => batchcheck::run(&model_dir, &prompt, slots, max_t),
+        Cmd::PosBench {
+            model_dir,
+            tokens,
+            rows,
+            slots,
+            max_t,
+            report,
+        } => posbench::run(&model_dir, tokens, rows, slots, max_t, report),
         Cmd::Verify { oracle, model_dir } => cmd_verify(oracle, model_dir),
         Cmd::Gen {
             model_dir,
