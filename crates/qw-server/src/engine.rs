@@ -62,6 +62,8 @@ struct Active {
     feed: u32,
     /// Set once the prompt is fully in, which is what makes `feed` meaningful.
     ready: bool,
+    /// The client went away, so this slot is nobody's work any more.
+    dead: bool,
     all: Vec<u32>,
     sent_len: usize,
     emitted: usize,
@@ -191,6 +193,10 @@ fn prepare(
     // context, or a completion budget that would run past it, is rejected here
     // rather than silently walking off the end of the buffers.
     if ids.is_empty() || ids.len() >= max_t {
+        tracing::warn!(
+            "slot {slot}: rejected a {} token prompt, the context is {max_t}; raise --max-ctx",
+            ids.len()
+        );
         let _ = job.pieces.send(Err(format!(
             "prompt is {} tokens but the context is {max_t}; restart with a larger --max-ctx",
             ids.len()
@@ -204,6 +210,22 @@ fn prepare(
         return None;
     }
     let max_tokens = job.max_tokens.min(max_t - ids.len());
+    if max_tokens < job.max_tokens {
+        // Worth saying out loud: an agent framework that asks for 32000 tokens
+        // against a small context gets silently truncated mid-task, which looks
+        // like the model giving up rather than a setting.
+        tracing::info!(
+            "slot {slot}: prompt is {} tokens, so max_tokens is cut from {} to {}",
+            ids.len(),
+            job.max_tokens,
+            max_tokens
+        );
+    } else {
+        tracing::info!(
+            "slot {slot}: prompt {} tokens, up to {max_tokens} to generate",
+            ids.len()
+        );
+    }
     let _ = job.pieces.send(Ok(EngineEvent::Prompt(ids.len())));
     Some(Active {
         job,
@@ -212,6 +234,7 @@ fn prepare(
         pos: 0,
         feed: 0,
         ready: false,
+        dead: false,
         all: Vec::new(),
         sent_len: 0,
         emitted: 0,
@@ -254,6 +277,25 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         let mut row_slot: Vec<usize> = Vec::new();
         for (slot, entry) in slots.iter_mut().enumerate() {
             let Some(a) = entry.as_mut() else { continue };
+            // The client can vanish: a cancelled request in a TUI, a killed
+            // curl, a framework that gave up and moved on.  Without this check
+            // nothing would ever stop the slot - the only other stop conditions
+            // are running out of max_tokens or emitting EOS, and OpenCode asks
+            // for 32000 tokens, so an abandoned request would keep generating for
+            // the better part of twenty minutes, sharing every round with real
+            // work.  Sixteen abandoned requests would leave the engine entirely
+            // occupied by nobody's work, which is indistinguishable from a hang.
+            if a.job.pieces.is_closed() {
+                if !a.dead {
+                    tracing::info!(
+                        "slot {slot}: client went away, releasing ({} of {} tokens emitted)",
+                        a.emitted,
+                        a.max_tokens
+                    );
+                }
+                a.dead = true;
+                continue;
+            }
             let (token, pos) = if a.pf < a.ids.len() {
                 let (t, p) = (a.ids[a.pf], a.pf);
                 a.pf += 1;
@@ -303,7 +345,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         // ---- retire ----
         for entry in slots.iter_mut() {
             let done = match entry.as_ref() {
-                Some(a) => a.ready && (a.emitted >= a.max_tokens || tok.is_eos(a.feed)),
+                Some(a) => a.dead || (a.ready && (a.emitted >= a.max_tokens || tok.is_eos(a.feed))),
                 None => false,
             };
             if done {
