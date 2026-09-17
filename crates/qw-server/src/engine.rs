@@ -23,6 +23,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+/// How many prompt tokens one pass may carry.  The projection kernel computes
+/// four rows from a single read of the weights, so a pass that feeds it one token
+/// throws three quarters of the work away - and since the client is waiting for its
+/// first token, that waste is exactly what it experiences as a hang.  It matches
+/// the convolution ring, which holds `conv_k` history rows plus this many.
+const PREFILL_CHUNK: usize = qw_model::runner::TILE;
+
 /// How many requests the engine will hold in flight at once.  It matches the
 /// widest row tile the model can carry in one weight sweep.
 pub const MAX_BATCH: usize = 16;
@@ -243,6 +250,18 @@ fn prepare(
 }
 
 fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, batch: usize) {
+    // Prefilling a chunk per pass is implemented and reachable, but it is NOT
+    // verified: every measurement taken of it so far was swamped by the machine's
+    // own state (engine load went from 4.2 s to 19.4 s between runs, a ~5x thermal
+    // swing), so the default stays on the one-token-per-pass path that accept.sh
+    // has validated.  Set QW_PREFILL_CHUNK=4 to try it, and measure it paired.
+    let chunk_cap = std::env::var("QW_PREFILL_CHUNK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|c| *c > 0)
+        .unwrap_or(1)
+        .min(PREFILL_CHUNK);
+    tracing::info!("prefill chunk: {chunk_cap} token(s) per pass");
     let mut slots: Vec<Option<Active>> = (0..batch).map(|_| None).collect();
     let mut waiting: VecDeque<Job> = VecDeque::new();
     loop {
@@ -272,6 +291,34 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         }
 
         // ---- one batched pass over every slot that can take a step ----
+        // One pass carries at most MAX_BATCH rows.  A decoding slot needs exactly
+        // one of them; a prefilling slot wants a full chunk.  Reserve the decoders
+        // first, then split what is left between the prefillers.
+        let want_one = |a: &Active| {
+            a.pf >= a.ids.len()
+                && a.ready
+                && a.emitted < a.max_tokens
+                && !tok.is_eos(a.feed)
+                && !a.job.pieces.is_closed()
+        };
+        let decoding = slots
+            .iter()
+            .filter(|e| e.as_ref().is_some_and(want_one))
+            .count();
+        let prefilling = slots
+            .iter()
+            .filter(|e| {
+                e.as_ref()
+                    .is_some_and(|a| a.pf < a.ids.len() && !a.job.pieces.is_closed())
+            })
+            .count();
+        let room = MAX_BATCH.saturating_sub(decoding);
+        let share = room.checked_div(prefilling).unwrap_or(0);
+        let chunk = if prefilling == 0 {
+            0
+        } else {
+            chunk_cap.min(share).max(1)
+        };
         let mut rows: Vec<(usize, usize)> = Vec::new();
         let mut toks: Vec<u32> = Vec::new();
         let mut row_slot: Vec<usize> = Vec::new();
@@ -296,22 +343,29 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 a.dead = true;
                 continue;
             }
-            let (token, pos) = if a.pf < a.ids.len() {
-                let (t, p) = (a.ids[a.pf], a.pf);
-                a.pf += 1;
-                (t, p)
-            } else if a.ready && a.emitted < a.max_tokens && !tok.is_eos(a.feed) {
-                let (t, p) = (a.feed, a.pos);
-                a.pos += 1;
-                a.all.push(t);
-                a.emitted += 1;
-                (t, p)
-            } else {
+            if a.pf < a.ids.len() {
+                // Prefill a chunk, not a token.  The rows are consecutive
+                // positions of this one sequence and are appended in order, so
+                // each one sees the previous ones in the KV cache and in the
+                // convolution ring exactly as it would have if it had been fed on
+                // its own pass.
+                let take = (a.ids.len() - a.pf).min(chunk);
+                for k in 0..take {
+                    rows.push((slot, a.pf + k));
+                    toks.push(a.ids[a.pf + k]);
+                    row_slot.push(slot);
+                }
+                a.pf += take;
                 continue;
-            };
-            rows.push((slot, pos));
-            toks.push(token);
-            row_slot.push(slot);
+            }
+            if a.ready && a.emitted < a.max_tokens && !tok.is_eos(a.feed) {
+                rows.push((slot, a.pos));
+                toks.push(a.feed);
+                row_slot.push(slot);
+                a.pos += 1;
+                a.all.push(a.feed);
+                a.emitted += 1;
+            }
         }
         if rows.is_empty() {
             continue;

@@ -1276,18 +1276,24 @@ impl Qwen38 {
             n > 0 && n <= BATCH_MAX,
             "rows must be 1..={BATCH_MAX}, got {n}"
         );
-        if n > TILE {
-            for (i, r) in rows.iter().enumerate() {
-                anyhow::ensure!(
-                    r.0 < self.batch,
-                    "row {i} uses sequence {} of {}",
-                    r.0,
-                    self.batch
-                );
-                for o in rows.iter().skip(i + 1) {
-                    anyhow::ensure!(o.0 != r.0, "a {n}-row pass needs distinct sequences");
-                }
-            }
+        // A pass may carry several consecutive positions of the same sequence -
+        // that is exactly what chunked prefill needs - but only as many as the
+        // convolution ring can hold next to the history it reads: `conv_k` rows of
+        // history plus whatever this pass writes.
+        let conv_k = self.cfg.linear_conv_kernel_dim;
+        let max_per_seq = (conv_k + TILE).next_power_of_two() - conv_k;
+        for (i, r) in rows.iter().enumerate() {
+            anyhow::ensure!(
+                r.0 < self.batch,
+                "row {i} uses sequence {} of {}",
+                r.0,
+                self.batch
+            );
+            let same = rows.iter().filter(|o| o.0 == r.0).count();
+            anyhow::ensure!(
+                same <= max_per_seq,
+                "a pass may carry at most {max_per_seq} rows of one sequence, {same} were given"
+            );
         }
         // Read the strides out before `self` is destructured, so the per-row
         // dispatches below never have to borrow `self` again.

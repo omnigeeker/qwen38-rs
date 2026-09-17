@@ -1418,6 +1418,23 @@
         "clamping_seen_in_the_wild": "with --max-ctx 32768 the log shows the agent's 32000-token budget cut to 25901 for the 6867-token prompt.  At the 8192 default the same request would be cut to about 1300 tokens, which truncates the agent mid-task; a slightly larger prompt at the default would be rejected outright and OpenCode retries, which looks like a hang."
       },
       "next": "chunked prefill is the highest-value next step and the arithmetic is already understood: the four-row tile kernel reads the weights once for four rows at roughly the cost of a one-row pass, so prefilling TILE positions per pass should cut the first byte from ~67 s to ~20 s, and the convolution ring is already sized conv_k + TILE = 8 to make that legal.  forward_rows already permits up to TILE rows per sequence; the engine only needs to feed a chunk instead of a single token.  Prefix caching is the bigger prize for agents, since a coding agent re-prefills its entire conversation on every step."
+    },
+    {
+      "round": 61,
+      "title": "TTFT round 1: established the physical floor (1 s TTFT at 32K is impossible on this GPU by ~85x), removed the last artificial constraint on prefill (per-sequence rather than strictly-distinct rows, which is what chunked prefill needs), implemented chunked prefill behind QW_PREFILL_CHUNK=4, and left it OFF by default because the A/B was swamped by a ~5x thermal swing and no clean evidence exists either way.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "pass (fmt clean, clippy -D warnings 0 errors, release build clean)",
+        "G2": "NOT re-run: accept.sh would take 25-50 min in the current thermal state, and the default path is behaviourally identical to the round-60 build that passed 12/12 (the guard change only permits more than it did, and with one token per pass at most one row per sequence is ever submitted)",
+        "G3": "smoke: default path loads, reports 'prefill chunk: 1 token(s) per pass', and answers a 9-token prompt in 2.4 s",
+        "G4": "INCONCLUSIVE and reported as such: chunk=4 gave TTFT 807 s for 6019 tokens while chunk=1 exceeded 600 s on the same machine, with engine load time going 4.2 s -> 19.4 s between runs.  The comparison is dominated by machine state, so chunking is not enabled by default."
+      },
+      "evidence": {
+        "the_floor": "25B activated params x 2 = 5e10 FLOPs per token; the M5 Max GPU is about 20 TFLOPS fp16 dense, so ~2.5 ms per prompt token is the floor.  32K tokens therefore cannot prefill in under ~80 s, and 6867 tokens cannot in under ~17 s.  1 s would require ~1700 TFLOPS, about 85x this GPU.  Measured best so far is 9.7 ms/token (66.9 s for OpenCode's prompt), i.e. ~3.9x off the floor.",
+        "the_real_fix": "prefix caching, not a faster single prefill.  An agent re-sends its whole conversation every step, so step N pays a full prefill of N steps of history; caching the prefix turns every step after the first into a prefill of only the new tokens, which is the only route to sub-second TTFT in practice.  The machinery is partly there: the speculative snap buffer already snapshots the GDN recurrence, and the KV cache is position-indexed.",
+        "instrument_discipline": "the thermal proxy is the engine load time; it went from 4.2 s to 19.4 s between the round-6 and round-7 measurements, which is why no round-7 timing is trusted."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
