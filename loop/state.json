@@ -1650,6 +1650,24 @@
         "real_ceiling": "at the bandwidth bound, 30.18/4 = 7.5 ms/token gives 6867 x 7.5 ms = 52 s.",
         "methodology_correction": "attn-bench barriers between dispatches inflate per-dispatch fixed cost, so last round's attn_scores attribution was unreliable and no kernel was changed on it."
       }
+    },
+    {
+      "round": 74,
+      "title": "Tried the most promising one-line fix and it was a regression; reverted.  bench --tokens 4 showed --rows 0 at 20.93 ms/token against --rows 1 at 10.87, so I concluded the engine had picked the wrong tile kernel (K_Q4_GEMV_K4_U4HX) and switched it to the plain K_Q4_GEMV_K4.  Both gates passed - oracle parity 6/6 and batch-check 16/16 with worst logit difference 0.0000 - so on gates and bench alone it looked like a win.  A paired alternating A/B on the real prefill path said otherwise: u4hx 51.9 s and 55.9 s against k4 60.0 s and 72.3 s, so the change was 1.16-1.29x SLOWER and I reverted it.  My error was reading bench's --rows as selecting the engine's kernel: rows=0 takes the else branch to QLinear::kernel_k, the default k-kernel, so neither of the two kernels I compared was the U4HX the engine actually uses.  Third time this session that a non-paired or wrong-subject comparison pointed the wrong way.  Conclusion: the engine's multi-row GEMV choice is not a bug - at 20.89 ms/token against k=1's 30.18 it is already capturing the 1.44x amortisation.  Going further means redesigning the kernel so x is reused across output rows, which is a much larger project whose best case is still ~52 s, far above the 10 s the objective asks for.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "build clean after revert",
+        "G2": "oracle parity 6/6 and batch-check 16/16 passed for the reverted change too, which is exactly why they were not sufficient",
+        "G3": "paired alternating A/B rejected the change: u4hx 51.9/55.9 s against k4 60.0/72.3 s",
+        "G4": "no speedup shipped"
+      },
+      "evidence": {
+        "gates_are_not_enough": "the regression passed oracle parity 6/6 and batch-check 16/16 at worst logit difference 0.0000.",
+        "bench_rows_semantics": "rows=0 goes to the else branch and QLinear::kernel_k, the default k-kernel, not the engine's U4HX tile kernel.",
+        "engine_already_optimal": "k=4 at 20.89 ms/token against k=1 at 30.18 means the engine already banks the 1.44x multi-row amortisation.",
+        "paired_ab_required": "third time a non-paired or wrong-subject comparison reversed the conclusion; pairing is mandatory, not caution."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
