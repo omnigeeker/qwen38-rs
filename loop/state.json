@@ -1611,6 +1611,26 @@
         "baselines_were_degraded": "pos 3000 at 4 rows reads 16.2-18.3 ms/token now against a recorded baseline of 30.50.",
         "why_not_more": "the remaining position term is about 40% of the cost, but attn_scores and the projection are both already proven flat with T, so what is left is not in a kernel that has been timed.  Meanwhile the same binary drifts 93.0 s to 248.5 s between adjacent runs, a factor of 2.7, against a remaining effect far smaller than that, so further optimisation would be chasing noise until the measurement environment is stable."
       }
+    },
+    {
+      "round": 72,
+      "title": "New objective: TTFT under 10 s for the first hello in OpenCode.  Did the arithmetic first, and it says 10 s is not reachable on this machine, but the user's hunch about a deeper bug is right.  The model is dense 27B with 14.41234944 GB of 4-bit weights that every pass must read in full.  The hello prompt is 6867 tokens, prefill runs 4 rows per pass, so 1717 passes move 24.7 TB of weights; bench measures this machine's achievable bandwidth at 438 GB/s (32.93 ms for one full sweep), giving a floor of about 56 s.  Ten seconds needs 2.47 TB/s, 5.6x the measured ceiling, and even perfect 16-row L2 sharing at full bandwidth would be 14 s.  The real bug is in the weight stream: bench prints effective bandwidth per path and k=1 achieves 438 GB/s while the k=16 q4_gemv_b16 path achieves 33 GB/s - 7.5% of it.  Sixteen tokens take 430 ms moving not 14.41 GB but 230 GB, i.e. 536 GB/s of actual DRAM traffic, so the weights are being re-read from DRAM sixteen times.  The kernel's own comment promises exactly the opposite - that B consecutive threadgroups covering the same output row fetch it from DRAM once and serve the other B-1 out of L2 - so that L2 sharing is not happening.  The chunk-of-4 tile path the prefill actually uses runs at 175 GB/s, 40% of achievable.  So there is 2.5x to 13x of real headroom in the weight sweep, and pushing the tile path to 438 GB/s would take the 6000-token prefill from 139 s to about 56 s.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "no code change this round",
+        "G2": "n/a",
+        "G3": "n/a",
+        "G4": "measured: 438 GB/s achievable, 175 GB/s on the prefill tile path, 33 GB/s on b16"
+      },
+      "evidence": {
+        "weights": "14.41234944 GB, printed by bench itself.",
+        "achievable_bandwidth": "bench --tokens 1: 32.93 ms for one full sweep = 438 GB/s effective.",
+        "b16_is_the_bug": "bench --tokens 16: 430.23 ms, 33 GB/s effective, against 16 x 32.93 = 527 ms if serial.",
+        "l2_sharing_absent": "230 GB of DRAM traffic in 430 ms = 536 GB/s, so the weights are re-read per activation rather than served from L2 as the kernel comment claims.",
+        "prefill_path_underperforms": "82.4 ms per 4-row pass over 14.41 GB = 175 GB/s, 40% of achievable.",
+        "why_10s_is_impossible": "24.7 TB of weight traffic at the measured 438 GB/s ceiling is 56 s; 10 s needs 2.47 TB/s."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

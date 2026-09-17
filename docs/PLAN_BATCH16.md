@@ -806,3 +806,60 @@ pair 1 的大数字来自 old 恰好跑在退化状态。⇒ **端到端增益�
 - **剩余位置项约 40%**，但 `attn_scores` 与投影核都已证明平坦，**剩余的嫌疑不在已计时的核内**；
 - **继续优化暂时不划算**：机器状态噪声（同一二进制相邻两轮 93.0→248.5 s，2.7 倍）**大于**
   剩余效应。要再往前走，必须先解决测量环境，否则是在追噪声。
+
+
+---
+
+## 19. 为什么 10 s TTFT 做不到，以及"深层次的 bug"确实存在（第 14 轮）
+
+用户要求：在 OpenCode 第一次输入 hello 时把 TTFT 压到 10 s 内。
+
+### 先算物理账（全部用本机实测值）
+
+模型是稠密 27B，4-bit 权重 **14.41234944 GB**（`bench` 自己打印的），**每个 pass 必须完整读一遍**。
+
+- OpenCode 的 hello 主请求 prompt = **6867 token**；
+- prefill 每 pass 走 4 行 ⇒ **1717 个 pass**；
+- 总权重流量 = 1717 × 14.41 GB = **24.7 TB**；
+- 本机实测可达带宽 = **438 GB/s**（`bench`: 32.93 ms 扫完 14.41 GB）。
+
+⇒ **理论地板 = 24.7 TB ÷ 438 GB/s ≈ 56 s。**
+
+**要 10 s 需要 2.47 TB/s，是本机实测上限的 5.6 倍。**
+
+即便做到**完美的 16 行 L2 共享**（权重每 pass 只读一次，6.2 TB 总量），在 438 GB/s 下也是 **14 s**——
+**仍然超过 10 s**，而那还需要 L2 共享成立且带宽打满，两个条件当前都不成立。
+
+**⇒ 对 6867 token 的冷 prompt，"TTFT < 10 s" 在本机物理上不可达。**
+当前实测 138.8 s（6000 token），可达地板约 56 s。
+
+### 但"深层次的 bug"是真的，而且就在权重流上
+
+`bench` 把两条路径的**有效带宽**直接打了出来：
+
+| 路径 | 每 token | 有效权重带宽 |
+|---|---|---|
+| k=1 | 32.93 ms | **438 GB/s** |
+| k=16（`q4_gemv_b16`） | 26.89 ms | **33 GB/s** |
+
+**k=16 的有效带宽只有 k=1 的 7.5%。** 16 token 用 430 ms，搬的不是 14.41 GB 而是 **230 GB**
+（= 536 GB/s 真实 DRAM 流量，其实已经贴着峰值）——**说明权重被从 DRAM 重读了 16 次。**
+
+而 `q4_gemv_b16` 的源码注释明确承诺了相反的行为：
+
+> *B consecutive threadgroup ids cover the same output row for B different activations, so the
+> weight row is fetched from DRAM once and served the other B-1 times **out of L2***
+>
+> *If L2 does not hold the row the traffic is the same as B separate sweeps, so the downside is bounded.*
+
+**⇒ L2 共享没有生效。** prefill 实际用的 chunk=4（tile 核）同样没跑满：
+82.4 ms/pass ÷ 14.41 GB = **175 GB/s，只有可达值的 40%**。
+
+**⇒ 权重扫读有 2.5×（tile 路径）到 13×（b16 路径）的真实提升空间。**
+把 tile 路径从 175 GB/s 推到 438 GB/s，6000 token 的 prefill 可从 139 s 降到约 **56 s**。
+
+### 下一步
+
+**优先查 `q4_gemv_b16` 的 L2 共享为什么不生效**（网格顺序、线程组调度、或 L2 容量/关联度），
+以及 **tile 核为什么只跑到 40% 带宽**（是否也是内存级并行度不足——`attn_out` 就是同一类问题）。
+这两个都是"深层次 bug"的直接候选，而且都有明确的量化目标。
