@@ -2312,6 +2312,99 @@ impl Qwen38 {
     }
 
     /// Number of dispatches encoded by the last forward pass.
+    /// Time the two attention kernels, and a projection as a control, in isolation.
+    ///
+    /// Section 15 of `docs/PLAN_BATCH16.md` leaves one thing unexplained: a pass at
+    /// position 6000 costs about 20 ms per row more than one at position 1000, and no
+    /// accounting for attention over the history reaches that number.  Rather than infer
+    /// it a third time, dispatch the kernels by themselves and see which one grows.
+    ///
+    /// Measurement only: it writes into scratch buffers that the next pass overwrites
+    /// anyway, and touches no recurrent state, no KV cache and no position.
+    pub fn bench_attn(&mut self, t: usize, iters: usize) -> Result<(f64, f64, f64)> {
+        anyhow::ensure!(t > 0 && t <= self.max_t, "t must be within max_t");
+        anyhow::ensure!(iters > 0, "iters must be positive");
+        let max_t = self.max_t;
+        let Self {
+            dev,
+            layers,
+            scratch,
+            kernels,
+            cfg,
+            ..
+        } = self;
+        let nh = cfg.num_attention_heads;
+        let nkv = cfg.num_key_value_heads;
+        let hd = cfg.head_dim;
+        let scale = 1.0f32 / (hd as f32).sqrt();
+        let kv_off = 0usize;
+        let full = layers
+            .iter()
+            .find_map(|l| match &l.kind {
+                Kind::Full(a) => Some(a.as_ref()),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("model has no full-attention layer"))?;
+
+        let mut b = CommandBatch::new(dev);
+        for _ in 0..iters {
+            b.encode(
+                Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
+                    .buf(0, &scratch.q)
+                    .buf_offset(1, &full.k_cache, kv_off)
+                    .buf(2, &scratch.scores)
+                    .scalar(3, t as i32)
+                    .scalar(4, max_t as i32)
+                    .scalar(5, nh as i32)
+                    .scalar(6, nkv as i32)
+                    .scalar(7, hd as i32)
+                    .scalar(8, scale),
+            );
+            b.barrier();
+        }
+        let t0 = std::time::Instant::now();
+        b.finish(true);
+        let scores = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+
+        let mut b = CommandBatch::new(dev);
+        for _ in 0..iters {
+            b.encode(
+                Dispatch::new(&kernels.attn_out, (nh * hd, 1, 1), (hd, 1, 1))
+                    .buf(0, &scratch.scores)
+                    .buf_offset(1, &full.v_cache, kv_off)
+                    .buf(2, &scratch.attn_out)
+                    .scalar(3, t as i32)
+                    .scalar(4, max_t as i32)
+                    .scalar(5, nh as i32)
+                    .scalar(6, nkv as i32)
+                    .scalar(7, hd as i32),
+            );
+            b.barrier();
+        }
+        let t0 = std::time::Instant::now();
+        b.finish(true);
+        let out = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+
+        // Control: a projection at four rows.  It reads the same weights whatever `t`
+        // is, so if this moves with `t` the drift is the machine, not the attention.
+        let mut b = CommandBatch::new(dev);
+        for _ in 0..iters {
+            full.q.encode_rows(
+                &mut b,
+                &kernels.q4_gemv_tile,
+                &kernels.q4_gemv_b16,
+                &scratch.h,
+                &scratch.q,
+                TILE,
+            );
+            b.barrier();
+        }
+        let t0 = std::time::Instant::now();
+        b.finish(true);
+        let proj = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+        Ok((scores, out, proj))
+    }
+
     pub fn last_dispatches(&self) -> usize {
         self.last_dispatches
     }

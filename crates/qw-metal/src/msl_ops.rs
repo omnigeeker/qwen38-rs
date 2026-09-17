@@ -101,9 +101,29 @@ kernel void attn_out(
     const int hk = (int)h / reps;
     device const float* p = probs + (size_t)h * maxT;
     device const half* vbase = vcache + (size_t)hk * maxT * D + d;
-    float acc = 0.0f;
-    for (int t = 0; t < T; ++t) acc += p[t] * (float)vbase[(size_t)t * D];
-    out[(size_t)h * D + d] = (half)acc;
+    // Eight independent accumulators rather than one.  A single `acc` makes the whole
+    // T sweep one dependent FMA chain, so only one load is ever in flight per thread
+    // and the kernel runs latency-bound: measured 1.236 ms at T = 6000 for ~72 MB,
+    // about 58 GB/s, far under what L2 can deliver.  Splitting the chain lets eight
+    // V loads overlap.  The summation order changes, which moves the fp32 result by
+    // far less than the bf16 the residual stream is rounded to anyway; the parity
+    // gates are what decide whether that is acceptable.
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    float acc4 = 0.0f, acc5 = 0.0f, acc6 = 0.0f, acc7 = 0.0f;
+    int t = 0;
+    for (; t + 8 <= T; t += 8) {
+        acc0 += p[t + 0] * (float)vbase[(size_t)(t + 0) * D];
+        acc1 += p[t + 1] * (float)vbase[(size_t)(t + 1) * D];
+        acc2 += p[t + 2] * (float)vbase[(size_t)(t + 2) * D];
+        acc3 += p[t + 3] * (float)vbase[(size_t)(t + 3) * D];
+        acc4 += p[t + 4] * (float)vbase[(size_t)(t + 4) * D];
+        acc5 += p[t + 5] * (float)vbase[(size_t)(t + 5) * D];
+        acc6 += p[t + 6] * (float)vbase[(size_t)(t + 6) * D];
+        acc7 += p[t + 7] * (float)vbase[(size_t)(t + 7) * D];
+    }
+    for (; t < T; ++t) acc0 += p[t] * (float)vbase[(size_t)t * D];
+    out[(size_t)h * D + d] =
+        (half)(((acc0 + acc1) + (acc2 + acc3)) + ((acc4 + acc5) + (acc6 + acc7)));
 }
 
 // Append one token's K/V into the head-major cache.

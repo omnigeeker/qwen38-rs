@@ -95,6 +95,17 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         report: usize,
     },
+    /// Time the attention kernels and a projection in isolation, at chosen history lengths.
+    AttnBench {
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
+        #[arg(long, default_value = "1000,3000,6000")]
+        ts: String,
+        #[arg(long, default_value_t = 50)]
+        iters: usize,
+        #[arg(long, default_value_t = 8192)]
+        max_t: usize,
+    },
     /// End-to-end parity gate against the mlx-lm oracle.
     Verify {
         #[arg(long, default_value = "loop/artifacts/oracle.json")]
@@ -161,6 +172,27 @@ fn main() -> Result<()> {
             slots,
             max_t,
         } => batchcheck::run(&model_dir, &prompt, slots, max_t),
+        Cmd::AttnBench {
+            model_dir,
+            ts,
+            iters,
+            max_t,
+        } => {
+            let ts: Vec<usize> = ts
+                .split(',')
+                .map(|x| x.trim().parse::<usize>())
+                .collect::<std::result::Result<_, _>>()?;
+            let mut m = qw_model::runner::Qwen38::load_batch(&model_dir, max_t, 1)?;
+            println!(
+                "{:>7} {:>14} {:>14} {:>14}",
+                "t", "attn_scores_ms", "attn_out_ms", "proj_ms(4row)"
+            );
+            for t in ts {
+                let (s, o, p) = m.bench_attn(t, iters)?;
+                println!("{t:>7} {s:>14.3} {o:>14.3} {p:>14.3}");
+            }
+            Ok(())
+        }
         Cmd::PosBench {
             model_dir,
             tokens,

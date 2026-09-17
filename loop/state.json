@@ -1557,6 +1557,23 @@
         "position_term_is_per_row": "normalised per row the slope is 3.9e-3 ms/row/position at 4 rows and 6.5e-3 at 16 rows; normalised per pass the two differ by 6.6x, so per-row is the better description.",
         "still_unexplained": "the ~20 ms per row added by pos 6000 is at least an order of magnitude above what GQA-redundant attention traffic can account for even at L2 bandwidth, so 'attention reads its history' is still unproven."
       }
+    },
+    {
+      "round": 69,
+      "title": "Found and fixed the position-dependent prefill cost.  Kernel-level timing (new `qwen38 attn-bench`, which dispatches attn_scores and attn_out in isolation with a position-independent projection as a control) showed attn_scores and the projection flat with T while attn_out grew: 0.231 / 0.396 / 1.236 ms at T = 1000 / 3000 / 6000.  That is 1.236 x 16 layers = 19.8 ms per row, against the 20.06 ms per row that pos-bench had measured independently, so attn_out accounted for about 80% of the growth.  The cause was one line: a single `acc` made the whole T sweep one dependent FMA chain, so only one V load was ever in flight per thread, and 72 MB in 1.236 ms is ~58 GB/s, far under L2 - latency-bound, not bandwidth-bound.  Splitting into eight accumulators gives 2.2x / 3.8x / 5.3x at those three lengths and almost removes the T dependence.  Gates: oracle parity 6/6, batch-check 16/16 with worst logit difference 0.0000, accept.sh 12/12 ACCEPTED. Paired alternating A/B (same state, old/new/old/new) has the new kernel faster in both pairs, 174.0 -> 114.5 s and 124.9 -> 111.8 s, a mean 1.32x.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "release build clean",
+        "G2": "accept.sh 12 passed / 0 failed ACCEPTED",
+        "G3": "oracle parity 6/6 cases PASS and batch-check 16/16 identical with worst |logit difference| 0.0000",
+        "G4": "paired alternating A/B, same machine state: old 174.0 s and 124.9 s against new 114.5 s and 111.8 s for the same 2500-token 4-row sweep, so the new kernel won both pairs; mean 1.32x faster.  attn_out alone is 5.3x faster at T = 6000."
+      },
+      "evidence": {
+        "kernel_level": "attn_out 0.231/0.396/1.236 ms at T=1000/3000/6000 before, 0.105/0.104/0.232 after; attn_scores and the projection control flat throughout, so the drift is not the machine.",
+        "arithmetic_closed": "1.236 ms x 16 full-attention layers = 19.8 ms per row against the 20.06 ms per row measured independently by pos-bench.",
+        "measurement_trap": "the first end-to-end run after the fix read 335.4 s against a 199.2 s baseline and looked like a 68% regression; it was a non-paired comparison across machine states.  Alternating the two binaries showed the old one itself drifting between 174.0 s and 124.9 s, which is more than the effect being measured.  Kernel timings and end-to-end timings disagreed, and the measurement was at fault, not the code."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
