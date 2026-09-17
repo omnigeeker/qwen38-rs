@@ -519,6 +519,23 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // convolution ring exactly as it would have if it had been fed on
                 // its own pass.
                 let take = (a.ids.len() - a.pf).min(chunk);
+                // Snapshot the recurrent state *before* the final chunk, not at the
+                // end of the prompt.  At the prompt end the state has already consumed
+                // the last token, but the logits for the first generated token exist
+                // only in a scratch buffer that save_prefix does not copy - so a
+                // resumed request would sample from stale logits and never converge.
+                // Stopping one chunk early costs at most `chunk` rows of re-prefill
+                // (about 80 ms) and lets an ordinary prefill rebuild the state, the KV
+                // entries and the logits correctly.  The `pf > 0` guard keeps a short
+                // request from clobbering a long prompt's snapshot with an empty one.
+                if snapshot && a.pf > 0 && a.pf + take >= a.ids.len() {
+                    match model.save_prefix(slot) {
+                        Ok(()) => cache.record_boundary(slot, a.ids[..a.pf].to_vec()),
+                        Err(e) => {
+                            let _ = a.job.pieces.send(Err(e.to_string()));
+                        }
+                    }
+                }
                 for k in 0..take {
                     rows.push((slot, a.pf + k));
                     toks.push(a.ids[a.pf + k]);
@@ -570,17 +587,6 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 }
             }
             if a.pf >= a.ids.len() {
-                if !a.ready && snapshot {
-                    // The recurrent state sits exactly at the end of the prompt right
-                    // now, which is the position a later request will want to resume
-                    // from.  Copy it before decoding moves it on, or the only way back
-                    // is to run the whole prompt again.
-                    if let Err(e) = model.save_prefix(slot) {
-                        failed = Some(e.to_string());
-                    } else {
-                        cache.record_boundary(slot, a.ids.clone());
-                    }
-                }
                 a.ready = true;
             }
             if a.ready {

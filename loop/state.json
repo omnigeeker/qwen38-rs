@@ -1668,6 +1668,25 @@
         "engine_already_optimal": "k=4 at 20.89 ms/token against k=1 at 30.18 means the engine already banks the 1.44x multi-row amortisation.",
         "paired_ab_required": "third time a non-paired or wrong-subject comparison reversed the conclusion; pairing is mandatory, not caution."
       }
+    },
+    {
+      "round": 75,
+      "title": "Found and fixed why the boundary snapshot never converged - the bug that made round 055's snapshot look disproved.  save_prefix and load_prefix only move the GDN recurrent state and the convolution window, and both are written correctly; the problem was WHEN the snapshot was taken.  The old code saved once a.pf >= a.ids.len(), that is after the whole prompt was fed, when the state has already consumed the last token and the logits for the first generated token exist only in a scratch buffer that save_prefix does not copy.  On a hit the engine set pf = pos = ids.len(), so the readiness test passed immediately, it sampled from a stale logits buffer unrelated to the restored position, and the first token was already wrong - which is exactly the observed 100% hit that never finished in ten minutes.  The fix is to snapshot before the LAST chunk instead of at the prompt end: the state is then at a clean chunk boundary, and on a hit an ordinary prefill re-walks at most `chunk` tokens, rebuilding state, KV and logits correctly with no need to persist logits.  Cost is at most about 80 ms.  A pf > 0 guard stops a short request clobbering a long prompt's snapshot with an empty one.  The edit is four lines added and eight removed in crates/qw-server/src/engine.rs; lookup, record_boundary and Reuse::Boundary were already right.  Verified with the same 1025-token prompt sent twice greedily: 15.5 s cold against 0.5 s on the boundary hit, outputs token-for-token identical, and the log shows skipped 1024 of 1025 tokens, 100%, a 30x gain.  Oracle parity 6/6, batch-check 16/16 at 0.0000, accept.sh 12 passed 0 failed ACCEPTED.  This mechanism being correct is the precondition for the disk cache, which did not hold before.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16, worst |logit difference| 0.0000",
+        "G3": "accept.sh 12 passed, 0 failed ACCEPTED",
+        "G4": "boundary hit 15.5 s -> 0.5 s on a 1025-token prompt, outputs identical"
+      },
+      "evidence": {
+        "root_cause": "the snapshot was taken at the prompt end, where the state has consumed the last token but the first-token logits live only in a scratch buffer save_prefix does not copy.",
+        "why_it_looked_disproved": "the engine set pf = pos = ids.len(), the readiness test passed immediately, and the first token was sampled from stale logits.",
+        "fix": "snapshot before the final chunk; on a hit a normal prefill re-walks at most chunk tokens and rebuilds state, KV and logits.",
+        "measured": "1025-token prompt, cold 15.5 s, boundary hit 0.5 s, 1024 of 1025 tokens skipped, outputs identical.",
+        "disk_blob_estimate": "151 MB GDN state + 14 MB conv window + ~393 MB KV for 6000 positions = about 560 MB, or 0.2-0.3 s of SSD I/O."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
