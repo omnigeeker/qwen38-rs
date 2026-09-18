@@ -176,6 +176,47 @@ done
 
 pkill -f "qwen38 serve --port $PORT" 2>/dev/null
 
+# ------------------------------------------------- a hit must not change the answer
+head1 "prefix cache determinism"
+# The gate this whole class of bug needed and did not have.  Measured once, seeding
+# the generation position from the amount a request skipped made a cache hit return
+# an answer that did not even depend on the prompt, and the six-case oracle was
+# blind to it.  A hit is allowed to be faster; it is not allowed to be different.
+CACHE_PROMPT="The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. Reply with one word."
+ask_once() {
+  curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'content-type: application/json' \
+    -d "{\"model\":\"qwen3.8-27b-fp4\",\"temperature\":0,\"max_tokens\":12,\"messages\":[{\"role\":\"user\",\"content\":\"$CACHE_PROMPT\"}]}" \
+    | python3 -c 'import json,sys
+try: print(json.load(sys.stdin)["choices"][0]["message"]["content"])
+except Exception: print("")'
+}
+serve_up() {
+  for _ in $(seq 1 60); do
+    curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+$BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_cache.log" 2>&1 &
+serve_up
+A=$(ask_once); B=$(ask_once); C=$(ask_once)
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_nocache.log" 2>&1 &
+serve_up
+D=$(ask_once)
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null
+if [ -n "$A" ] && [ "$A" = "$B" ] && [ "$B" = "$C" ]; then
+  ok "cache on: three identical requests agree"
+else
+  no "cache on: repeats disagree ($A | $B | $C)"
+fi
+if [ -n "$A" ] && [ "$A" = "$D" ]; then
+  ok "cache hit matches the cold start"
+else
+  no "cache hit differs from the cold start ($A vs $D)"
+fi
+
 # ---------------------------------------------------------------- verdict
 head1 "verdict"
 printf '  %d passed, %d failed\n' "$pass" "$fail"

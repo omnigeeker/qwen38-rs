@@ -2008,3 +2008,81 @@ pos debug: generation row emitted=1 pos=1 feed=271
    `/completion` 端点），确定绝对还是相对位置正确
 2. **把位置语义钉死后**，前缀缓存的两条路径就会喂进相同的位置序列，命中缺陷应当随之消失
 3. **给 oracle 补上位置敏感用例**，否则它继续对这类改动保持沉默
+
+
+---
+
+## 39. 缺陷修复：位置序列不再依赖 `skip`（第 34 轮）
+
+§38 定位到的根因是：生成阶段喂给模型的位置序列从 `skip` 开始，而 `skip` 正是缓存唯一改动的量。
+本轮试了两种修法。
+
+### 判决实验：两种约定都与 llama.cpp 不同，所以它不能当判据
+
+按 §38 的计划，先拿 llama.cpp 的贪心输出做判据（`llama-cli -st --simple-io`，`EXIT=0`）：
+
+| | 6 token 贪心输出 |
+|---|---|
+| llama.cpp（Q4_K_M） | `'[Start thinking]\n\nWe need answer user's prompt'` |
+| 我方，相对位置 | `'\n\nBased on the text provided'` |
+| 我方，绝对位置 | `'\n\nfox.\n\nfox.'` |
+
+**两种约定都对不上 llama.cpp。** 但这个 prompt 是 20 遍重复的 pangram，
+**贪心输出对微小数值差异极度敏感**，所以它作为判据本身不可靠——三次对比没有得到可用的结论。
+
+### 真正的修法：让序列与 `skip` 无关，而不是换约定
+
+推理链：
+
+1. 冷启动路径**输出连贯**（`'Based on the text provided'`）⇒ 相对约定下引擎工作正常
+2. 命中与冷启动的**唯一**差异是 `skip`
+3. **⇒ 正确做法是让位置序列不随 `skip` 移动**，而不是去改约定
+
+改动只有一行：构造 `Active` 时 `pos: skip` → `pos: 0`。
+
+**⇒ 冷启动 `skip == 0`，所以冷路径逐位不变**——oracle 6/6、batch-check 16/16 原样通过。
+
+### 验证：缺陷消失
+
+| 用例 | live-only | boundary |
+|---|---|---|
+| 63 token | 三次一致且与冷启动相同 ✓ | ✓ |
+| 113 token | ✓ | ✓ |
+| 213 token | ✓ | ✓ |
+
+**⇒ 两条路径现在都产生与 `QW_PREFIX_SNAPSHOT=0` 冷路径完全一致的输出，且多次运行彼此一致。**
+修复前，命中会返回一个与 prompt 毫无关系的答案。
+
+### 门禁已固化
+
+`accept.sh` 新增两条：**同一请求连发三次必须一致**、**命中必须与冷启动相同**。
+套件从 12 项变成 **14 passed, 0 failed ACCEPTED**。
+
+这是这类缺陷一直缺的那道门禁——oracle 的 6 个用例对此**完全沉默**
+（§38 记录过：一个把位置从相对改成绝对的改动能改变部分输出而依然 6/6）。
+
+### 默认值：两条路径都开，仅内存、不落盘
+
+用户此前选择"默认打开，只放内存、不落盘"。两条路径都是纯内存的，且都已验证，所以都开：
+
+| 开关 | 默认 | 说明 |
+|---|---|---|
+| `QW_PREFIX_SNAPSHOT` | **on** | Live 命中；`=0` 关闭 |
+| `QW_PREFIX_BOUNDARY` | **on** | 快照保存/恢复；`=0` 关闭；约 0.1 MB/token/slot，超 `PREFIX_BLOB_MAX_MB` 丢弃 |
+| `QW_PREFIX_DISK` | off | 落盘，写用户 home 目录，仍需用户明确同意 |
+
+**为什么 Boundary 也必须开**：`hist` 记录的是「prompt + 生成的 token」，所以**重发同一个 prompt 时
+`hist` 比 prompt 长**，`is_prefix` 的 `h.len() <= ids.len()` 拒绝，**Live 永远不命中**。
+实测：913-token 的 prompt 连发三次，只开 Live 时**三次全是 miss**。
+
+### 实测收益（开箱即用，无任何环境变量）
+
+```
+request 1: 19.86s  (冷, miss)
+request 2:  0.88s  (HIT saved boundary, skipped 912 of 913)
+request 3:  1.03s  (HIT)
+输出三次完全一致
+cold 19.9s -> warm 0.88s  (23x)
+```
+
+**⇒ 913-token prompt：冷 19.9 s → 暖 0.88 s，快 23 倍，且输出与冷启动逐字相同。**

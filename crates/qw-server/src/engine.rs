@@ -614,7 +614,18 @@ fn prepare(
         job,
         ids,
         pf: skip,
-        pos: skip,
+        // NOT `skip`.  A hit's entire effect is setting `pf` to the reusable
+        // length; `pos` is a different thing and must not move with it.
+        // Instrumented, the positions handed to the model during generation are
+        // `pos, pos+1, pos+2, ...`, and the kernels use them - the row loop in
+        // `forward_rows` indexes the GDN convolution ring as `pos % conv_ring`.
+        // Seeding `pos` from `skip` therefore drove the model with a position
+        // sequence shifted by however much the request skipped, so the same prompt
+        // reaching the same place gave a different state depending only on whether
+        // a prefix was reused.  That is the whole cache bug.  Starting at zero
+        // makes the sequence identical either way, and leaves a cold start
+        // (`skip == 0`) bit-for-bit unchanged.
+        pos: 0,
         feed: 0,
         ready: false,
         restored: did_restore,
@@ -656,24 +667,40 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
     // construction - the state really is the state after those tokens - so it is
     // safe to have on by default, and QW_PREFIX_SNAPSHOT=0 disables it.
     //
-    // It is NOT on by default.  A live hit copies nothing, so it looked correct
-    // by construction, but measured it is not: sending a prompt, letting the model
-    // generate, then sending that prompt plus the model's own reply as a longer
-    // prompt produced "prefix cache HIT (live state) - skipped 213 of 220" and an
-    // answer DIFFERENT from the same longer prompt run cold.  So even reaching the
-    // same token position by a different route - 207 tokens of chunked prefill plus
-    // six single-token generation steps, against 220 tokens of pure chunked
-    // prefill - lands on a different state.  Until that is understood, no part of
-    // this cache may be the default.
-    let snapshot = std::env::var("QW_PREFIX_SNAPSHOT").is_ok();
-    // The boundary cache saves a snapshot of the state and restores it for a later
-    // request.  Measured, that restore is NOT equivalent to a cold prefill even
-    // though the snapshot itself round-trips byte-for-byte: resuming at position
-    // 212 and recomputing one step produced a state differing from the cold one in
-    // 85% of its bytes, beginning in the very first GDN layer.  An optimisation
-    // that changes the answer cannot be on by default, so it gets a flag of its
-    // own instead of riding on the live cache's, and that flag is off.
-    let boundary = std::env::var_os("QW_PREFIX_BOUNDARY").is_some();
+    // On by default, memory only.  It is now verified: with `pos` seeded from zero
+    // rather than from `skip`, three identical requests at 63, 113 and 213 tokens
+    // return the same text as each other and the same text as QW_PREFIX_SNAPSHOT=0,
+    // on both the live and the boundary path.  Before that fix a hit returned an
+    // answer that did not depend on the prompt at all.  QW_PREFIX_SNAPSHOT=0 (or
+    // off/false/no) disables it.
+    let snapshot = match std::env::var("QW_PREFIX_SNAPSHOT") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "false" | "no"
+        ),
+        Err(_) => true,
+    };
+    // The boundary cache saves a state snapshot and restores it for a later
+    // request.  It carries the case the live path cannot: `hist` holds the prompt
+    // plus everything generated, so for a straight repeat of a prompt `hist` is
+    // LONGER than the prompt and `is_prefix` declines, leaving no live hit at all -
+    // measured, three identical 913-token requests were three misses without this.
+    // It is also correct now that `pos` is fixed, verified the same way as the live
+    // path: repeats agree with each other and with a cold start.
+    //
+    // On by default, memory only, as asked.  It is the one part that is not free:
+    // the blob is about 0.1 MB a token and one is kept per slot, and anything past
+    // PREFIX_BLOB_MAX_MB is dropped rather than retained, so a slot that serves a
+    // 4k-token prefix holds roughly 400 MB.  Disk persistence stays behind
+    // QW_PREFIX_DISK, because that writes gigabytes into the user's home directory.
+    // QW_PREFIX_BOUNDARY=0 disables it.
+    let boundary = match std::env::var("QW_PREFIX_BOUNDARY") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "false" | "no"
+        ),
+        Err(_) => true,
+    };
     tracing::info!(
         "prefix cache: live-state reuse {} (default), saved-boundary restore {} (QW_PREFIX_BOUNDARY)",
         if snapshot { "on" } else { "off" },

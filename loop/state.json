@@ -2009,6 +2009,28 @@
         "oracle_blind_spot": "a change of this magnitude alters some outputs and still passes 6/6, so the oracle does not constrain position semantics.",
         "next": "get llama.cpp greedy output non-interactively, pin the position semantics, then re-test the cache and add position-sensitive oracle cases."
       }
+    },
+    {
+      "round": 92,
+      "title": "Fixed the prefix cache: the generation position sequence no longer depends on skip.  Round 38 had localised the fault - positions handed to the model during generation begin at skip, and skip is the one thing a cache hit changes - so this round settled the convention question first and then realised it was the wrong question.  To settle it I ran llama-cli with -st and --simple-io, which exited 0, and compared greedy continuations: llama.cpp gives '[Start thinking]\\n\\nWe need answer user's prompt', my relative-position build gives '\\n\\nBased on the text provided', and my absolute-position build gives '\\n\\nfox.\\n\\nfox.'.  Neither matches, but the prompt is twenty repetitions of one pangram, where greedy output is hypersensitive to tiny numerical differences, so it is a poor discriminator and the comparison yielded nothing usable.  The reasoning that did work: the cold path produces coherent text under the relative convention, so the engine works that way; the ONLY difference between a cold run and a hit is skip; therefore the fix is to make the position sequence independent of skip rather than to change the convention.  That is a one-line change, seeding pos with 0 instead of skip when Active is constructed.  Because a cold start has skip == 0, the cold path is bit-for-bit unchanged, and oracle 6/6 and batch-check 16/16 passed as they were.  The bug is gone: at 63, 113 and 213 tokens, on both the live-only and the boundary path, three repeats agree with each other and with QW_PREFIX_SNAPSHOT=0, where before a hit returned an answer with no relation to the prompt.  I folded the missing gate into accept.sh - three identical requests must agree, and a hit must equal a cold start - taking the suite from 12 to 14 passed and 0 failed, ACCEPTED.  That gate is exactly what this class of bug needed, since the six-case oracle is entirely silent about it, as round 38 recorded when an absolute-position change altered some outputs and still passed 6/6.  Both cache paths are now on by default, memory only and no disk, as the user asked: QW_PREFIX_SNAPSHOT and QW_PREFIX_BOUNDARY default on and can be disabled with 0, while QW_PREFIX_DISK stays off because it writes gigabytes into the home directory.  The boundary path has to be on because hist holds the prompt plus everything generated, so on a straight repeat hist is LONGER than the prompt, is_prefix declines on its h.len() <= ids.len() check, and no live hit is possible; measured, three identical 913-token requests were three misses with only the live path enabled.  Measured benefit out of the box with no environment variables: a 913-token prompt took 19.86 s cold and then 0.88 s and 1.03 s, all three outputs identical, 23 times faster, and hit 912 of 913 prompt tokens.  The objective still stands on otps won by 15.5 per cent, warm TTFT now won with a verified-correct path, and cold TTFT still about nine times behind.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "accept.sh 14 passed, 0 failed ACCEPTED - includes the new determinism gate",
+        "G4": "cache hits verified identical to cold at 63/113/213 tokens on both paths"
+      },
+      "evidence": {
+        "wrong_question": "llama.cpp '[Start thinking]...' vs relative '\\n\\nBased on...' vs absolute '\\n\\nfox.\\n\\nfox.' - a repetitive prompt makes greedy output a poor discriminator.",
+        "fix": "seed pos with 0 instead of skip in the Active constructor; the position sequence no longer moves with the cache.",
+        "cold_unchanged": "skip == 0 for a cold start, so oracle 6/6 and batch-check 16/16 passed unmodified.",
+        "verified": "63/113/213 tokens, live-only and boundary: three repeats agree and equal QW_PREFIX_SNAPSHOT=0.",
+        "new_gate": "accept.sh: three identical requests must agree, and a hit must equal a cold start; suite now 14 passed 0 failed.",
+        "defaults": "QW_PREFIX_SNAPSHOT and QW_PREFIX_BOUNDARY on by default, memory only; QW_PREFIX_DISK still off.",
+        "why_boundary_needed": "hist is prompt+generated, so on a repeat hist is longer than the prompt and no live hit is possible; measured three misses.",
+        "measured": "913-token prompt: 19.86 s cold, then 0.88 s and 1.03 s, outputs identical, 23x, skipped 912 of 913."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
