@@ -2287,6 +2287,30 @@
         "why_double_buffer_failed": "the 32 KB shared-memory budget cannot hold two buffers without halving occupancy.",
         "next": "dequantise only the elements each thread's own fragment needs to remove the weight staging and its barriers, or trade a smaller BK for double buffering at unchanged occupancy."
       }
+    },
+    {
+      "round": 105,
+      "title": "Found and fixed the real bug behind the GEMM's terrible bandwidth - every uint was loaded once per nibble, eight times over - which bought a genuine 30 per cent, and rejected two further attempts with the measurements recorded.  Last round I blamed bytes in flight; recomputing showed that was wrong, since the sixteen staging iterations are independent loads the compiler can issue in parallel, giving about 8 KB in flight per threadgroup and 640 KB across eighty, far above the 238 KB needed.  Reading the loop instead of theorising about it found the actual defect: the loop is indexed per nibble but loads the whole uint that contains eight of them, so every uint was fetched eight times and the useful bandwidth was an eighth of what the memory system was asked for.  Restructuring so each thread loads one uint and expands all eight nibbles took k=32 from 13.3-14.1 ms a token at 33.6 GB/s to 8.7-10.6 at 42-52, a real 30 per cent rather than the theoretical eightfold, because eight lanes of a warp reading the same uint get merged by the coalescer.  Re-attributing after the fix changed the picture: skipping the activation staging now saves 52 per cent, skipping the MACs 37, skipping the dequantisation only 12 - so the activation staging is the largest single item.  I then made two attempts and both were rejected by measurement.  Coalescing the activation read looked obviously right, since consecutive threads were K*2 bytes apart and each two-byte load should have been its own transaction; swapping the indices made the kernel 40 per cent SLOWER at 12.3-13.5 against 8.7-10.6, because the activation tile is only a few KB and every row block re-reads it, so it is L2 resident and the uncoalesced pattern costs nearly nothing, while the coalesced form makes the shared writes conflict.  I reverted it and wrote the reasoning into the comment so it is not retried.  BM=64 halves the activation traffic, which is out_f times k times K over BM, but it grows shared memory to 22.5 KB and loses more to occupancy than it gains, 13.0-17.6 against 8.7-10.6.  The state now is that the GEMM is at parity with the GEMV per token - 9.1-10.6 at k=32 against 10.0-10.4 at k=4 - and its per-token cost barely improves with k, which means it is not bandwidth bound but has staging and MACs serialised by the barriers, with the activation shared-memory round trip as the largest term.  That round trip is inherent to simdgroup_matrix, which requires its operands in memory.  Parity is not enough to replace a working kernel, so it stays unshipped; the one remaining path is to have each thread construct its own fragment elements directly and bypass shared memory entirely.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "8x redundant weight loading found and fixed: 13.3-14.1 -> 8.7-10.6 ms/token at k=32",
+        "G2": "correctness re-verified after the fix: gemm-check passes at worst relative error 3.347e-4",
+        "G3": "x coalescing rejected by measurement: 40 per cent slower, reason recorded in the kernel comment",
+        "G4": "BM=64 rejected again: 13.0-17.6 against 8.7-10.6 from lost occupancy"
+      },
+      "evidence": {
+        "wrong_theory": "bytes in flight was not the issue - sixteen independent loads per thread give ~8 KB per threadgroup and 640 KB across eighty, against the ~238 KB needed.",
+        "real_bug": "the staging loop was indexed per nibble but loaded the whole uint holding eight of them, so each uint was fetched eight times.",
+        "fix": "one uint per thread, expanded to eight nibbles: k=32 went from 13.3-14.1 ms/token at 33.6 GB/s to 8.7-10.6 at 42-52.",
+        "re_attribution": "at k=32, skipping activation staging saves 52 per cent, skipping MACs 37, skipping dequantisation 12.",
+        "x_coalescing_rejected": "swapping the indices made it 40 per cent slower, 12.3-13.5 against 8.7-10.6; the activation tile is L2 resident so the uncoalesced read is cheap, while the coalesced form makes shared writes conflict.",
+        "bm64_rejected": "shared grows to 22.5 KB and occupancy loss outweighs halved activation traffic, 13.0-17.6 against 8.7-10.6.",
+        "parity": "GEMM k=32 9.1-10.6 ms/token against GEMV k=4 10.0-10.4; the GEMM's per-token cost barely improves with k.",
+        "why_not_bandwidth": "staging and MACs are serialised by barriers, with the activation shared-memory round trip the largest term - inherent to simdgroup_matrix needing operands in memory.",
+        "not_shipped": "parity is not enough to replace a working kernel.",
+        "remaining_path": "have each thread construct its own fragment elements directly, bypassing shared memory."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

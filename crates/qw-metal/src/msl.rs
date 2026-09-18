@@ -693,6 +693,7 @@ Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
 // rows a simdgroup_load touches starts on the same bank and the load serialises
 // eight ways; 72 halfs is 144 bytes, 36 words, and 36 mod 32 is 4, so the eight
 // rows land on banks 0, 4, 8, ... 28.  Same idea for the activation tile.
+#define Q4_GEMM_NT  128
 #define Q4_GEMM_WLD (Q4_GEMM_BK + 8)
 #define Q4_GEMM_XLD (Q4_GEMM_BN + 8)
 
@@ -727,28 +728,46 @@ kernel void q4_gemm_tile(
     simdgroup_matrix<float, 8, 8> a11 = simdgroup_matrix<float, 8, 8>(0.0f);
 
     for (int k0 = 0; k0 < K; k0 += Q4_GEMM_BK) {
-        for (int idx = (int)tid; idx < Q4_GEMM_BM * Q4_GEMM_BK; idx += 128) {
-            const int r  = idx / Q4_GEMM_BK;
-            const int kk = idx - r * Q4_GEMM_BK;
-            const int g   = k0 + kk;
+        // One uint per thread, expanded to its eight nibbles.  The obvious loop - one
+        // iteration per (row, K) element - loads the whole uint for every nibble in it,
+        // so each uint is fetched eight times and the useful bandwidth lands at an
+        // eighth of what the memory system is actually asked for.  That was the whole
+        // reason the GEMM ran at 33.6 GB/s against the GEMV's 417.
+        const int nwords = Q4_GEMM_BK / 8;
+        for (int idx = (int)tid; idx < Q4_GEMM_BM * nwords; idx += Q4_GEMM_NT) {
+            const int r  = idx / nwords;
+            const int wd = idx - r * nwords;
             const int row = row0 + r;
-            half v = (half)0;
-            if (row < out_f && g < K) {
-                const uint word = w[(size_t)row * (size_t)(K / 8) + (size_t)(g >> 3)];
-                const int  nib  = (int)((word >> (4 * (g & 7))) & 0xFu);
-                const float s  = as_type<float>((uint)scales[(size_t)row * (size_t)n_groups + (size_t)(g / GROUP_SIZE)] << 16);
-                const float bb = as_type<float>((uint)biases[(size_t)row * (size_t)n_groups + (size_t)(g / GROUP_SIZE)] << 16);
-                v = (half)((float)nib * s + bb);
+            const int g0  = k0 + wd * 8;
+            half v[8];
+            if (row < out_f && g0 < K) {
+                const uint word = w[(size_t)row * (size_t)(K / 8) + (size_t)(g0 >> 3)];
+                const float s  = as_type<float>((uint)scales[(size_t)row * (size_t)n_groups + (size_t)(g0 / GROUP_SIZE)] << 16);
+                const float bb = as_type<float>((uint)biases[(size_t)row * (size_t)n_groups + (size_t)(g0 / GROUP_SIZE)] << 16);
+                _Pragma("unroll") for (int i = 0; i < 8; ++i) {
+                    v[i] = (half)((float)((word >> (4 * i)) & 0xFu) * s + bb);
+                }
+            } else {
+                _Pragma("unroll") for (int i = 0; i < 8; ++i) v[i] = (half)0;
             }
             // mode 1 replaces the dequantised value with a constant so the timing
             // separates the dequantisation from the staging and the MACs.
-            wsh[r * Q4_GEMM_WLD + kk] = (mode == 1) ? (half)0.01 : v;
+            _Pragma("unroll") for (int i = 0; i < 8; ++i) {
+                wsh[r * Q4_GEMM_WLD + wd * 8 + i] = (mode == 1) ? (half)0.01 : v[i];
+            }
         }
         // mode 3 skips the activation staging, which is the read that repeats once
         // per BM-row block of the output - with large out_f that traffic is several
         // times the weight traffic, so the timing says whether it is the bottleneck.
         if (mode != 3) {
-            for (int idx = (int)tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += 128) {
+            // Consecutive threads take consecutive TOKENS.  This looks badly
+            // uncoalesced - neighbouring lanes are K*2 bytes apart - and I "fixed" it
+            // once by swapping the two indices, which made the kernel 40 per cent
+            // SLOWER.  The activation tile is only a few KB and every row-block of the
+            // output re-reads it, so it is L2 resident and the uncoalesced pattern
+            // costs almost nothing, while the coalesced form makes the shared-memory
+            // writes conflict instead.  Left as measured, not as it looks.
+            for (int idx = (int)tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += Q4_GEMM_NT) {
                 const int kk  = idx / Q4_GEMM_BN;
                 const int t   = idx - kk * Q4_GEMM_BN;
                 const int g   = k0 + kk;
@@ -778,7 +797,7 @@ kernel void q4_gemm_tile(
     simdgroup_store(a10, osh + (r_off + 8) * Q4_GEMM_BN + t_off,     Q4_GEMM_BN);
     simdgroup_store(a11, osh + (r_off + 8) * Q4_GEMM_BN + t_off + 8, Q4_GEMM_BN);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (int idx = (int)tid; idx < Q4_GEMM_BM * Q4_GEMM_BN; idx += 128) {
+    for (int idx = (int)tid; idx < Q4_GEMM_BM * Q4_GEMM_BN; idx += Q4_GEMM_NT) {
         const int r   = idx / Q4_GEMM_BN;
         const int t   = idx - r * Q4_GEMM_BN;
         const int row = row0 + r;
