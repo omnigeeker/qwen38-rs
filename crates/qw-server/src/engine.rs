@@ -849,6 +849,15 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 continue;
             }
             if a.ready && a.emitted < a.max_tokens && !tok.is_eos(a.feed) {
+                if a.emitted == 0 && std::env::var_os("QW_POS_DEBUG").is_some() {
+                    eprintln!(
+                        "pos debug: slot {slot} START GENERATION pf={} pos={} skip_was={}",
+                        a.pf, a.pos, a.restored
+                    );
+                }
+                if std::env::var_os("QW_POS_DEBUG").is_some() && a.emitted < 3 {
+                    eprintln!("pos debug: slot {slot} generation row emitted={} pos={} feed={}", a.emitted, a.pos, a.feed);
+                }
                 rows.push((slot, a.pos));
                 toks.push(a.feed);
                 row_slot.push(slot);
@@ -904,6 +913,16 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                         a.ids.len()
                     );
                 }
+                // NOTE: `a.pos` is deliberately NOT set here.  Instrumented, a
+                // 213-token prompt with no reuse reaches generation with pf=213 but
+                // pos=0, so the positions handed to the model are 0,1,2,...  Setting
+                // it to `a.ids.len()` changes the model's output for some prompts
+                // while still passing the oracle 6/6, so the oracle cannot tell the
+                // two conventions apart and neither may be adopted on guesswork.
+                // What IS proven is the inconsistency that matters for the cache:
+                // the sequence begins at `skip`, so a request that skipped n tokens
+                // drives the model with positions shifted by n against a cold run of
+                // the same prompt.  QW_POS_DEBUG=1 prints the sequence.
                 a.ready = true;
             }
             if a.ready {

@@ -1989,6 +1989,26 @@
         "hypothesis": "if the real position comes from a model-internal cursor, changing skip moves engine bookkeeping without moving the cursor, explaining both divergences.",
         "action": "reverted the default-on; QW_PREFIX_SNAPSHOT and QW_PREFIX_BOUNDARY are both opt-in and off."
       }
+    },
+    {
+      "round": 91,
+      "title": "Found the root cause: generation positions begin at skip, not at the prompt length.  The contradiction left open last round was that a.pos is never set to the prompt length while forward_rows really does feed pos to the kernels, indexing the GDN convolution ring as pos % conv_ring.  I settled it with instrumentation rather than more reading, adding QW_POS_DEBUG=1, and it confirmed the anomaly: a 213-token prompt with no reuse reaches generation with pf=213 but pos=0, so the positions handed to the model are 0,1,2.  That is the root cause of both hit paths failing, because setting skip is the whole job of a hit and skip is exactly where that sequence starts.  A cold run drives positions 0,1,2 while a hit that skipped n drives n,n+1,n+2 - the same prompt reaching the same position, shifted by n purely because one of them reused a prefix.  That fits perfectly with the snapshot machinery already being exonerated: no copy needs to go wrong, a different position sequence is enough.  I tried the obvious fix, setting a.pos to the prompt length when prefill completes, and reverted it.  It made pos absolute, the oracle still passed 6/6, but the output CHANGED for some prompts, from one string to another.  So pos does affect the result and the oracle cannot tell the two conventions apart.  I meant to use llama.cpp's greedy output as the arbiter by running the same raw prompt through llama-cli, my absolute-position build and my relative-position build, but the llama-cli invocation timed out after 600 seconds - it had dropped into interactive mode - so no evidence was obtained.  Under the standing rule that a behaviour-changing optimisation may not be kept unverified, I reverted it; all that remains is the QW_POS_DEBUG print, which costs nothing when the variable is unset.  A second, incidental finding is that the oracle has a blind spot: a change that turns relative generation positions into absolute ones alters the output of some prompts and still passes 6/6, so its cases do not constrain position semantics at all.  Until the semantics are pinned down the prefix cache cannot be made reliable, and knowing when it is fixed needs a discriminator that can separate the two conventions - most directly a token-by-token comparison against llama.cpp's greedy output, which ought to be part of this baseline anyway.  Next: obtain that llama.cpp greedy output with a correct non-interactive invocation, or via llama-bench or the server's completion endpoint; then pin the position semantics; then the two cache paths will feed identical position sequences and the hit defect should disappear; and add position-sensitive cases to the oracle, which is otherwise silent about this whole class of change.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "unverified absolute-position change reverted; QW_POS_DEBUG instrumentation kept",
+        "G4": "root cause of both cache-path failures identified: generation positions start at skip"
+      },
+      "evidence": {
+        "instrumented": "QW_POS_DEBUG=1 shows 'START GENERATION pf=213 pos=0' then rows at pos=0,1,2 for a 213-token prompt with no reuse.",
+        "root_cause": "a hit's entire effect is setting skip, and skip is the start of the position sequence, so a hit that skipped n drives the model with positions shifted by n against a cold run.",
+        "fix_tried_and_reverted": "a.pos = a.ids.len() made positions absolute and kept oracle 6/6 but changed output for some prompts.",
+        "no_evidence": "the llama-cli comparison timed out after 600 s because it entered interactive mode, so which convention is correct is still unknown.",
+        "oracle_blind_spot": "a change of this magnitude alters some outputs and still passes 6/6, so the oracle does not constrain position semantics.",
+        "next": "get llama.cpp greedy output non-interactively, pin the position semantics, then re-test the cache and add position-sensitive oracle cases."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
