@@ -1366,3 +1366,84 @@ accept.sh **12 passed / 0 failed ACCEPTED**（连续两次）。
 llama.cpp 的 pp 随长度衰减很明显：pp64 302、pp128 526、**pp512 721**、pp2048 561、pp4096 354。
 **冷 prefill 我们仍落后约 10 倍**——这正是 §27 说的"批量太小、权重每 4 个 token 读一遍"的后果，
 必须靠大 batch 的真 GEMM 才能解决。**TTFT 这一项只有在命中前缀缓存时才算赢。**
+
+
+---
+
+## 29. 大 chunk 是死路：两次测量，两个否定（第 24 轮）
+
+目标剩余项只有**冷 prefill**（落后约 10 倍）。根因已知：权重每 4 个 token 读一遍。
+本轮去查"为什么是 4，能不能更大"，答案是——**能，但更大更慢。**
+
+### 为什么 chunk 卡在 4：两道上锁
+
+**锁一（服务端）**：`engine.rs` 里
+
+```rust
+.min(PREFILL_CHUNK)      // PREFILL_CHUNK = 4
+```
+
+**这个环境变量只能调小、永远不能调大**——`QW_PREFILL_CHUNK=16` 被静默压回 4，
+日志照样打印 "prefill chunk: 4 token(s) per pass"。
+
+**锁二（模型侧）**：`forward_rows` 的每序列上限是推导出来的
+
+```rust
+let max_per_seq = (conv_k + TILE).next_power_of_two() - conv_k;   // (4+4)->8, 8-4 = 4
+```
+
+卷积环按 `TILE` 定尺寸，于是单序列每趟最多 4 行；16 行会直接报错
+`"a pass may carry at most 4 rows of one sequence, 16 were given"`。
+
+**注意 `TILE` 不能动**：它是 MTP 投机解码的验证宽度（`TILE - 1` 个 draft 在一次
+`TILE` 宽的前向里验证）。所以正确做法是让**环按 `BATCH_MAX` 定尺寸**，`TILE` 保持 4。
+改动落在 5 处（3 处 `cfg.linear_conv_kernel_dim + TILE`、1 处 `conv_k + TILE`、1 处
+`max_per_seq`）。所有 scratch 本来就已经按 `BATCH_MAX` 分配（`let tile = BATCH_MAX;`），
+所以只有环需要放大。
+
+### 测量一：16 行是**正确的**
+
+同一个 2016-token prompt，交错配对 chunk=4 / 16 / 4 / 16：
+
+| chunk | wall | prefill |
+|---|---|---|
+| 4 | 30.3 s | 67.2 tok/s |
+| 16 | 49.8 s | 40.8 tok/s |
+| 4 | 36.4 s | 55.9 tok/s |
+| 16 | 60.8 s | 33.3 tok/s |
+
+中位：**chunk=4 是 36.4 s，chunk=16 是 60.8 s——16 慢 1.67 倍。**
+`outputs identical across all 4 runs: True` ✓ **数值是对的，只是更慢。**
+
+**⇒ 假设被推翻**：`encode_b` 不是"摊薄权重读取"的内核，它是"扩大网格换并行度"的内核
+（grid = `b * out_f * 32`），权重行靠 L2 复用，而不是一次读取喂多行。
+
+### 测量二：另一端也早被否决
+
+想给 tile 宏再实例化一个 K=16 版本（宏本来就按 K 参数化），结果 `msl.rs` 自己的注释
+写着 round 055 已经测过：
+
+> 让每个线程为每个 activation 持有一个累加器（`q4_gemv_k16_u4hx`）：
+> **x 载入从 1 涨到 16，内核不再是带宽受限（22.7 GB/s 对 466）**，
+> 整个 batch 比串行**还慢 22%**。
+
+**机制清楚了**：K 一大，瓶颈就从"读权重"变成"读 activation"。要让大 K 有效，
+必须把 activation 放进 **threadgroup 内存复用**——而那正是 llama.cpp 的 GEMM 做法。
+
+### 结论与处置
+
+**prefill 的差距在 GEMV 框架内无法弥合**：chunk=1→4 有 3.6–6.8 倍收益（tile 内核
+寄存器分块真的摊薄了权重），但 4→16 两头都堵死（一个更慢 1.67 倍，一个更慢 22%）。
+
+**改动已完整回退**（`runner.rs`、`engine.rs` 均从备份还原）。理由：它只换来 +680 MB
+常驻内存（`window` 环 8→32 行）和一个更慢的路径，**没有任何可交付的收益**。
+回退后 oracle **6/6**、batch-check **16/16**。
+
+**下一步只有一件事**：为批量 token 实现真正的 **simdgroup GEMM**——权重 tile 反量化进
+threadgroup 内存，activation tile 也进 threadgroup 内存，用 `simdgroup_multiply_accumulate`
+（设备已报告 `has tensor = true`）。这是 llama.cpp pp512 跑到 721 tok/s 的原因，
+也是唯一能赢回冷 TTFT 的路径。
+
+> 附带修正：本轮在机器未受热负载影响时测得 chunk=4 冷 prefill 2016 token 为
+> **30–36 s（56–67 tok/s）**。§28 记录的同一 prompt 46.7 s 是在 llama-bench 之后测的，
+> **属于热降频**，不是稳态值。

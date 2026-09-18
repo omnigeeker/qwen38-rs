@@ -1806,6 +1806,28 @@
         "otps_win": "28.4 tok/s median against llama.cpp tg256 24.58, +15.5%.",
         "ttft_split": "cold 195 s vs their 19.5 s (lose 10x); prefix-cache hit 0.2 s (win)."
       }
+    },
+    {
+      "round": 82,
+      "title": "Chased the remaining gap, cold prefill, and came back with two clean negatives.  Chunking was pinned at four by two separate locks.  In engine.rs the env var was clamped with .min(PREFILL_CHUNK), so QW_PREFILL_CHUNK could only ever lower the chunk and asking for 16 was silently reduced to 4 while the log still said four.  In forward_rows the per-sequence ceiling was derived, max_per_seq being the next power of two above conv_k plus TILE minus conv_k, which is four, so a sixteen-row single-sequence pass raised 'a pass may carry at most 4 rows of one sequence'.  TILE itself cannot move because it is the MTP speculative verify width, three drafts checked in one four-wide pass, so the right move was to size the convolution ring from BATCH_MAX and leave TILE at four; that is five sites, and all the scratch buffers were already allocated with tile = BATCH_MAX so only the ring needed enlarging.  Measurement one: a sixteen-row pass is CORRECT, since an interleaved paired 4/16/4/16 run over a 2016-token prompt produced identical output every time - but it is 1.67 times SLOWER, median 60.8 s against 36.4 s, because encode_b grows the grid to b times out_f times 32 and relies on L2 to reuse the weight row rather than reading it once and feeding many rows.  Measurement two: the other end was already closed, because msl.rs records that round 055 tried giving each thread one accumulator per activation, q4_gemv_k16_u4hx, and found the x loads going from one to sixteen per weight chunk, the kernel stopping being bandwidth-bound at 22.7 against 466 GB/s, and the whole batch coming out 22 per cent slower than serial.  The mechanism is that once K is large the bottleneck moves from reading weights to reading activations, and the only fix is to hold the activations in threadgroup memory, which is what llama.cpp's GEMM does.  Reverted the whole change: it bought 680 MB of resident memory for the larger window ring and a slower path, so there was nothing to deliver.  Oracle 6/6 and batch-check 16/16 after the revert.  The single remaining target is a real simdgroup GEMM for batched tokens, dequantising weight tiles into threadgroup memory and using simdgroup_multiply_accumulate - the device reports tensor support - which is the only way to win back cold TTFT.  Also corrected: chunk=4 cold prefill of 2016 tokens is 30-36 s, 56-67 tokens per second, when the machine is not heat-soaked; the 46.7 s in section 28 was measured immediately after llama-bench and was thermal throttling, not the steady state.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "no change shipped (experiment reverted)",
+        "G4": "chunk=16 measured 1.67x SLOWER; reverted"
+      },
+      "evidence": {
+        "lock_one": "engine.rs clamped QW_PREFILL_CHUNK with .min(PREFILL_CHUNK), so the variable could only lower the chunk.",
+        "lock_two": "max_per_seq = (conv_k + TILE).next_power_of_two() - conv_k = 4; TILE is the MTP verify width and cannot move.",
+        "correctness": "16-row single-sequence passes are numerically correct: identical output across a paired 4/16/4/16 run.",
+        "but_slower": "median 60.8 s at chunk 16 against 36.4 s at chunk 4, 1.67x slower; encode_b grows the grid instead of amortising.",
+        "already_refuted": "msl.rs records round 055 measuring q4_gemv_k16_u4hx at 22% slower than serial, 22.7 vs 466 GB/s.",
+        "action": "fully reverted; oracle 6/6 and batch-check 16/16 after revert.",
+        "remaining": "a real simdgroup GEMM with threadgroup-memory activation tiling is the only path to cold-prefill parity.",
+        "thermal_correction": "chunk=4 cold prefill of 2016 tokens is 30-36 s steady state; the 46.7 s in section 28 was heat-soaked."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
