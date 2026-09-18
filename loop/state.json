@@ -2266,6 +2266,27 @@
         "conclusion": "bottleneck is memory-level parallelism at this tile size; the direction is higher occupancy via a smaller tile, not more buffering.",
         "tool": "QW_GEMM_MODE=0/1/2 kept in the bench for future attribution."
       }
+    },
+    {
+      "round": 104,
+      "title": "Refuted the activation-traffic hypothesis and showed BM=64 is both wrong and slower, but sharpened the case for the GEMM: it is doing one weight sweep where the GEMV needs eight, so fixing its bandwidth would be an eight-fold win on that portion.  I had calculated that because a tile covers only 32 output rows the activation tile is re-read once per row block, making activation traffic about 57 GB against the weights' 14.4 GB.  A new mode 3 that skips the activation staging saved only 15 per cent, and since mode 1 came out slower than mode 0 the noise is about 10 per cent, so that saving is not significant - the activation re-reads are hitting L2, which is plausible since one linear's activation tile is only 320 KB.  Not the bottleneck.  I then tried BM=64 with 256 threads, eight simdgroups covering 64 by 32.  It failed correctness with relative error 1.0 because my stride replacement missed the first staging loop, so half the weight rows were never staged, and even so it was much slower at 24.4 against 14.1 ms a token, so a larger tile at this shared budget only makes things worse.  Reverted, and gemm-check passes again at 3.347e-4 with 14.003 ms a token.  The useful part is the framing.  For 32 tokens the GEMV at k=4 needs eight sweeps at 34.5 ms each, 276 ms, while the GEMM needs one sweep taking 429 ms - the GEMM replaces eight sweeps with one but its single sweep is twelve times slower per byte.  If the GEMM's sweep ran at the 417 GB/s the GEMV reaches, those 32 tokens would take 34.5 ms, eight times faster than the GEMV.  The prize is real and large, and the obstacle is precisely located: each threadgroup has only about 1 KB of loads in flight per K-step, so 80 concurrent threadgroups give roughly 80 KB when saturating 477 GB/s needs about 238 KB.  Double buffering would fix the bytes in flight but the 32 KB shared-memory budget will not let it keep its occupancy.  The candidates are to have each thread dequantise only the elements its own fragment needs, which removes the weight staging and its barriers altogether at the cost of depending on the simdgroup_matrix fragment layout, or to trade a smaller BK for double buffering at unchanged occupancy.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "activation-traffic hypothesis refuted: skipping the activation staging saves only 15 per cent against ~10 per cent noise",
+        "G2": "BM=64 with 256 threads rejected: incorrect from a missed staging stride and slower at 24.4 against 14.1 ms/token",
+        "G3": "reverted and re-verified: gemm-check passes at worst relative error 3.347e-4",
+        "G4": "GEMM prize quantified: one sweep against the GEMV's eight, so an eight-fold win if the bandwidth gap is closed"
+      },
+      "evidence": {
+        "activation_refuted": "mode 0 20.068, mode 3 skip activation staging 16.981, mode 1 skip dequant 22.531 - mode 1 slower than mode 0 means ~10 per cent noise, so 15 per cent is not significant; the activation re-reads hit L2.",
+        "bm64": "relative error 1.0 from a missed staging stride, and 24.4 against 14.1 ms/token - a larger tile at this shared budget is worse.",
+        "reverted": "gemm-check passes at 3.347e-4, 14.003 ms/token.",
+        "the_prize": "for 32 tokens the GEMV needs 8 sweeps x 34.5 ms = 276 ms; the GEMM needs 1 sweep of 429 ms.  At 417 GB/s that sweep would take 34.5 ms, eight times faster than the GEMV.",
+        "the_obstacle": "~1 KB of loads in flight per threadgroup per K-step, ~80 KB across 80 threadgroups, against the ~238 KB needed to saturate 477 GB/s.",
+        "why_double_buffer_failed": "the 32 KB shared-memory budget cannot hold two buffers without halving occupancy.",
+        "next": "dequantise only the elements each thread's own fragment needs to remove the weight staging and its barriers, or trade a smaller BK for double buffering at unchanged occupancy."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

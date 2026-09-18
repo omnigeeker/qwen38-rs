@@ -744,12 +744,17 @@ kernel void q4_gemm_tile(
             // separates the dequantisation from the staging and the MACs.
             wsh[r * Q4_GEMM_WLD + kk] = (mode == 1) ? (half)0.01 : v;
         }
-        for (int idx = (int)tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += 128) {
-            const int kk  = idx / Q4_GEMM_BN;
-            const int t   = idx - kk * Q4_GEMM_BN;
-            const int g   = k0 + kk;
-            const int tok = tok0 + t;
-            xsh[kk * Q4_GEMM_XLD + t] = (g < K && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
+        // mode 3 skips the activation staging, which is the read that repeats once
+        // per BM-row block of the output - with large out_f that traffic is several
+        // times the weight traffic, so the timing says whether it is the bottleneck.
+        if (mode != 3) {
+            for (int idx = (int)tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += 128) {
+                const int kk  = idx / Q4_GEMM_BN;
+                const int t   = idx - kk * Q4_GEMM_BN;
+                const int g   = k0 + kk;
+                const int tok = tok0 + t;
+                xsh[kk * Q4_GEMM_XLD + t] = (g < K && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
