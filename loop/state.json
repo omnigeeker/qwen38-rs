@@ -1889,6 +1889,25 @@
         "action": "reverted to opt-in; oracle 6/6, batch-check 16/16, three identical cold runs.",
         "priority": "fix the boundary bug with a determinism check in accept.sh, then default the memory cache, then cut the 689 dispatches."
       }
+    },
+    {
+      "round": 86,
+      "title": "Nailed down the prefix-cache bug: a boundary hit returns a prompt-independent answer.  A length sweep at about 63, 113, 213, 313 and 413 tokens shows every length failing, so this is not a length-specific edge case as section 32 supposed, and the most informative detail is that the second run's output is IDENTICAL across four different prompts - '<think>\\nThe user wants me to reply' every time at reps 10, 20, 30 and 40.  So the hit path's answer does not depend on the prompt at all: it passes the cache check, it is fast (8.2 s down to 0.3 s) and its state is wrong.  I then ruled out the bookkeeping line by line.  is_prefix is correct, since h.len() <= ids.len() && ids[..h.len()] == h[..] cannot return more than the prompt length.  The lookup priority is correct: Live is tried first, and because hist holds the previous request's generated tokens its length exceeds ids, so is_prefix returns None and it falls through to Boundary.  The skip, pf and pos accounting is correct, the log showing each length starting with a miss and then a saved-boundary hit skipping len-1.  The boundary position is correct, because at chunk 4 a 63-token prompt has passes 0,4,...,60,63 and the k=0 condition rem>0 && rem_after<=0 fires at pf=60.  And copy_seq's src and dst selection and byte offsets are correct.  What remains is scope: copy_seq restores only the GDN recurrent state and the convolution window, and copies no KV at all, justified by a comment saying the KV is deliberately left alone since it is keyed by position and written once.  That argument assumes the KV's contents at 0..n still equal the current prompt's first n tokens; on repeated IDENTICAL prompts on one slot that assumption holds, which is exactly the case that fails here, so either the argument misses a quantity that must be saved explicitly or the state and window snapshot is itself incomplete, for instance a stride that does not cover all the rows a layer actually uses.  The memory-only boundary cache is therefore unusable until the root cause is found - its speed is bought with wrong answers - so the default-on the user approved cannot land and QW_PREFIX_SNAPSHOT stays opt-in.  The gate this needs is cheap and decisive and belongs in accept.sh: send the same request N times on one slot at temperature 0 and require identical output, matching QW_PREFIX_SNAPSHOT=0.  That is the test gap this round exposed - the section 22 verification checked one length and compared two runs, whereas the cross-length check that would have caught this takes thirty seconds.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "QW_PREFIX_SNAPSHOT remains opt-in; bug reproduced at 5 lengths x 2 runs",
+        "G4": "boundary hit is prompt-independent; cache unusable until fixed"
+      },
+      "evidence": {
+        "failures": "every length fails; second run's output identical across 4 different prompts.",
+        "ruled_out": "is_prefix, lookup priority, skip/pf/pos accounting, boundary position, copy_seq src/dst and offsets all verified correct by reading.",
+        "remaining": "copy_seq copies only GDN state and window, never KV; its justification assumes the KV still matches the prompt, which holds in exactly the case that fails.",
+        "verdict": "memory boundary cache unusable until root-caused; QW_PREFIX_SNAPSHOT stays opt-in.",
+        "gate_to_add": "same request N times on one slot at temperature 0 must give identical output and match QW_PREFIX_SNAPSHOT=0."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

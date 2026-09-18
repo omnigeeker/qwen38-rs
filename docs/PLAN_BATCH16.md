@@ -1652,3 +1652,61 @@ token 而首个生成 token 的 logits 没被复制。当时的修法是"在最�
    这是个便宜的判决性测试，应当进 accept.sh 常态化。
 2. 修好之后再把内存版设为默认（用户已批准）。
 3. 然后才是砍那 689 个 dispatch（§31）。
+
+
+---
+
+## 33. 确证：边界命中返回的是与 prompt 无关的答案（第 28 轮）
+
+§32 说"613 token 时命中会给出不同输出"。本轮做了长度扫描（reps 5/10/20/30/40，即约
+63/113/213/313/413 token），**每个长度都失败**——所以这不是某个长度特有的边界情形。
+
+**最有信息量的一点：第二次运行的输出在所有四个不同 prompt 上完全相同。**
+
+```
+reps=  5: False   '<think>\n\n</think>\n\ndone'      | '<think>\n\n</think>\n\ndone.'
+reps= 10: False   "<think>\nThe user hasn't actually a" | '<think>\nThe user wants me to reply'
+reps= 20: False   '<think>\n\n</think>\n\nOkay.'     | '<think>\nThe user wants me to reply'
+reps= 30: False   '<think>\nThe user is asking me to r' | '<think>\nThe user wants me to reply'
+reps= 40: False   '<think>\n\n</think>\n\nOkay.'     | '<think>\nThe user wants me to reply'
+```
+
+**⇒ 命中路径给出的答案不依赖 prompt。** 它能通过缓存检查、跑得飞快（8.2 s → 0.3 s），
+但恢复出来的状态不是那个 prompt 的状态。
+
+### 已逐行排除的部分
+
+| 部件 | 结论 |
+|---|---|
+| `is_prefix` | **正确**。`h.len() <= ids.len() && ids[..h.len()] == h[..]` 保证返回值不超过 prompt 长度 |
+| `lookup` 优先级 | 正确。`Live` 优先，历史含生成 token 故 `hist.len() > ids.len()`，`is_prefix` 返回 None，落到 `Boundary` |
+| `skip` / `pf` / `pos` 记账 | 正确。日志显示每长度都是 miss 打头、紧接 `HIT (saved boundary)` 跳过 `len-1` |
+| 边界位置 | 正确。chunk=4 下 63 token 的 pass 是 0,4,…,60,63，`k=0` 条件 `rem>0 && rem_after<=0` 在 `pf=60` 触发 ⇒ 存 60 ✓ |
+| `copy_seq` 的 src/dst 与偏移 | 正确。`restore` 时 `(src,dst)=(saved,live)`，`off = seq*stride/2`，`n = stride/2` |
+| **`copy_seq` 复制的范围** | **只复制 GDN 的 `state` 和 `window`，KV 完全不复制** |
+
+### 剩下的疑点
+
+`load_prefix` 的注释解释了为什么不复制 KV：
+
+> "The KV cache is deliberately left alone - it is keyed by position, positions are
+> written once, and a pass reads only up to the current position, so entries past the
+> boundary are simply never read and are overwritten as the new prompt is prefilled."
+
+**这个论证默认"KV 里 0..n 的内容仍等于当前 prompt 的前 n 个 token"。** 在同一个 slot 上连续
+发**相同** prompt 时该前提成立，而这恰恰就是本轮失败的情形——**所以要么这个论证漏了一个
+必须显式保存的量，要么 `state`/`window` 的快照本身不完整**（例如 `state_stride` 或
+`win_stride` 没有覆盖该层实际使用的全部行）。
+
+### 结论与下一步
+
+**内存版边界缓存（`load_prefix` 路径）在根因查清前不可用**，它的"快"是以答案为代价的。
+**必须做的门禁**（便宜且判决性，应进 `accept.sh`）：
+
+> 同一 slot 上连发 N 次**相同**请求，`temperature=0`，输出必须全部相同，
+> 且必须与 `QW_PREFIX_SNAPSHOT=0` 的冷路径一致。
+
+这是本轮发现的测试缺口——§22 只验了一个长度且只比对了两次，**一个跨 5 个长度、
+每个长度查两次输出的检查在 30 秒内就能跑完，本可以更早拦住它。**
+
+修好之前，用户批准的"默认打开内存版缓存"**不能落地**；`QW_PREFIX_SNAPSHOT` 维持 opt-in。
