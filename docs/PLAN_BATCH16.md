@@ -2354,3 +2354,53 @@ prompt 测（上表用的是 256 token 的说明文请求）。
 
 **⇒ 按部署场景（暖路径）衡量，TTFT 与 otps 两项对 llama.cpp 和 Ollama 都已超过。
 冷 prefill 仍是唯一的、且是数量级级别的差距。**
+
+
+---
+
+## 44. 冷 prefill 的真正结构：我们是带宽受限地重读权重 226 次（第 38 轮）
+
+用户选择继续攻冷 prefill。先用 `QW_DISPATCH_HIST=1 QW_ENCODE_TIME=1` 取分布，**结果推翻了
+§41 的时间模型**。
+
+### 推翻：不是 CPU 编码开销
+
+```
+batch: CPU encode 1.43 ms | commit+wait 538.97 ms | 2194 dispatches in 1186 encoders
+```
+
+**⇒ CPU 编码只有 1.43 ms，时间全在 GPU。** §41 里「689 个 dispatch × 约 8 µs 编码 = 5.5 ms/token」
+的推算**是错的**——dispatch 数量不是问题，编码也不贵。
+
+### dispatch 分布（每 batch）
+
+| 内核 | 数量 | 占比 |
+|---|---|---|
+| `q4_gemv_hx` | 497 | 40% |
+| `rmsnorm` | 129 | 10% |
+| `ewise_add` | 128 | 10% |
+| `rmsnorm_nw_tile` | 96 | 8% |
+| `silu_mul` | 64 | 5% |
+| `copy_off` / `conv1d_silu_ring` / `gdn_step` / `rmsnorm_gated` | 各 48 | 各 4% |
+| `rmsnorm_s` / `rope_partial` | 各 32 | 各 3% |
+| 其余 | 各 16 | 各 1% |
+
+### 真正的结构：内存流量差了 226 倍
+
+| | 权重读取次数 | 总流量 | 受限类型 |
+|---|---|---|---|
+| **我方**（chunk=4） | 905/4 ≈ **226 次** | **3.25 TB** | 带宽 |
+| llama.cpp（`n_batch` 2048） | **1 次** | 14.4 GB | 算力 |
+
+**算力侧核对**：27B × 905 token ≈ 4.9e13 FLOPs；M5 Max GPU 约 30 TFLOPS ⇒ 约 1.6 s，
+**与 llama.cpp 实测 2.23 s 吻合** ⇒ 它确实是算力受限，一次装下整个 prompt。
+
+**⇒ 所以我方冷 prefill 的 13 s 里，约 6.8 s 是 3.25 TB 的权重流量，其余约 6 s 是别的 GPU 工作。
+llama.cpp 只需读 14.4 GB 权重一次。**
+
+**⇒ 这解释了为什么 §20 测出「4 行 → 16 行成本 4.96 倍、毫无摊薄」：`q4_gemv_b16` 用 GRID 映射，
+每行仍然重读权重。要让权重真正复用，必须写一个按行摊销的 GEMM（simdgroup matrix）。**
+
+**⇒ 这也给出了明确的目标与量级**：即便只做到 64 行/pass，权重流量也从 3.25 TB 降到
+约 202 GB（14 次扫描），约 0.42 s ⇒ 总时间有望进入 2–3 s 区间，与对手同量级。
+**这是目前唯一能填平冷 prefill 差距的路径，代价是一个真正的 4-bit affine simdgroup GEMM。**

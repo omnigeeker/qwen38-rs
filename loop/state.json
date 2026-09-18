@@ -2119,6 +2119,26 @@
         "status": "otps and warm TTFT beat both engines; cold TTFT loses 5.2x to llama.cpp and 6.7x to Ollama.",
         "cleanup": "removed the broken :local tag; qwen38-27b:latest remains and uses 16 GB of disk."
       }
+    },
+    {
+      "round": 97,
+      "title": "Profiled the cold prefill and refuted my own round-41 model: it is not CPU dispatch-encode overhead but pure GPU time, and the real structure is that we re-read all 14.4 GB of weights 226 times.  The user chose to keep attacking cold prefill, so I took the dispatch distribution with QW_DISPATCH_HIST=1 and QW_ENCODE_TIME=1.  The headline number killed my previous explanation: CPU encode is 1.43 ms while commit+wait is 538.97 ms across 2194 dispatches in 1186 encoders, so the dispatch count and its encoding cost are not the problem at all - the time is entirely on the GPU.  Round 41's estimate of 689 dispatches times about 8 microseconds of encoding per token, giving 5.5 ms a token, was simply wrong.  The histogram per batch is q4_gemv_hx 497 at 40 per cent, rmsnorm 129, ewise_add 128, rmsnorm_nw_tile 96, silu_mul 64, then copy_off, conv1d_silu_ring, gdn_step and rmsnorm_gated at 48 each, rmsnorm_s and rope_partial at 32, and the rest at 16.  The real structure is a 226-fold difference in weight traffic: with chunk 4 we sweep the whole 14.4 GB every four tokens, so a 905-token prefill reads about 3.25 TB, while llama.cpp fits the prompt in one n_batch of 2048 and reads the weights once, 14.4 GB.  Checking the compute side explains why that is enough for it: 27 billion parameters times 905 tokens is about 4.9e13 FLOPs, and at roughly 30 TFLOPS on the M5 Max GPU that is about 1.6 s, which matches its measured 2.23 s - so llama.cpp is genuinely compute-bound while we are bandwidth-bound.  Of our 13 s, about 6.8 s is the 3.25 TB of weight traffic and about 6 s is other GPU work.  This also finally explains the round-20 measurement that going from 4 rows to 16 costs 4.96 times as much for four times the work: q4_gemv_b16 uses grid mapping, so each row still re-reads the weights.  Genuine reuse needs a row-amortising GEMM using simdgroup matrix multiply, and that gives a concrete target: even 64 rows a pass would cut weight traffic from 3.25 TB to about 202 GB, fourteen sweeps or roughly 0.42 s, which should bring the total into the 2 to 3 second range and the same order as the competition.  That is the only path that closes the cold-prefill gap, and it costs a real 4-bit affine simdgroup GEMM.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "round-41 CPU-encode hypothesis refuted by measurement (encode 1.43 ms vs commit+wait 538.97 ms)",
+        "G2": "cold prefill identified as bandwidth-bound: 226 weight sweeps, 3.25 TB per 905-token prefill",
+        "G3": "llama.cpp confirmed compute-bound: 4.9e13 FLOPs at ~30 TFLOPS = 1.6 s vs measured 2.23 s",
+        "G4": "target quantified: 64 rows/pass would cut weight traffic to about 202 GB"
+      },
+      "evidence": {
+        "refuted": "CPU encode 1.43 ms against commit+wait 538.97 ms for 2194 dispatches in 1186 encoders - dispatch count and encoding are not the cost.",
+        "histogram": "q4_gemv_hx 497 (40%), rmsnorm 129, ewise_add 128, rmsnorm_nw_tile 96, silu_mul 64, copy_off/conv1d_silu_ring/gdn_step/rmsnorm_gated 48 each, rmsnorm_s/rope_partial 32 each.",
+        "structure": "we sweep all 14.4 GB every 4 tokens, so 905 tokens costs 3.25 TB; llama.cpp fits the prompt in one n_batch of 2048 and reads the weights once.",
+        "compute_check": "27e9 params x 905 tokens = 4.9e13 FLOPs; at ~30 TFLOPS that is ~1.6 s, matching llama.cpp's 2.23 s, so it is compute-bound.",
+        "explains_round20": "q4_gemv_b16 uses grid mapping so each row re-reads the weights, which is why 4 to 16 rows costs 4.96x for 4x the work.",
+        "target": "a row-amortising simdgroup GEMM; 64 rows a pass would cut weight traffic to about 202 GB, ~0.42 s, putting the total in the 2-3 s range."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
