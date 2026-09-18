@@ -3359,3 +3359,60 @@ oracle 6/6」——因为六个 oracle prompt 全都短到掩盖了它。
 ### 套件状态
 
 **16 passed / 0 failed, ACCEPTED**（新增 position pin；prefill width determinism 仍在）。
+
+
+---
+
+## 64. 找到并修复服务器生成质量缺陷：位置约定（第 58 轮）
+
+### 根因
+
+`prepare()` 用 `pos: 0` 初始化解码位置，注释说明理由（让「命中前缀缓存」与「冷启动」的位置序列一致）。
+**但 prefill 用的是绝对位置（`pf`、`pf+1`、…），所以从 0 开始等于把序列在 prompt 中间重启**：
+第一个生成 token 被宣告为位置 0，而它实际在 `prompt_len`。旋转位置编码与 GDN 卷积环
+（`pos % conv_ring`）都直接由它驱动。
+
+### 证据（同一 12 个 prompt token，贪心解码）
+
+| 路径 | 输出 |
+|---|---|
+| CLI（绝对位置，oracle/mlx-lm 钉住） | `" with the founding of the city of Rome in 753 BC and ends with the fall of the Western Roman Empire in 476 AD."` |
+| 服务器（相对位置） | `" with the Roman Empire. The Roman Empire was a vast and powerful state ... The Roman Empire was a vast and powerful state"` **退化重复** |
+
+三个 prompt 的 A/B（两次独立构建）：
+
+| 问题 | 旧（相对） | 新（绝对） |
+|---|---|---|
+| 罗马帝国 | 退化重复 | **史实正确，与 CLI 一致** |
+| 冰箱原理 | `"a step-by-step **visual guide**"`（无图却称视觉指南） | `"a step-by-step **explanation**"` |
+| 水箱设计（chat） | `"asking me to **discuss a topic**"` | `"asking me to **describe the main design decisions**"` |
+| 水箱设计（completions） | `"The question is asking for a practical, real-world engineering answer."`（元评论） | `"1. **Capacity and geometry** …"` **直接作答** |
+
+### 修复
+
+`pos: 0` → `pos: prompt_len`（在 `ids` 移入槽位前捕获 `ids.len()`）。
+**`prompt_len` 只依赖 prompt 本身**，所以前缀缓存命中与冷启动仍然一致（既有门禁
+`cache hit matches the cold start` 继续通过）。
+
+### 为什么此前没有任何门禁发现它
+
+- 六个 oracle prompt 只走 CLI，不走服务器
+- 端点测试只检查响应**形状**（`object=`、chunk 数），不检查内容
+- `cache hit matches the cold start` 是**服务器与自身比较**，两边同样错
+- **服务器生成的内容此前完全未被门禁覆盖**
+
+### 新门禁（并证明有效）
+
+`accept.sh` 新增 **server generation matches the CLI**：同一 prompt，`gen --no-stop`
+的 `greedy_text` 必须等于服务器 `/v1/completions` 的文本（用 raw-completion 端点，因为
+chat 端点会套模板，两者 token 流不可比）。
+
+**验证它真能抓 bug**：用旧的缺陷二进制跑服务器端，**与 CLI 在字符 2 处就分叉**
+（旧 `"The question is asking…"` vs CLI `"1. **Capacity and geometry**…"`）⇒ FAIL。
+
+**套件：17 passed / 0 failed, ACCEPTED。**
+
+### 附带影响
+
+这个修复**解除了 spec 集成的阻断**：`spec_step` 期望绝对位置（gen 用 `ids.len()`），
+现在服务器的约定与它一致。

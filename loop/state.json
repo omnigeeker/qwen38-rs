@@ -2559,6 +2559,30 @@
         "gate_proven": "advancing decode positions by 2 makes the gate fail at character 8 (want 'The user is asking', got 'You'); reverting passes.",
         "no_risk_taken": "crates/qw-server/src/engine.rs was left unmodified; the spec fast path is deferred until the convention is gated."
       }
+    },
+    {
+      "round": 117,
+      "title": "Found and fixed a real generation-quality defect in the server: it restarted the position sequence at zero.  prepare() initialised the decode position to zero so that a prefix-cache hit and a cold start would drive the same sequence, but a prefill pass feeds ABSOLUTE positions, so starting at zero restarts the sequence in the middle of the prompt: the first generated token is announced as position zero when it really sits at the prompt length, and both the rotary embedding and the GDN convolution ring are driven from it.  On the same twelve prompt tokens with greedy decoding the CLI, which feeds absolute positions and is what the mlx-lm oracle pins, answers with the founding of the city of Rome in 753 BC and the fall of the Western Roman Empire in 476 AD, while the server degenerated into 'The Roman Empire was a vast and powerful state' repeated.  A two-build A/B on three prompts confirms the direction: the refrigerator answer changed from 'a step-by-step visual guide' to 'a step-by-step explanation' with no images supplied, the chat answer for the water-tank question changed from 'the user is asking me to discuss a topic' to 'the user is asking me to describe the main design decisions', and the raw-completion answer changed from the meta-commentary 'The question is asking for a practical, real-world engineering answer' to the actual answer beginning '1. Capacity and geometry'.  The fix is one line - pos becomes prompt_len, captured before ids moves into the slot - and because that value depends only on the prompt, a cache hit and a cold start stay identical, which the existing cache gate confirms still passes.  No gate had caught it: the six oracle cases only exercise the CLI, the endpoint tests check response shape rather than content, and the cache test compares the server against itself so both sides were wrong the same way.  Server-side generation content had no coverage at all.  I added one: accept.sh now requires the server's raw-completion text for a long prompt to equal gen's greedy_text over 64 tokens, and I proved it catches the bug by running the old binary's server against the CLI, which diverges at character two.  The suite is at 17 passed and 0 failed, ACCEPTED.  This also removes the blocker on the speculative-decoding integration, because spec_step expects absolute positions and the server now drives the same convention.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "root cause identified: decode positions restarted at 0 while prefill feeds absolute positions",
+        "G2": "server now matches the CLI (oracle-verified) exactly on 64 tokens of a long prompt, 218 chars",
+        "G3": "new accept.sh gate server==cli, proven to catch the old behaviour (diverges at char 2)",
+        "G4": "suite 17 passed, 0 failed, ACCEPTED; cache-hit-vs-cold-start gate still passes"
+      },
+      "evidence": {
+        "root_cause": "prepare() set pos to 0; prefill feeds pf, pf+1, ... so generation restarted the sequence mid-prompt.",
+        "cli_vs_server": "CLI 'with the founding of the city of Rome in 753 BC ... 476 AD' against server 'with the Roman Empire. The Roman Empire was a vast and powerful state ...' repeated.",
+        "ab_q2": "refrigerator: 'visual guide' becomes 'explanation' with no images supplied.",
+        "ab_chat": "water tank chat: 'discuss a topic' becomes 'describe the main design decisions'.",
+        "ab_completions": "water tank completions: 'The question is asking for a practical, real-world engineering answer' becomes '1. Capacity and geometry'.",
+        "fix": "pos: prompt_len, captured before ids moves into the slot; depends only on the prompt so cache hits stay identical.",
+        "why_ungated": "the oracle only exercises the CLI, endpoint tests check shape not content, and the cache test compares the server against itself.",
+        "gate_added": "accept.sh requires the server's raw-completion text to equal gen's greedy_text over 64 tokens.",
+        "gate_proven": "the old binary's server diverges from the CLI at character two.",
+        "unblocks": "spec_step expects absolute positions, so the spec integration is no longer blocked by the convention."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

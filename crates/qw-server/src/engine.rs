@@ -639,6 +639,11 @@ fn prepare(
         );
     }
     let _ = job.pieces.send(Ok(EngineEvent::Prompt(ids.len())));
+    // The absolute length of the prompt, captured before `ids` moves into the
+    // slot.  This is the position the first generated token belongs at, and it is
+    // a property of the prompt alone, so a cold run and a run that reused a prefix
+    // produce the same value.
+    let prompt_len = ids.len();
     Some(Active {
         job,
         ids,
@@ -654,7 +659,21 @@ fn prepare(
         // a prefix was reused.  That is the whole cache bug.  Starting at zero
         // makes the sequence identical either way, and leaves a cold start
         // (`skip == 0`) bit-for-bit unchanged.
-        pos: 0,
+        // Zero is NOT the position the model expects.  A prefill pass feeds
+        // absolute positions (`pf`, `pf + 1`, ...), so starting generation at zero
+        // restarts the sequence mid-prompt: the first generated token is announced
+        // as position 0 while it really sits at `prompt_len`, and both the rotary
+        // embedding and the GDN convolution ring (`pos % conv_ring`) are driven
+        // from it.  Measured on the same twelve prompt tokens with greedy decoding,
+        // the CLI - which feeds absolute positions and is what the mlx-lm oracle
+        // pins - answers " with the founding of the city of Rome in 753 BC and ends
+        // with the fall of the Western Roman Empire in 476 AD", while the server
+        // restarting at zero degenerates into " with the Roman Empire. The Roman
+        // Empire was a vast and powerful state ... The Roman Empire was a vast and
+        // powerful state".  Starting at `prompt_len` restores the absolute
+        // sequence, and because it is a property of the prompt alone a cache hit
+        // and a cold start of the same prompt stay identical.
+        pos: prompt_len,
         feed: 0,
         ready: false,
         restored: did_restore,

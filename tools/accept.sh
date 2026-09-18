@@ -258,6 +258,51 @@ else
   no "position pin: $PIN missing"
 fi
 
+# ------------------------------------------------- the server must agree with the CLI
+head1 "server generation matches the CLI"
+# `gen` drives the decoder with ABSOLUTE positions (`ids.len()`, `ids.len()+1`, ...)
+# and is the path the six-case oracle pins against mlx-lm.  The server's own
+# generation used to restart that sequence at zero, which is wrong for the model and
+# was invisible to every other gate: the endpoint tests only check the response
+# shape, and the cache test compares the server against itself.  Measured, the
+# relative positions degenerated a factual answer about the Roman Empire into "The
+# Roman Empire was a vast and powerful state" repeated, while the CLI answered "the
+# founding of the city of Rome in 753 BC ... the fall of the Western Roman Empire in
+# 476 AD".  Both run the same twelve prompt tokens, so the pair is comparable and
+# the server has to reproduce the CLI exactly.
+#
+# The comparison uses the raw-completion endpoint because the chat endpoint applies
+# a template that `gen` does not, so the two would not share a token stream.
+SRV_PROMPT=$(python3 -c 'import json;print(json.load(open("'"$PIN"'"))["prompt"])')
+$BIN gen --prompt "$SRV_PROMPT" --max-tokens 64 --no-stop 2>/dev/null > "$TMP/cli_gen.txt"
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_cli.log" 2>&1 &
+serve_up
+curl -s "http://127.0.0.1:$PORT/v1/completions" -H 'content-type: application/json' \
+  -d "$(python3 -c 'import json,sys;print(json.dumps({"model":"qwen3.8-27b-fp4","prompt":json.load(open(sys.argv[1]))["prompt"],"max_tokens":64,"temperature":0,"stream":False}))' "$PIN")" \
+  > "$TMP/srv_cmp.json"
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+python3 - "$TMP/cli_gen.txt" "$TMP/srv_cmp.json" <<'PY'
+import json, sys
+raw = open(sys.argv[1]).read()
+if "greedy_text: " not in raw:
+    print("  \033[31mFAIL\033[0m server==cli: the CLI run produced no greedy_text"); sys.exit(1)
+cli = raw.split("greedy_text: ", 1)[1].split("\ntiming:", 1)[0]
+try:
+    srv = json.load(open(sys.argv[2]))["choices"][0]["text"]
+except Exception as e:
+    print("  \033[31mFAIL\033[0m server==cli: no server answer (%s)" % e); sys.exit(1)
+if cli == srv:
+    print("  \033[32mPASS\033[0m server==cli: 64 tokens of a long prompt are identical (%d chars)" % len(cli))
+    sys.exit(0)
+n = min(len(cli), len(srv))
+i = next((k for k in range(n) if cli[k] != srv[k]), n)
+print("  \033[31mFAIL\033[0m server==cli: differs at char %d of %d/%d\n    cli %r\n    srv %r"
+      % (i, len(cli), len(srv), cli[max(0,i-30):i+30], srv[max(0,i-30):i+30]))
+sys.exit(1)
+PY
+if [ $? -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+
 # ------------------------------------------------- prefill width must not change the answer
 head1 "prefill width determinism"
 # The gate the GEMM class of bug needed and did not have.  The six-case oracle is
