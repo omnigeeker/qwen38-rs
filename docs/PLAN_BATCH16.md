@@ -3416,3 +3416,73 @@ chat 端点会套模板，两者 token 流不可比）。
 
 这个修复**解除了 spec 集成的阻断**：`spec_step` 期望绝对位置（gen 用 `ids.len()`），
 现在服务器的约定与它一致。
+
+## 65. 服务器接上投机解码，并修掉让它出错的 commit_row（第 59 轮）
+
+目标里剩下最大的一块：`gen` 有 spec 而服务器**完全没有**，gen 实测
+26.65 → 37.46 tok/s（+40.6%）。接上去的过程暴露了两个真 bug。
+
+### bug 1：`commit_row` 忽略了槽数（本轮主要发现）
+
+回滚循环状态用的是 `state.len_bytes() / 2`。但 `state` 是 `batch` 个序列首尾相接，
+所以在 16 槽的服务器上这个表达式指的是**八个序列**的量：回滚把八个序列的快照
+拷进了序列 0。
+
+batch=1 时它恰好是对的 —— 这正是为什么 gen 的 `spec==plain` 门禁能在
+**57.4% 接受率、2.72 token/pass、300 token** 下通过，而服务器在 64 token 答案的
+第 36 个字符处就与 CLI 分叉。改成 `len_bytes() / batch / 2` 后两边同时正确。
+
+定位顺序（每步排除一个假设）：
+
+| 实验 | 结果 | 结论 |
+|---|---|---|
+| `QW_SPEC=1` 服务器 vs CLI | 分叉 @36 | 确实错 |
+| `QW_SPEC=1 QW_NO_ACCEPT=1` | **完全一致** | 验证 pass 无罪，只有回滚错 |
+| `QW_SPEC=1` gen vs gen plain | 一致（300 token） | spec 机制本身无罪 |
+
+实测步长（`QW_STRIDE_DEBUG=1`）：快照按行写在 `snap_stride / n`（n = 本 pass 行数
+= TILE），而 `snap_stride / TILE` **恰好等于** `state_stride`：
+
+| | state_stride | snap_stride | snap/TILE（写入） | `state/2`（旧回滚） |
+|---|---|---|---|---|
+| batch=1 | 3145728 | 12582912 | **3145728** | 1572864 |
+| batch=16 | 3145728 | 12582912 | **3145728** | 25165824 |
+
+注意：两个"看起来更对"的候选（`snap_stride/TILE` 同时作偏移与长度、`snap_stride/TILE`
+作偏移 + `state/2` 作长度）**都把 gen 的门禁打挂了**。说明 batch=1 的旧行为必须
+逐字节保留，真正的缺陷只在缺少 `/ batch`。教训：**"推导出来的正确公式"不能替代
+"保持已验证路径不变"**。
+
+### bug 2：`completion_tokens` 数的是 piece 不是 token
+
+一个多 token 的 spec 步只发一个 piece，于是 4 个 token 的答案被计成 2 个。
+`EngineEvent::Piece` 现在携带 token 数，`collect` 累加它。两条路径现在分别报
+64/64 与 256/256。
+
+### 另外：prefill 期间预热草稿头
+
+规则与 `gen` 逐字一致：每个**有已知后继**的行预热（用 `toks[i+1]`，跨 chunk 用
+`a.ids[a.pf]`），最后一行不预热（它后面还没有 token）。不预热则草稿是垃圾，
+spec 反而比 plain 慢。预热失败只记 warning，不影响正确性（草稿被拒即可）。
+
+### 门禁
+
+**19 passed / 0 failed, ACCEPTED。** 新增两条，都跑在 position pin 的 64 token
+答案上，让服务器的 spec 路径**由内容而非形状**覆盖：
+
+- `server spec: answered`
+- `spec==plain (server): 218 chars identical`
+
+### 吞吐：本轮不能引用绝对数字
+
+本轮进行到一半，这台机器的 Metal 吞吐**整体崩溃**：`gen` 从 26.65 掉到
+0.90 tok/s，连 12 token 的 prefill 都从 0.615 s 变成 14.4 s，而 GPU 占用率报 0%，
+无热警告、内存 93% 空闲。这是环境问题，不是本次改动：**plain 路径同样慢，而
+plain 完全不受本次改动影响**。
+
+崩溃前后收集的**配对比值**方向一致，都表明服务器上 spec 更快：
+
+- 64 token：3.30 s → 2.87 s（1.15×）
+- 128 token：296.65 s → 215.14 s（1.38×）
+
+**安静机器上复测后再引用绝对值。**
