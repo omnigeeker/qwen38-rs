@@ -326,7 +326,15 @@ pub enum Prompt {
 /// report it), then one event per generated piece.
 pub enum EngineEvent {
     Prompt(usize),
-    Piece(String),
+    /// A chunk of decoded text, and how many TOKENS it stands for.
+    ///
+    /// The count cannot be derived from the text: speculative decoding settles up
+    /// to four tokens per step and hands them over as one piece, so counting
+    /// pieces under-reported `completion_tokens` by two thirds on a four-token
+    /// request (measured: usage said 2 while the text was the same four tokens the
+    /// plain path billed as 4).  Clients use this number for billing and for
+    /// context budgeting, so it has to be tokens.
+    Piece(String, usize),
 }
 
 pub struct Job {
@@ -349,6 +357,12 @@ struct Active {
     feed: u32,
     /// Set once the prompt is fully in, which is what makes `feed` meaningful.
     ready: bool,
+    /// Whether the token in `feed` has already been handed to the client.
+    /// `spec_step` re-emits the token it is given (it is "settled at `pos` but not
+    /// yet emitted"), so the speculative path has to know that the pass which
+    /// finished the prompt already emitted this one - otherwise every speculative
+    /// request starts with that token twice, measured as " with with the founding".
+    feed_emitted: bool,
     /// This request resumed from a stored prefix instead of prefilling from
     /// nothing.  Only used by the QW_PREFIX_DUMP instrument, which compares the
     /// state a resume reaches against the state a cold prefill reaches.
@@ -362,6 +376,11 @@ struct Active {
     dead: bool,
     all: Vec<u32>,
     sent_len: usize,
+    /// How many entries of `all` have already been accounted for in a `Piece`.
+    /// `sent_len` tracks characters, which is what the decoder needs for the
+    /// incremental UTF-8 boundary; this tracks tokens, which is what the client
+    /// is billed for.
+    sent_tokens: usize,
     emitted: usize,
     max_tokens: usize,
     /// When the request was admitted.  A cold agent prompt can take minutes to
@@ -465,10 +484,12 @@ fn emit(tok: &Tokenizer, a: &mut Active, flush: bool) {
     };
     if cut > 0 {
         a.sent_len += cut;
+        let new_tokens = a.all.len().saturating_sub(a.sent_tokens);
+        a.sent_tokens = a.all.len();
         let _ = a
             .job
             .pieces
-            .send(Ok(EngineEvent::Piece(piece[..cut].to_string())));
+            .send(Ok(EngineEvent::Piece(piece[..cut].to_string(), new_tokens)));
     }
 }
 
@@ -676,11 +697,13 @@ fn prepare(
         pos: prompt_len,
         feed: 0,
         ready: false,
+        feed_emitted: false,
         restored: did_restore,
         restored_at,
         dead: false,
         all: Vec::new(),
         sent_len: 0,
+        sent_tokens: 0,
         emitted: 0,
         max_tokens,
         started: std::time::Instant::now(),
@@ -833,6 +856,27 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         } else {
             chunk_cap.min(share).max(1)
         };
+        // ---- speculative decoding is only safe for a lone sequence ----
+        // `spec_step` drafts with the MTP head, which keeps ONE k/v cache, and it
+        // verifies with `forward2`, which hardcodes sequence 0, and rewinds with
+        // `commit_row`, which copies into sequence 0's recurrent state.  So it may
+        // run only when exactly one slot is decoding and that slot is slot 0 - the
+        // case a single-request client hits.  Anything else takes the batched pass.
+        // Whether to keep the draft head's own cache in step during prefill.  The
+        // head consumes the decoder's hidden state for the position BEFORE the token
+        // it is fed, so it can only be advanced while that state is still in the
+        // scratch residual stream - which is during this pass, in row order.  Left
+        // unwarmed, the head attends over a cache that was never written, its drafts
+        // are junk, and the server was measured to diverge from the CLI at character
+        // 36 of a 64-token answer even though the plain path matched exactly.
+        let spec_warm = std::env::var("QW_SPEC").is_ok() && model.has_mtp();
+        let spec_ok = std::env::var("QW_SPEC").is_ok()
+            && decoding == 1
+            && prefilling == 0
+            && slots
+                .first()
+                .and_then(|e| e.as_ref())
+                .is_some_and(want_one);
         let mut rows: Vec<(usize, usize)> = Vec::new();
         let mut toks: Vec<u32> = Vec::new();
         let mut row_slot: Vec<usize> = Vec::new();
@@ -965,6 +1009,56 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 if std::env::var_os("QW_POS_DEBUG").is_some() && a.emitted < 3 {
                     eprintln!("pos debug: slot {slot} generation row emitted={} pos={} feed={}", a.emitted, a.pos, a.feed);
                 }
+                if spec_ok && slot == 0 {
+                    // One speculative step drafts `TILE - 1` tokens and verifies them
+                    // in a single `TILE`-row weight sweep, which is where the speed
+                    // comes from: the decode pass already reads all 14.4 GB, so
+                    // settling up to four tokens for it is nearly free.  Correctness
+                    // does not depend on the drafts being good - a rejected draft is
+                    // simply not emitted, and `next` is always the model's own
+                    // prediction from the row that broke the run.
+                    let mut out: Vec<u32> = Vec::new();
+                    match model.spec_step(a.pos, a.feed, &mut out) {
+                        Ok((np, ntok, _draft_s, _pass_s)) => {
+                            let mut stop = false;
+                            // The first element is the token at `pos` again.  Drop it
+                            // when the pass that finished the prompt already emitted
+                            // it; keep it when it is this path's own fresh prediction.
+                            let skip = if a.feed_emitted { 1 } else { 0 };
+                            let out_len = out.len();
+                            let old_pos = a.pos;
+                            for t in out.into_iter().skip(skip) {
+                                // Mirror the plain path: an end-of-sequence token is
+                                // fed back but never recorded, and its presence in
+                                // `feed` is what stops the slot being scheduled.
+                                if a.emitted >= a.max_tokens || tok.is_eos(t) {
+                                    a.feed = t;
+                                    stop = true;
+                                    break;
+                                }
+                                a.all.push(t);
+                                a.emitted += 1;
+                            }
+                            if !stop {
+                                a.feed = ntok;
+                                a.feed_emitted = false;
+                            }
+                            if std::env::var_os("QW_SPEC_DEBUG").is_some() {
+                                eprintln!(
+                                    "spec dbg: out={} skip={} emitted={} max={} pos {}->{} all={}",
+                                    out_len, skip, a.emitted, a.max_tokens, old_pos, np, a.all.len()
+                                );
+                            }
+                            a.pos = np;
+                            emit(tok, a, false);
+                        }
+                        Err(e) => {
+                            let _ = a.job.pieces.send(Err(e.to_string()));
+                            a.emitted = a.max_tokens;
+                        }
+                    }
+                    continue;
+                }
                 rows.push((slot, a.pos));
                 toks.push(a.feed);
                 row_slot.push(slot);
@@ -978,8 +1072,15 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // one-token prompt.  It is recorded where it is produced instead.
             }
         }
+        // The retire step at the end of this iteration is what FINISHES a request,
+        // and speculative decoding never fills `rows` - it settles tokens without a
+        // batched pass - so this used to `continue` straight past retirement and
+        // hang every speculative request with its tokens generated and never sent
+        // (the log said "4 of 4 tokens emitted" and the client waited forever).  A
+        // labelled block keeps the skip local to the pass.
+        'pass: {
         if rows.is_empty() {
-            continue;
+            break 'pass;
         }
         let mut failed = match model
             .set_tokens(&toks)
@@ -996,6 +1097,27 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 let _ = a.job.pieces.send(Err(msg.clone()));
                 a.emitted = a.max_tokens;
                 continue;
+            }
+            // Keep the draft head in step, in the same order the rows were computed.
+            // The MTP head writes its internal norm into row 0's slot, so rows above
+            // zero are untouched and increasing order is safe.  `gen` warms positions
+            // 0..len-2 with the token that follows, never the last one - there is no
+            // token after the prompt yet - and this mirrors that exactly.
+            if spec_warm {
+                let p = rows[i].1;
+                let nxt = if i + 1 < row_slot.len() && row_slot[i + 1] == slot {
+                    Some(toks[i + 1])
+                } else {
+                    a.ids.get(a.pf).copied()
+                };
+                if let Some(t) = nxt {
+                    // Warming is a throughput aid, not a correctness one, so a failure
+                    // must not take the request down: the next verify simply rejects
+                    // the drafts it produced.
+                    if let Err(e) = model.mtp_step_at(i, t, p + 1, false) {
+                        tracing::warn!("draft-head warm failed at row {i}: {e}");
+                    }
+                }
             }
             let next = argmax(&model.logits_row(i));
             if a.pf < a.ids.len() {
@@ -1063,6 +1185,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             if a.ready && a.emitted < a.max_tokens && !tok.is_eos(a.feed) {
                 a.all.push(a.feed);
                 a.emitted += 1;
+                a.feed_emitted = true;
             }
             emit(tok, a, false);
         }
@@ -1107,6 +1230,8 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 }
             }
         }
+
+        } // end 'pass
 
         // ---- retire ----
         for (slot, entry) in slots.iter_mut().enumerate() {

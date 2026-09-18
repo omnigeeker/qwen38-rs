@@ -278,10 +278,49 @@ $BIN gen --prompt "$SRV_PROMPT" --max-tokens 64 --no-stop 2>/dev/null > "$TMP/cl
 pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
 QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_cli.log" 2>&1 &
 serve_up
+SRV_BODY=$(python3 -c 'import json,sys;print(json.dumps({"model":"qwen3.8-27b-fp4","prompt":json.load(open(sys.argv[1]))["prompt"],"max_tokens":64,"temperature":0,"stream":False}))' "$PIN")
 curl -s "http://127.0.0.1:$PORT/v1/completions" -H 'content-type: application/json' \
-  -d "$(python3 -c 'import json,sys;print(json.dumps({"model":"qwen3.8-27b-fp4","prompt":json.load(open(sys.argv[1]))["prompt"],"max_tokens":64,"temperature":0,"stream":False}))' "$PIN")" \
-  > "$TMP/srv_cmp.json"
+  -d "$SRV_BODY" > "$TMP/srv_cmp.json"
 pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+# The same comparison with speculative decoding on.  It has to be the same text:
+# a rejected draft is simply not emitted, and `next` is always the model's own
+# prediction from the row that broke the run.  This is the gate that would have
+# caught `commit_row` rewinding the wrong number of sequence strides - it was
+# correct only at batch 1, so `gen` was fine and the sixteen-slot server restored
+# eight sequences' worth of state on every accepted draft, diverging from the CLI
+# the moment a draft was accepted.
+QW_SPEC=1 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_spec.log" 2>&1 &
+serve_up
+curl -s "http://127.0.0.1:$PORT/v1/completions" -H 'content-type: application/json' \
+  -d "$SRV_BODY" > "$TMP/srv_spec.json"
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+python3 - "$TMP/srv_spec.json" <<'PY'
+import json, sys
+try:
+    t = json.load(open(sys.argv[1]))["choices"][0]["text"]
+except Exception as e:
+    print("  \033[31mFAIL\033[0m server spec: no answer (%s)" % e); sys.exit(1)
+want = open(sys.argv[1]).read()
+print("  \033[32mPASS\033[0m server spec: answered (%d chars)" % len(t))
+sys.exit(0)
+PY
+if [ $? -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+python3 - "$TMP/srv_cmp.json" "$TMP/srv_spec.json" <<'PY'
+import json, sys
+try:
+    a = json.load(open(sys.argv[1]))["choices"][0]["text"]
+    b = json.load(open(sys.argv[2]))["choices"][0]["text"]
+except Exception as e:
+    print("  \033[31mFAIL\033[0m spec==plain (server): missing answer (%s)" % e); sys.exit(1)
+if a == b:
+    print("  \033[32mPASS\033[0m spec==plain (server): %d chars identical" % len(a))
+    sys.exit(0)
+n = min(len(a), len(b)); i = next((k for k in range(n) if a[k] != b[k]), n)
+print("  \033[31mFAIL\033[0m spec==plain (server): differs at char %d of %d/%d\n    plain %r\n    spec  %r"
+      % (i, len(a), len(b), a[max(0,i-30):i+30], b[max(0,i-30):i+30]))
+sys.exit(1)
+PY
+if [ $? -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
 python3 - "$TMP/cli_gen.txt" "$TMP/srv_cmp.json" <<'PY'
 import json, sys
 raw = open(sys.argv[1]).read()

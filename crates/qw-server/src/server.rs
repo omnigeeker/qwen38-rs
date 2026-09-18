@@ -173,7 +173,7 @@ fn text_only(
         while let Some(item) = rx.recv().await {
             let keep = match item {
                 Ok(EngineEvent::Prompt(_)) => Some(Ok(String::new())),
-                Ok(EngineEvent::Piece(p)) => Some(Ok(p)),
+                Ok(EngineEvent::Piece(p, _)) => Some(Ok(p)),
                 Err(e) => Some(Err(e)),
             };
             if let Some(v) = keep {
@@ -319,9 +319,9 @@ async fn collect(
     while let Some(item) = rx.recv().await {
         match item {
             Ok(EngineEvent::Prompt(p)) => prompt = p,
-            Ok(EngineEvent::Piece(piece)) => {
+            Ok(EngineEvent::Piece(piece, tokens)) => {
                 text.push_str(&piece);
-                n += 1;
+                n += tokens;
             }
             Err(e) => return Err(e),
         }

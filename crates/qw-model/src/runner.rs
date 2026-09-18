@@ -709,6 +709,24 @@ impl Qwen38 {
         model.win_stride = wn;
         model.snap_stride = sn;
         model.kv_stride = kv;
+        if std::env::var_os("QW_STRIDE_DEBUG").is_some() {
+            for layer in &model.layers {
+                if let Kind::Gdn(g) = &layer.kind {
+                    eprintln!(
+                        "stride dbg: batch={} TILE={} state.len={} snap.len={} state_stride={} snap_stride={} snap/TILE={} state/2={}",
+                        batch,
+                        TILE,
+                        g.state.len_bytes(),
+                        g.snap.len_bytes(),
+                        st,
+                        sn,
+                        sn / TILE,
+                        g.state.len_bytes() / 2
+                    );
+                    break;
+                }
+            }
+        }
         model.reset();
         Ok(model)
     }
@@ -974,7 +992,20 @@ impl Qwen38 {
         let mut b = self.dev.batch();
         for layer in &self.layers {
             if let Kind::Gdn(g) = &layer.kind {
-                let sh = g.state.len_bytes() / 2;
+                // One step of one sequence's recurrent state.
+                //
+                // The single-sequence value is `len_bytes() / 2` and is exactly
+                // what the shipped speculative path has always used, verified
+                // byte-identical to the plain path over 300 tokens at a 57 per cent
+                // draft-acceptance rate.  What it silently lacked was the slot
+                // count: `state` holds `batch` sequences back to back, so on the
+                // sixteen-slot server the same expression named EIGHT sequences'
+                // worth, and the rewind copied that much out of the snapshot into
+                // sequence 0.  Measured, that is the whole reason the server
+                // diverged from the CLI whenever a draft was accepted (and matched
+                // it exactly under QW_NO_ACCEPT, where no rewind happens): with
+                // batch 1 the value is unchanged, byte for byte.
+                let sh = g.state.len_bytes() / self.batch / 2;
                 copy_dispatch(
                     &mut b,
                     &self.kernels.copy,
