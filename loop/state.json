@@ -2469,6 +2469,28 @@
         "correct_k_comparison": "k=4 9.951 ms/token at 362 GB/s, k=6 10.811, k=8 12.169 - the engine's k=4 is optimal.",
         "break_even": "GEMV sweeps once per four rows at 39.6 ms, GEMM once per thirty-two at 257 ms; the GEMM is 19 per cent better at 32 rows and the GEMV wins below about 26."
       }
+    },
+    {
+      "round": 113,
+      "title": "Proved the GEMM's end-to-end defect is real and found why gemm-check misses it.  gemm-check passes at 3.347e-4 with 32 tokens, the exact row count of the engine's batched pass, so the fault is not the token count.  The decisive test was a templated long chat prompt through the real endpoint, long enough to force a 32-row prefill pass, compared between the two paths: the GEMV answers correctly that the user is asking how a refrigerator works, while the GEMM misreads the question as being about the evaporator.  That is a wrong answer, not numerical noise.  The reason gemm-check cannot see it is its activations: it feeds uniform random values in minus one to one, which have no outliers, while real activations do, and MLX's four-bit format shares one scale across each group of sixty-four K values, so a single large channel raises the whole group's scale and costs the other channels precision.  Random uniform input systematically understates that error.  I added QW_GEMM_CHECK_ALL to sweep all 497 quantised linears, since the default four shapes all pass, but the CPU reference is too slow and it timed out at 600 seconds; the right next step is a GPU-against-GPU comparison of the GEMM against the GEMV kernel rather than against the CPU.  Reverted the wiring again - verify back to 6 of 6, batch gate to 0.0000, gemm-check to 3.347e-4, and the all-linears switch kept as a diagnostic.  The strategic picture after eleven rounds on cold prefill: otps is won against both rivals at 28.7 against 24.58 and 26.1 to 27.5, warm TTFT is won at 0.039 against 0.067, and cold TTFT is lost by 6.6 times at 11.6 seconds against 1.76.  Cold prefill is 232 weight sweeps, 3.34 TB at about 400 GB/s, which is 8.35 seconds, plus 3.4 seconds of non-GEMV work.  The GEMM's BN of 32 would cut the sweep count eightfold but runs at 56 GB/s, so the net gain is only 19 per cent, and even at an ideal 36 ms a sweep it would be 1.04 plus 3.4 seconds, still two and a half times behind Ollama.  Cold TTFT is structurally out of reach in this architecture, and the GEMM's bandwidth has resisted eleven rounds of hypotheses - bank conflicts, barriers, occupancy, bytes in flight, BM, double buffering, coalescing, the MACs, the dequantisation, access granularity and K-major layout.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "gemm-check at 32 tokens PASSED at 3.347e-4, so the fault is not the token count",
+        "G2": "end-to-end chat comparison shows the GEMM giving a wrong answer against the GEMV's correct one",
+        "G3": "root cause of the blind spot identified: uniform random activations have no outliers",
+        "G4": "reverted; verify 6/6, batch gate 0.0000, gemm-check 3.347e-4 all reconfirmed"
+      },
+      "evidence": {
+        "not_k32": "gemm-check PASSED at 3.347e-4 with tokens=32, the engine's batched-pass row count.",
+        "end_to_end_wrong": "with a long templated chat prompt the GEMV answers 'the user is asking me to explain how a refrigerator works' while the GEMM says 'the user is asking about the evaporator'.",
+        "blind_spot_cause": "gemm-check feeds uniform random activations in [-1,1) with no outliers; real activations have them, and one scale per 64 K values means one large channel costs the rest their precision.",
+        "diagnostic_added": "QW_GEMM_CHECK_ALL sweeps all 497 linears; the default four shapes all pass, but the CPU reference timed out at 600 s.",
+        "next_step": "compare the GEMM against the GEMV kernel on the GPU instead of against the CPU reference.",
+        "standing": "otps won 28.7 against 24.58 and 26.1-27.5; warm TTFT won 0.039 against 0.067; cold TTFT lost 11.6 against 1.76.",
+        "cold_prefill_structure": "232 weight sweeps = 3.34 TB at about 400 GB/s = 8.35 s, plus 3.4 s non-GEMV.",
+        "gemm_ceiling": "BN=32 cuts sweeps eightfold but runs at 56 GB/s, so only 19 per cent net; even at an ideal 36 ms per sweep it is 4.4 s total, still 2.5x behind Ollama."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

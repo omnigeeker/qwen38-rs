@@ -3166,3 +3166,51 @@ GEMV 每 4 行扫一遍权重（39.6 ms），GEMM 每 32 行扫一遍（257 ms�
 
 **已回退（`linear.rs`、`runner.rs` 恢复 HEAD）；verify 6/6、batch gate 0.0000 复测通过。**
 **⇒ GEMM 那 19% 的优势在端到端缺陷查清前不可用。**
+
+
+---
+
+## 60. GEMM 的端到端缺陷是真实的；gemm-check 的随机激活掩盖了它（第 54 轮）
+
+### 不是 k=32 的问题
+
+`gemm-check` 在 `tokens=32`（正是引擎批处理 pass 的行数）下**同样 PASSED（3.347e-4）**。
+
+### 决定性的端到端测试：模板化长 prompt
+
+用 `/v1/chat/completions` 和一个 32+ token 的提问（强制走 32 行 prefill pass），对比两条路径：
+
+| 路径 | 输出开头 |
+|---|---|
+| GEMV | `<think>
+The user is asking me to explain how a refrigerator works...` **✓ 正确** |
+| **GEMM** | `<think>
+The user is asking about the "evaporator" in a refrigeration system...` **✗ 误读问题** |
+
+**⇒ GEMM 的输出是错的，不是数值噪声级别的差异。**
+
+### 为什么 gemm-check 测不出来
+
+`gemm-check` 用的激活是 **[-1,1) 均匀随机**，没有 outlier。而真实激活有 outlier，MLX 4-bit 的
+**每 64 个 K 值一组**共享一个 scale——一个通道出现大 outlier 会抬高整组的 scale，
+其余通道的有效精度随之下降。**随机均匀输入系统性地低估了这个误差。**
+
+已加 `QW_GEMM_CHECK_ALL=1` 扫全部 497 个 linear（默认 4 个形状全通过，所以必须全扫），
+但 CPU 参考太慢，600 s 超时；**下一步应改成「GEMM vs GEMV 内核」的 GPU 对 GPU 比较。**
+
+**已回退接线**（`linear.rs` 恢复 HEAD）；verify 6/6、batch gate 0.0000 复测通过；
+保留 `QW_GEMM_CHECK_ALL` 作为诊断。
+
+### 战略结论（第 18–28 轮共 11 轮攻冷 prefill）
+
+| 指标 | 我们 | 对手 | 结果 |
+|---|---|---|---|
+| otps | 28.7 | 24.58 (llama.cpp) / 26.1–27.5 (Ollama) | **两者都赢** |
+| 暖 TTFT | 0.039 s | 0.067 s | **都赢 1.7×** |
+| 冷 TTFT | ~11.6 s | 1.76 s | **输 6.6×** |
+
+冷 prefill 的结构：**232 次权重扫描（3.34 TB）@ ~400 GB/s = 8.35 s + 非 GEMV 3.4 s**。
+GEMM（BN=32）能把扫描次数减 8 倍，但自身带宽只有 56 GB/s ⇒ 净收益仅 19%。
+**即使 GEMM 达到理想带宽（36 ms/扫描），也是 1.04 s + 3.4 s = 4.4 s，仍落后 Ollama 2.5 倍。**
+**⇒ 冷 TTFT 在当前架构下结构性不可达；GEMM 的带宽之谜经 11 轮假设（bank 冲突、屏障、占用率、
+字节在飞、BM、双缓冲、合并、MAC、反量化、粒度、K-major）全部被否后仍无解释。**

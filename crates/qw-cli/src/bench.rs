@@ -464,8 +464,14 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
     names.sort();
 
     // A spread of shapes: the big ones, and small/odd out_f that hit the tile tails.
+    // `QW_GEMM_CHECK_ALL` sweeps every quantised linear instead, which is how the
+    // end-to-end failure was tracked down - the four shapes here all passed while the
+    // engine still produced the wrong answer.
     let mut picked: Vec<String> = Vec::new();
-    for want in [5120usize, 17408, 18432, 48, 96] {
+    if std::env::var("QW_GEMM_CHECK_ALL").is_ok() {
+        picked = names.clone();
+    }
+    for want in if picked.is_empty() { vec![5120usize, 17408, 18432, 48, 96] } else { Vec::new() } {
         if let Some(n) = names
             .iter()
             .find(|n| QLinear::from_store(&store, n).map(|l| l.out_f == want).unwrap_or(false))
