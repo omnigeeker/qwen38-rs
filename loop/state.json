@@ -2201,6 +2201,27 @@
         "open_question": "four concurrent distinct prompts gave only ~10 per cent improvement, not 4x, but the log has no per-pass row count so pass sharing is unconfirmed.",
         "decision": "not changing the conv ring without verification; the GEMM remains the quantified lever."
       }
+    },
+    {
+      "round": 101,
+      "title": "Showed that concurrent prefills are not batched at all, which invalidates round 47's ambiguous concurrency test, and worked out the realistic ceiling of the GEMM: about 4.2 s cold prefill against llama.cpp's 2.23 s, because the non-GEMV quarter does not change.  Round 47 tested whether the non-GEMV fixed cost amortises over rows by sending four concurrent requests, saw about 10 per cent, and could not confirm from the log whether they shared a pass.  This round I used a judgement that does not depend on the log: if batching happened, four concurrent requests would need proportionally fewer dispatches.  Four serial 455-token requests took 27.13 s and the same four concurrent took 27.65 s, identical, so the engine does not batch concurrent prefills at all.  Round 47's 10 per cent was noise, and the question of whether a larger chunk amortises the non-GEMV cost cannot be answered through the concurrency path - it needs the structure changed.  I then tried to break the 3.36 s down by kernel family with QW_SKIP_KERNEL and the data was unusable: base 14.44 s against 12.06 for rmsnorm, 11.70 for gdn, 12.82 for attn, and then 18.34 for silu and 21.79 for conv, slower than the baseline, with every best-of-three being a 0.08 s prefix-cache hit.  Single cold runs scatter over 11.7 to 21.8 s, far wider than the effects being measured, so cold-prefill family attribution needs interleaved repeats and this attempt is void.  The valuable part is the ceiling calculation.  Weight traffic is the number of token tiles times 14.4 GB: at the current k=4 that is 226 sweeps, 3.25 TB, 9.21 s; a GEMM with 32 tokens a tile needs 29 sweeps, 418 GB, 0.84 s; with 64 tokens a tile, 15 sweeps, 216 GB, 0.43 s.  Adding the unchanged 3.36 s of non-GEMV work gives about 4.2 and 3.8 s against llama.cpp's 2.23 and Ollama's 1.73.  So even a completely successful GEMM leaves cold prefill around 1.9 times slower than llama.cpp, because the non-GEMV quarter is a serial chain of about 1216 dependent dispatches per chunk, roughly 304 per token, where llama.cpp uses a few large fused kernels.  Closing the cold-prefill gap therefore needs both a GEMM and kernel fusion - two large pieces of work, not one optimisation.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "concurrent prefills shown not to batch: 27.13 s serial vs 27.65 s concurrent for identical work",
+        "G2": "round-47 concurrency result invalidated as noise; the chunk-raise hypothesis stays untested",
+        "G3": "cold-prefill family attribution by QW_SKIP_KERNEL judged unusable and the method voided",
+        "G4": "GEMM ceiling computed: ~4.2 s cold prefill vs llama.cpp 2.23 s, so the GEMM alone cannot close the gap"
+      },
+      "evidence": {
+        "no_batching": "four serial 455-token requests 27.13 s against four concurrent 27.65 s - identical.",
+        "invalidates": "round 47's 10 per cent concurrency gain was noise; pass sharing never happened.",
+        "voided_method": "base 14.44 s vs skip_silu 18.34 and skip_conv 21.79, slower than baseline, with best-of-three all prefix-cache hits at 0.08 s; single cold runs scatter 11.7-21.8 s.",
+        "ceiling": "weight traffic = token tiles x 14.4 GB: k=4 226 sweeps 9.21 s; BN=32 29 sweeps 0.84 s; BN=64 15 sweeps 0.43 s.",
+        "total": "adding the unchanged non-GEMV 3.36 s gives ~4.2 s and ~3.8 s against llama.cpp 2.23 s and Ollama 1.73 s.",
+        "why": "the non-GEMV quarter is a serial chain of ~1216 dependent dispatches per chunk (~304 per token) where llama.cpp uses a few large fused kernels.",
+        "conclusion": "closing the gap needs a GEMM plus kernel fusion, not one optimisation."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
