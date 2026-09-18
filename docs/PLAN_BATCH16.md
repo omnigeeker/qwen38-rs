@@ -2956,3 +2956,62 @@ GEMM 版（18.3–25.9 s）与回退版（23.8–26.3 s）范围重叠 ⇒ 「GE
 （3 分钟内空闲利用率稳定在 63–71%）。**故所有对比都必须在同一负载下成对采集。**
 Ollama 模型 `qwen38-27b:local` 的 manifest 对运行中的服务不可见，已用同一 GGUF 新建
 `qwen38-27b:bench`（纯增量，未改动用户服务）。
+
+
+---
+
+## 56. 屏障代价为零；dispatch 直方图揭示非 GEMV 的真身（第 50 轮）
+
+### 屏障彻底否掉
+
+加 mode 4（跳过每 K-step 的屏障；结果会错，计时有效），交错测量：
+
+| mode | ms/token | 扫描 |
+|---|---|---|
+| 0 完整 | 8.031 / 8.078 | 257 / 258 ms |
+| **4 无屏障** | **8.029 / 8.070** | **257 / 258 ms** |
+
+**⇒ 完全相同。屏障代价为零。** 至此 GEMM 的慢已被排除：bank 冲突、BK/屏障数、占用率、
+字节在飞、BM=64、双缓冲、x 合并、MAC（17%）、反量化（12%）、屏障（0%）。
+**剩下的只有 staging 本身（约 212 ms），原因仍未解释。**
+
+### dispatch 直方图：非 GEMV 的真身
+
+`QW_DISPATCH_HIST=1` 给出一次 prefill pass（16 行）的 7525 个 dispatch：
+
+```
+q4_gemv_k4_u4hx    1988 (26%)
+copy_off            768 (10%)   ← 48 GDN 层 × 16 行
+conv1d_silu_ring    768 (10%)
+gdn_step            768 (10%)
+rmsnorm_gated       768 (10%)
+rmsnorm_s           512 ( 7%)
+rope_partial        512 ( 7%)
+```
+
+**⇒ 非 GEMV 是纯 dispatch 延迟：905 token × 29 pass × 7525 / 16 行 ≈ 218k 个依赖 dispatch，
+按 ~12–15 µs 计 = 2.6–3.3 s，与实测的非 GEMV 3.4 s 吻合。**
+
+**⇒ 而且它是「每行」的（48 层 × 行数），这解释了第 22 轮 chunk 4→32 为何几乎无收益。**
+
+### 一个被静默压制的上限
+
+`let room = MAX_BATCH - decoding`，而 `MAX_BATCH = 16` 同时是 slot 数——**所以单个 prefill slot
+只能拿到 16 行**（直方图里每 linear 只有 4 个子块而非 8）。已把行预算解耦为
+`PASS_ROWS_MAX`（32），slot 数与 KV 分配不变。
+
+**⇒ 验证：`q4_gemv` 从 1988 变 3976（= 497 × 8）✓ 但每 token 的 dispatch 数完全不变
+（2× dispatch 对应 2× 行）⇒ 严格按行计费，chunk 大小改变不了它。**
+
+**⇒ 此改动当前性能中性（13.339 s，在噪声内），但它是 GEMM 的 BN=32 能覆盖整个 pass 的前提。**
+
+### 门禁
+
+verify **parity 6/6**；batch-check **PASSED**（worst |logit diff| 0.0000）。
+
+### 路线图
+
+**唯一能砍掉非 GEMV 的办法：把按行并行的内核批量化。**
+`copy_off` + `conv1d_silu_ring` + `rmsnorm_gated` + `rmsnorm_s` + `rope_partial` 合计 44% 的
+dispatch，全部可按行并行 ⇒ 可压成每 pass 一次。`gdn_step` 是递推、必须逐行（10%）。
+**目标：非 GEMV 3.4 s → 约 0.8 s。**

@@ -800,7 +800,14 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     .is_some_and(|a| a.pf < a.ids.len() && !a.job.pieces.is_closed())
             })
             .count();
-        let room = MAX_BATCH.saturating_sub(decoding);
+        // The row budget for a pass is `PASS_ROWS_MAX`, not `MAX_BATCH`.  They were
+        // the same constant, which silently capped a single prefilling slot at 16 rows
+        // and left the wide row path carrying 16 instead of 32 - visible in the
+        // dispatch histogram as four tile-kernel dispatches per linear rather than
+        // eight, and as 768 per-row GDN dispatches a pass (48 layers times 16 rows).
+        // Decoupling them keeps the slot count and the KV allocation untouched while
+        // letting one prefiller use the whole row budget.
+        let room = qw_model::runner::PASS_ROWS_MAX.saturating_sub(decoding);
         let share = room.checked_div(prefilling).unwrap_or(0);
         let chunk = if prefilling == 0 {
             0
