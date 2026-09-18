@@ -55,6 +55,11 @@ enum Reuse {
     Disk(usize, Vec<u8>),
 }
 
+/// Largest in-memory boundary snapshot to keep, in MB.  About 0.1 MB a token, so
+/// this covers a 40k-token prefix; past it the boundary falls back to the
+/// state-and-window copy instead of holding the blob.
+const PREFIX_BLOB_MAX_MB: usize = 4096;
+
 /// Distances from the end of a prompt at which a boundary is persisted.
 ///
 /// One boundary at the very end is not enough.  Measured against real OpenCode,
@@ -209,6 +214,18 @@ struct PrefixCache {
     hist: Vec<Option<Vec<u32>>>,
     /// Per slot, the prompt whose end-of-prefill snapshot sits in the runner's copy.
     boundary: Vec<Option<Vec<u32>>>,
+    /// Per slot, the FULL snapshot of `boundary`: recurrent state, convolution window
+    /// **and the KV for positions `0..n`**, in the same serialised form the disk cache
+    /// uses.
+    ///
+    /// `copy_seq`-based restore is not enough on its own.  It copies only the
+    /// recurrent state and the window, on the theory that the KV needs no restoring
+    /// because it is keyed by position and written once.  That theory assumes the
+    /// slot's KV still holds this prompt's content, and measured, a boundary hit
+    /// resting on that assumption returns an answer that does not depend on the
+    /// prompt at all.  Carrying the KV makes the resume independent of whatever the
+    /// slot happened to hold.
+    blob: Vec<Option<Vec<u8>>>,
     lookups: usize,
     hits: usize,
     reused: usize,
@@ -220,6 +237,7 @@ impl PrefixCache {
         Self {
             hist: (0..batch).map(|_| None).collect(),
             boundary: (0..batch).map(|_| None).collect(),
+            blob: (0..batch).map(|_| None).collect(),
             ..Default::default()
         }
     }
@@ -240,8 +258,9 @@ impl PrefixCache {
         Reuse::None
     }
 
-    fn record_boundary(&mut self, slot: usize, seq: Vec<u32>) {
+    fn record_boundary(&mut self, slot: usize, seq: Vec<u32>, blob: Option<Vec<u8>>) {
         self.boundary[slot] = Some(seq);
+        self.blob[slot] = blob;
     }
 
     fn record(&mut self, slot: usize, seq: Vec<u32>) {
@@ -249,6 +268,7 @@ impl PrefixCache {
     }
 
     fn forget(&mut self, slot: usize) {
+        self.blob[slot] = None;
         self.hist[slot] = None;
     }
 
@@ -520,12 +540,20 @@ fn prepare(
             " (disk prefix)"
         }
         Reuse::Live(_) => " (live state)",
-        Reuse::Boundary(_) => {
+        Reuse::Boundary(n) => {
             cache.hits += 1;
-            // The slot has moved on since that prefill, so put the recurrent state and
-            // the convolution window back the way they were.  The copy is not
-            // consumed, so other requests can still resume from the same boundary.
-            if let Err(e) = model.load_prefix(slot) {
+            // Put the slot back to that prefill: recurrent state, window and the KV
+            // for 0..n.  Restoring the KV matters - without it the resume depends on
+            // the slot still holding this prompt, which is not something this cache
+            // may assume.  The copy is not consumed, so other requests can still
+            // resume from the same boundary.
+            let restored = match cache.blob[slot].as_ref() {
+                Some(b) => model.import_prefix(slot, n, b),
+                // No blob means it was too large to keep; fall back to the
+                // state-and-window copy, which is better than a full re-prefill.
+                None => model.load_prefix(slot),
+            };
+            if let Err(e) = restored {
                 let _ = job.pieces.send(Err(e.to_string()));
                 return None;
             }
@@ -709,21 +737,32 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 {
                     match model.save_prefix(slot) {
                         Ok(()) => {
-                            cache.record_boundary(slot, a.ids[..a.pf].to_vec());
+                            // `export_prefix` reads the live state, window and KV, so it
+                            // has to run here, while the live state is at `a.pf`.  The
+                            // blob is what makes the resume correct; the disk copy is a
+                            // second, optional consumer of the same bytes.
+                            let blob = model.export_prefix(slot, a.pf).ok();
+                            // Past a size cap the blob is dropped and the boundary
+                            // degrades to the state-and-window copy rather than
+                            // growing without bound.  About 0.1 MB a token.
+                            let blob = blob.filter(|b| {
+                                b.len() <= PREFIX_BLOB_MAX_MB * 1024 * 1024
+                            });
+                            cache.record_boundary(slot, a.ids[..a.pf].to_vec(), blob.clone());
                             // And persist it, so the next process starts warm.
                             // Only for a prefix long enough to be a real agent
                             // system prompt: the blob costs about 0.1 MB a token.
                             if a.pf >= 128 {
-                                if let Ok(blob) = model.export_prefix(slot, a.pf) {
-                                    if let Some(d) = prefixes::DiskPrefix::from_env() {
-                                        match d.store(&a.ids[..a.pf], &blob) {
-                                            Ok(()) => tracing::info!(
-                                                "slot {slot}: persisted {} tokens ({} MB) to disk",
-                                                a.pf,
-                                                blob.len() / (1024 * 1024)
-                                            ),
-                                            Err(e) => tracing::warn!("prefix store: {e}"),
-                                        }
+                                if let (Some(blob), Some(d)) =
+                                    (blob, prefixes::DiskPrefix::from_env())
+                                {
+                                    match d.store(&a.ids[..a.pf], &blob) {
+                                        Ok(()) => tracing::info!(
+                                            "slot {slot}: persisted {} tokens ({} MB) to disk",
+                                            a.pf,
+                                            blob.len() / (1024 * 1024)
+                                        ),
+                                        Err(e) => tracing::warn!("prefix store: {e}"),
                                     }
                                 }
                             }

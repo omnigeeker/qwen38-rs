@@ -1908,6 +1908,26 @@
         "verdict": "memory boundary cache unusable until root-caused; QW_PREFIX_SNAPSHOT stays opt-in.",
         "gate_to_add": "same request N times on one slot at temperature 0 must give identical output and match QW_PREFIX_SNAPSHOT=0."
       }
+    },
+    {
+      "round": 87,
+      "title": "Root-caused the boundary bug to snapshot scope and fixed the real half of it.  Section 33 had narrowed the suspects to copy_seq restoring only the GDN state and window and no KV, so first I killed the last non-scope hypothesis, async ordering: forward_rows ends with b.finish(true) which calls cb.wait_until_completed, so the state the save point sees is fully synced and it is not a race.  The fix then reuses the already-verified export_prefix and import_prefix pair from the disk path, which serialise the recurrent state, the window AND the KV for positions 0..pos, minus the disk write; a hit now goes through import_prefix, and a blob above four gigabytes is dropped with a fallback to the old load_prefix so memory cannot grow without bound.  The result changed the shape of the bug.  Before, runs 2 and 3 were IDENTICAL across different prompts, always the same string, so the hit answer did not depend on the prompt at all.  After, the hit answer does depend on the prompt - reps 10 gives a pangram-related continuation, reps 5 gives a different one - and runs 2 and 3 agree with each other, so the restored state is now deterministic.  That root cause, a hit returning a prompt-independent answer, is fixed.  What remains is narrower: the restored-and-recomputed tail is still not equivalent to a from-scratch prefill, with all three lengths showing runs 2 and 3 differing from run 1 while run 1 still matches the cache-off cold path.  The difference is deterministic and reproducible, so it is a state-fidelity problem rather than state corruption.  Suspects in order: layers skipped by the if stride == 0 continue in export_prefix if some row a layer actually uses is covered by no stride; whether win_stride covers the whole convolution window a layer uses, since a few missing rows would give the recomputed leading rows a wrong window; and whether import_prefix must first clear KV left past pos by the previous request's generated tokens.  Kept the fix, since it repairs a real defect, but the gate is still red so QW_PREFIX_SNAPSHOT stays opt-in - the accept.sh check requiring N identical responses on one slot to match the cold path does not pass yet.  Oracle 6/6 and batch-check 16/16 unaffected, as this path is not on it.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "boundary hit now prompt-dependent and deterministic; still differs from cold",
+        "G4": "cache remains opt-in; determinism gate still red"
+      },
+      "evidence": {
+        "async_ruled_out": "forward_rows ends with b.finish(true) -> cb.wait_until_completed(), so the save point sees fully synced state.",
+        "fix": "reuse export_prefix/import_prefix (state + window + KV for 0..pos), memory-only, with a 4 GB blob cap falling back to load_prefix.",
+        "before": "runs 2-3 identical across different prompts - the hit answer did not depend on the prompt.",
+        "after": "the hit answer varies with the prompt and runs 2-3 agree - prompt-independence fixed and the restore is deterministic.",
+        "remaining": "restored+recomputed tail still differs from a cold prefill at all three lengths; deterministic, so a fidelity not a corruption problem.",
+        "suspects": "layers skipped by stride == 0 in export_prefix; win_stride not covering the whole conv window; import_prefix not clearing KV left past pos."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

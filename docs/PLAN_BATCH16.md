@@ -1710,3 +1710,51 @@ reps= 40: False   '<think>\n\n</think>\n\nOkay.'     | '<think>\nThe user wants 
 每个长度查两次输出的检查在 30 秒内就能跑完，本可以更早拦住它。**
 
 修好之前，用户批准的"默认打开内存版缓存"**不能落地**；`QW_PREFIX_SNAPSHOT` 维持 opt-in。
+
+
+---
+
+## 34. 根因确认与部分修复：KV 必须随边界一起恢复（第 29 轮）
+
+§33 把疑点收敛到"`copy_seq` 只恢复 GDN 的 `state` 和 `window`，KV 完全不恢复"。
+本轮先排除了最后一条非范围假设——**异步顺序**：`forward_rows` 结尾是
+`b.finish(true)` → `cb.wait_until_completed()`，**保存点看到的状态是同步好的**，
+所以不是竞态。
+
+于是按"快照范围"修：**复用磁盘路径那对已验证的 `export_prefix`/`import_prefix`**
+（它们序列化 **state + window + `0..pos` 的 KV** 三者），只是不落盘。命中时改走
+`import_prefix`；高于 4 GB 的 blob 丢弃并退回旧的 `load_prefix`，避免内存无界增长。
+
+### 结果：真正的 bug 被修掉了
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| run2/run3 在**不同 prompt** 上 | **完全相同**（与 prompt 无关） | **随 prompt 变化** ✓ |
+| run2 与 run3 彼此 | 相同 | 相同（确定性） |
+| run1（冷）对 run2/3 | 不同 | **仍不同** |
+
+修复前 `reps=10/20/30/40` 的第二次运行一律是 `'<think>\nThe user wants me to reply'`；
+修复后变成 `'<think>\nThe user is asking me to reply…'` / `'<think>\nThe user has repeated
+the pangram "The…'`，**明确随 prompt 内容变化**。
+
+**⇒ "命中返回与 prompt 无关的答案"这个根因已修复。** 热路径的三次运行现在彼此一致，
+说明恢复出来的状态是确定的。
+
+### 剩余缺陷（窄得多，但仍使门禁为红）
+
+**恢复+重算尾部的状态与从头 prefill 的状态仍不完全等价。** 三个长度都是
+`matches cold: False`（run1 冷路径与 off 一致 ✓，run2/3 与 run1 不同）。
+
+差异是**确定的、可复现的**，所以它不再是状态错乱，而是**状态保真度**问题：边界在 `pf`
+处恢复后重算 `pf..len-1`，理论上应与冷路径逐位一致，实际不是。可疑处按可能性排序：
+
+1. **`export_prefix` 里 `if stride == 0 { continue; }` 跳过的层**——若某层实际用到的行没被
+   任何 stride 覆盖，它的状态就没进 blob
+2. **`win_stride` 是否覆盖该层实际使用的整个卷积窗口**——若少了几行，重算的头几行会
+   拿到错误的窗口
+3. **`import_prefix` 是否需要先清掉 `pos` 之后残留的 KV**——上一轮请求的生成 token 写在了
+   `len..` 上；虽然重算会覆盖 `pf..len-1` 并在 `len` 起重新生成，但任何越界读取都会取到旧值
+
+**处置**：修复保留（它修掉了真实缺陷），但**门禁仍为红，`QW_PREFIX_SNAPSHOT` 维持
+opt-in**——`accept.sh` 那条"同一 slot 连发 N 次必须全同且与冷路径一致"的门禁还没过。
+oracle 6/6、batch-check 16/16 不受影响（这条路径不参与）。
