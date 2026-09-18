@@ -2517,3 +2517,53 @@ the timing assumes.  Use --rows 6 for k=8.
    比对（容差内），通过后再接入 runner。
 
 **收益预估**：权重流量从 226 次扫描降到约 1–14 次，冷 prefill 有望从 11.6 s 进入 2–3 s 区间。
+
+
+---
+
+## 47. 冷 prefill 的 73/27 拆分，以及一个被否掉的假设（第 41 轮）
+
+用 `QW_SKIP_KERNEL=q4_gemv` 直接量出 GEMV 与非 GEMV 的占比：
+
+| | 时间 | 占比 |
+|---|---|---|
+| 完整 | 12.57 s | 100% |
+| 跳过全部 q4_gemv | **3.36 s** | 27% |
+| ⇒ GEMV | **9.21 s** | **73%** |
+
+**⇒ GEMV 比 §44 估计的 60% 还高。这强化了结论：simdgroup GEMM 是唯一的主杠杆。**
+
+### 被否掉的假设：encoder 切分开销
+
+直方图显示「2194 dispatches in 1186 encoders」（约 1.85 个/encoder），而 `barrier()` 正是
+结束 encoder、下一个 dispatch 新建一个。于是怀疑 commit+wait 开销是那 12 µs/dispatch 的来源。
+代码里已有诊断开关 `QW_NO_ENC_SPLIT`（把全部 dispatch 塞进一个 encoder，不安全但能定上界）：
+
+| | 时间 |
+|---|---|
+| nogemv | 3.39 s |
+| nogemv + `QW_NO_ENC_SPLIT` | **3.31 s**（只快 0.08 s，2%） |
+| full | 12.69 s |
+| full + `QW_NO_ENC_SPLIT` | 14.10 s（反而更慢） |
+
+**⇒ 假设否定：encoder 切分几乎不花钱。那 12 µs 是真实的 GPU 侧串行延迟。**
+
+### 非 GEMV 的形状：每 chunk 固定约 14.5 ms
+
+交错测三种 prompt 长度（跳过 GEMV）：
+
+| n | chunks | ms/chunk | ms/token |
+|---|---|---|---|
+| 225 | 57 | 13.08 / 16.04 | 3.31 / 4.06 |
+| 455 | 114 | 14.11 / 14.85 | 3.53 / 3.72 |
+| 905 | 227 | 15.46 | 3.88 |
+
+**⇒ 每 chunk 约 13–16 ms，与 chunk 数（57→227）基本无关 ⇒ 固定成本，不随数据量增长。**
+
+⚠️ 但一个**未决问题**：这个固定成本是「每 pass 一次」还是「每行一次」？
+- 若是每 pass 一次，把 chunk 从 4 提到 16 就能 4 倍摊销（非 GEMV 3.36 → 0.84 s）
+- 用 4 个并发请求（不同 prompt，理论上一 pass 携 16 行）测：**只快约 10%（4.2–4.7 vs 4.75 ms/token），不是 4 倍**
+- **但日志无法确认并发请求是否真的共享了 pass**（只有一行 `prefill chunk: 4 token(s) per pass`），
+  所以这个测试**既不能证实也不能证伪**该假设。
+
+**⇒ 结论：提高 chunk 的收益未被验证，不应据此改 conv ring；GEMM 是已被量化的主杠杆（73%）。**

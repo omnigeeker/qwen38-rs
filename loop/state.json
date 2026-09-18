@@ -2181,6 +2181,26 @@
         "plan": "single-layer single-tile version compared element by element against the existing GEMV before wiring into the runner.",
         "payoff": "weight traffic from 226 sweeps to 1-14, cold prefill from 11.6 s toward 2-3 s."
       }
+    },
+    {
+      "round": 100,
+      "title": "Measured the cold-prefill split directly and refuted an encoder-overhead hypothesis: GEMV is 73 per cent, not the 60 I estimated, and the non-GEMV 27 per cent is a fixed per-chunk cost whose amortisation I could not confirm.  I used QW_SKIP_KERNEL=q4_gemv to attribute the time: the full prefill is 12.57 s and with every q4_gemv dispatch dropped it is 3.36 s, so GEMV is 9.21 s, 73 per cent - higher than round 44's estimate and a stronger argument that the simdgroup GEMM is the main lever.  The histogram's 2194 dispatches in 1186 encoders, with barrier() ending an encoder and the next dispatch starting a new one, made me suspect commit-and-wait overhead as the source of the 12 microseconds per dispatch.  The code already carries a diagnostic for exactly this, QW_NO_ENC_SPLIT, which puts every dispatch in one encoder - unsafe, since Metal gives no inter-dispatch visibility inside an encoder, but it bounds the cost: 3.31 s against 3.39 s for the non-GEMV prefill, a saving of 0.08 s or 2 per cent, and on the full prefill it is slower, 14.10 s against 12.69.  So the hypothesis is refuted and the 12 microseconds is genuine serialised GPU latency.  Interleaving three prompt lengths with GEMV skipped shows the non-GEMV cost is a fixed 13 to 16 ms per four-row chunk whether there are 57 chunks or 227, so it does not scale with the data - the activation traffic is only a few GB, which at 500 GB/s would be milliseconds, not 3.36 s.  The obvious follow-up is whether that fixed cost is per pass or per row, because if it is per pass then raising the chunk from 4 to 16 would amortise it four ways and take the non-GEMV time from 3.36 s to about 0.84 s.  Four concurrent requests with distinct prompts, which should put 16 rows in a pass, came out only about 10 per cent better at 4.2 to 4.7 ms a token against 4.75, not four times better - but the server log only records the chunk size and gives no per-pass row count, so I cannot tell whether those requests actually shared passes.  The test therefore neither confirms nor refutes the hypothesis, and I am deliberately not changing the conv ring on the strength of it.  What is established: GEMV is 73 per cent of cold prefill, encoder splitting is not the problem, and the non-GEMV quarter is a fixed per-chunk cost.  The GEMM remains the lever with quantified payoff.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "cold-prefill split measured directly: GEMV 9.21 s (73%), non-GEMV 3.36 s (27%)",
+        "G2": "encoder-split hypothesis refuted: QW_NO_ENC_SPLIT saves only 0.08 s and is slower on the full prefill",
+        "G3": "non-GEMV cost shown to be a fixed 13-16 ms per chunk across 57 to 227 chunks",
+        "G4": "chunk-raise not pursued: the concurrency test could not confirm pass sharing, so the payoff is unverified"
+      },
+      "evidence": {
+        "split": "full 12.57 s vs QW_SKIP_KERNEL=q4_gemv 3.36 s, so GEMV is 9.21 s or 73 per cent.",
+        "encoder_refuted": "nogemv 3.39 s vs nogemv+QW_NO_ENC_SPLIT 3.31 s, only 0.08 s; full 12.69 vs 14.10 s with the split disabled.",
+        "fixed_per_chunk": "13.08/16.04 ms per chunk at 57 chunks, 14.11/14.85 at 114, 15.46 at 227 - independent of chunk count.",
+        "not_bandwidth": "non-GEMV activation traffic is only a few GB, which at 500 GB/s is milliseconds, not 3.36 s; the cost is serialised dispatch latency of about 12 microseconds each.",
+        "open_question": "four concurrent distinct prompts gave only ~10 per cent improvement, not 4x, but the log has no per-pass row count so pass sharing is unconfirmed.",
+        "decision": "not changing the conv ring without verification; the GEMM remains the quantified lever."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
