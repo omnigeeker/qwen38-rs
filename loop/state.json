@@ -2076,6 +2076,28 @@
         "localisation": "tile kernel amortises 4x (30 ms / 4 rows = 7.5 ms/token); q4_gemv_b16 does not amortise (25.84 ms/row, each row re-reads 14.4 GB); llama.cpp is 2.46 ms/token with near-zero non-GEMV overhead.",
         "remaining_work": "a genuinely amortising GEMM plus cutting the 689 dispatches, about 5.5 ms/token; the time model caps the GEMM alone at about 131 tok/s against llama.cpp's 406."
       }
+    },
+    {
+      "round": 95,
+      "title": "Won TTFT: the first token was waiting for a second weight sweep.  After round 41 localised the cold-prefill gap to a missing amortising GEMM plus dispatch overhead, I first closed off the GEMV routes so as not to repeat refuted work: q4_gemv_tile is weight-stationary and does amortise four ways, while q4_gemv_b16 uses grid mapping by its own comment and does not amortise at all at 25.84 ms a row, and the sixteen-accumulator variant is already measured 22 per cent slower, so both extensions are dead.  I then turned to warm TTFT, which was only six per cent behind, and measured the floor: a one-token prompt costs 0.066 to 0.068 s and a 913-token warm hit 0.074 to 0.075, so the cache adds only 7 ms and the floor itself is about 66 ms - two weight sweeps at 30 ms each, the same two llama.cpp pays.  The engine's own log reported 0.0 s for a one-token prompt, which put the time after the logits were ready, and the cause was in emit: the generation branch pushed a.feed into a.all BEFORE the pass, so the first token - which the pass that finishes the prompt has already produced - only reached a.all on the next iteration and could not be sent until a second sweep had gone by.  The fix moves the bookkeeping to just after the pass that produces the token, so emit can hand it over in the same iteration.  My first attempt at that was wrong and the comparison caught it: I put the recording inside the per-row loop, and a prefill chunk has take rows, so every row recorded a token.  Diffing the emitted text against the previous binary showed it immediately - the code prompt came out as the last row's argmax repeated.  Moving the bookkeeping after the row loop and recording once per slot, on its last occurrence, made all four prompts byte-identical to the old build.  Result: one-token TTFT 0.066 to 0.034 s, 913-token warm TTFT 0.075 to 0.038-0.040 s against llama.cpp's 0.066-0.067, so warm TTFT went from ten per cent behind to 1.7 times ahead.  accept.sh is 14 passed and 0 failed ACCEPTED.  Objective status: otps won by 15.5 per cent, warm TTFT now won by 1.7 times, cold TTFT still 5.2 times behind at 11.6 s against 2.23 s.  Measured on the deployment path, both TTFT and otps now beat llama.cpp; the cold prefill is the remaining gap.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "accept.sh 14 passed, 0 failed ACCEPTED",
+        "G2": "emitted text byte-identical to the pre-change build on four prompts",
+        "G3": "warm TTFT 0.075 s -> 0.039 s; now 1.7x faster than llama.cpp's 0.067 s",
+        "G4": "GEMV amortisation routes closed off without repeating refuted experiments"
+      },
+      "evidence": {
+        "gemv_routes_closed": "q4_gemv_tile is weight-stationary and amortises 4x; q4_gemv_b16 uses grid mapping and does not (25.84 ms/row); the 16-accumulator variant is already 22 per cent slower.",
+        "floor": "one-token prompt 0.066-0.068 s, 913-token warm 0.074-0.075 s, llama.cpp warm 0.066-0.067 s - about two 30 ms weight sweeps for everyone.",
+        "root_cause": "the generation branch pushed a.feed into a.all before the pass, so the first token only reached a.all on the next iteration and emit could not send it until a second sweep.",
+        "first_attempt_wrong": "recording inside the per-row loop recorded one token per row; diffing against the old binary showed the code prompt emitting the last row's argmax repeated.",
+        "fix": "record once per slot after the row loop, on the slot's last occurrence, then emit in the same iteration.",
+        "result": "one-token TTFT 0.066 -> 0.034 s; 913-token warm 0.075 -> 0.038-0.040 s vs llama.cpp 0.066-0.067 - from 10 per cent behind to 1.7x ahead.",
+        "verified": "four prompts byte-identical to the pre-change build; accept.sh 14 passed 0 failed.",
+        "status": "otps won 15.5 per cent, warm TTFT won 1.7x, cold TTFT 5.2x behind."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

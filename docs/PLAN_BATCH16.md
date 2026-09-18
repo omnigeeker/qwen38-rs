@@ -2235,3 +2235,79 @@ let max_per_seq = (conv_k + TILE).next_power_of_two() - conv_k;   // (4+4)->8, 8
 activation / simdgroup GEMM 的价值在于让 chunk 16 摊薄，而天花板受非 GEMV 工作限制
 （chunk 16 ⇒ 约 131 tok/s，而 llama.cpp 是 406 tok/s）——**所以即便完成，冷 prefill
 仍会落后，必须同时削减 dispatch。**
+
+
+---
+
+## 42. TTFT 翻盘：首 token 不该等第二次权重扫描（第 37 轮）
+
+§41 把冷 prefill 定位到「缺少摊薄 GEMM + dispatch 开销」后，我先把 GEMV 路线的可能性穷尽，
+再转向一个更可及的目标——**暖 TTFT 只差 6%**。结果找到了一个 2 倍的缺陷。
+
+### 1. GEMV 摊薄路线已穷尽（不重复已否定的工作）
+
+| 内核 | 机制 | 摊薄 |
+|---|---|---|
+| `q4_gemv_tile` = `K_Q4_GEMV_K4_U4HX` | weight-stationary：权重读一次对 4 行复用 | **是，4 倍（7.5 ms/token）** |
+| `q4_gemv_b16` | 注释原文 "Batch serving by **GRID mapping**, not by per-thread accumulators" | **否（25.84 ms/row，每行重读 14.4 GB）** |
+| `q4_gemv_k16_u4hx` | 16 个 per-thread 累加器 | **已测慢 22%**（寄存器压力） |
+
+**⇒ 两条扩展路线都被否定，GEMV 到此为止。**
+
+### 2. 量出地板：双方都是约 66 ms
+
+| | TTFT |
+|---|---|
+| 我方 1-token prompt | 0.066–0.068 s |
+| 我方 913-token 暖命中 | 0.074–0.075 s（缓存只多花 7 ms） |
+| llama.cpp 913-token 暖 | 0.066–0.067 s |
+
+**⇒ 66 ms ≈ 两次权重扫描（14.4 GB / 477 GB/s = 30 ms）。而 1-token prompt 也要两次扫描，
+说明问题与 prompt 长度无关。** 而引擎内部日志对 1-token prompt 报 `0.0s` ⇒ 时间花在**发出去之前**。
+
+### 3. 根因：首 token 被推迟一次 pass 才记账
+
+`emit()` 解码 `a.all` 并发送新增部分。而生成分支把 `a.feed` 推入 `a.all` 是在 **pass 之前**：
+
+```
+最后一次 prefill pass → 产出 token 1 → 下一轮：把 token 1 推入 a.all → 跑 pass 2 → emit(token 1)
+```
+
+**⇒ 客户端必须等两次权重扫描才拿到首 token。**
+
+修法：把「记账已产出 token」从生成分支移到**产出它的那次 pass 之后**，`emit` 就能在同一轮发出。
+
+### 4. 第一次修改是错的，被逐字对比抓住
+
+我最初把记账放进**逐行循环**——而一个 prefill chunk 有 `take` 行，**每行都记了一次**。
+与改动前的二进制逐字对比立刻暴露：
+
+```
+code  prompt:  old ' fibonacci fibonacci ...'          （16 token）
+               new '    else fibonacci fibonacci ...'  （16 token，首 token 不同）
+```
+
+修正：记账移到逐行循环**之后**，且每个 slot 只在其**最后一次出现**时记一次。
+再对比：**short / mid / long / code 四个 prompt 全部逐字一致。**
+
+### 5. 结果
+
+| | 改动前 | 改动后 | llama.cpp |
+|---|---|---|---|
+| 1-token TTFT | 0.066 s | **0.034 s** | — |
+| 913-token 暖 TTFT | 0.075 s | **0.038–0.040 s** | 0.066–0.067 s |
+| 913-token 冷 TTFT | 11.9 s | 11.6 s | 2.23 s |
+
+**⇒ 暖 TTFT 从「落后 10%」变成「快 1.7×」。**
+
+**验证**：四个 prompt 的发射序列与改动前逐字相同；`accept.sh` 14 passed, 0 failed ACCEPTED。
+
+### 目标现状
+
+| 指标 | 我方 | llama.cpp | 结论 |
+|---|---|---|---|
+| otps | 28.4 tok/s | 24.58 (tg256) | **赢 15.5%** |
+| 暖 TTFT | **0.039 s** | 0.067 s | **赢 1.7×** |
+| 冷 TTFT（913 tok） | 11.6 s | 2.23 s | 输 5.2× |
+
+**⇒ 按部署场景（暖路径）衡量，TTFT 与 otps 两项都已超过 llama.cpp。冷 prefill 仍是 5.2 倍的差距。**

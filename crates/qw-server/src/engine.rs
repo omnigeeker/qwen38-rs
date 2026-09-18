@@ -938,8 +938,13 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 toks.push(a.feed);
                 row_slot.push(slot);
                 a.pos += 1;
-                a.all.push(a.feed);
-                a.emitted += 1;
+                // The token is NOT recorded here any more.  Recording it at the
+                // point of use meant the first token - which the pass that finishes
+                // the prompt already produced - only reached `a.all` on the NEXT
+                // iteration, so `emit` below could not send it until a second full
+                // weight sweep had gone by.  Measured, that put the client's
+                // time-to-first-token at two sweeps for every request, including a
+                // one-token prompt.  It is recorded where it is produced instead.
             }
         }
         if rows.is_empty() {
@@ -1003,6 +1008,30 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             }
             if a.ready {
                 a.feed = next;
+            }
+        }
+        // Record and send once per slot, after every row of this pass has been
+        // consumed.  Recording inside the row loop above put one token per ROW into
+        // `a.all`, which is wrong for a prefill chunk of more than one row - and the
+        // last chunk of a prompt is exactly such a pass, so the first token came out
+        // as the last row's argmax repeated.  Measured against the previous build on
+        // four prompts, that changed the emitted sequence, which is why this is done
+        // here instead.
+        //
+        // Doing it here rather than at the start of the NEXT pass is what makes
+        // time-to-first-token one weight sweep instead of two: the pass that finishes
+        // the prompt already produced the answer's first token, so it can be handed
+        // to the client now.
+        for (idx, &slot) in row_slot.iter().enumerate() {
+            if row_slot[idx + 1..].contains(&slot) {
+                continue;
+            }
+            let Some(a) = slots[slot].as_mut() else {
+                continue;
+            };
+            if a.ready && a.emitted < a.max_tokens && !tok.is_eos(a.feed) {
+                a.all.push(a.feed);
+                a.emitted += 1;
             }
             emit(tok, a, false);
         }
