@@ -339,6 +339,10 @@ struct Active {
     feed: u32,
     /// Set once the prompt is fully in, which is what makes `feed` meaningful.
     ready: bool,
+    /// This request resumed from a stored prefix instead of prefilling from
+    /// nothing.  Only used by the QW_PREFIX_DUMP instrument, which compares the
+    /// state a resume reaches against the state a cold prefill reaches.
+    restored: bool,
     /// The client went away, so this slot is nobody's work any more.
     dead: bool,
     all: Vec<u32>,
@@ -557,6 +561,27 @@ fn prepare(
                 let _ = job.pieces.send(Err(e.to_string()));
                 return None;
             }
+            // QW_PREFIX_DUMP round-trip check: read the state straight back out.
+            // If this does not match the blob that was just written in, the fault
+            // is in export/import itself and nothing downstream can be trusted;
+            // if it does match, the fault is in recomputing forward from here.
+            if let Some(dir) = std::env::var_os("QW_PREFIX_DUMP") {
+                match model.export_prefix(slot, n) {
+                    Ok(back) => {
+                        let path = std::path::Path::new(&dir)
+                            .join(format!("{n}.roundtrip.bin"));
+                        match std::fs::write(&path, &back) {
+                            Ok(()) => tracing::info!(
+                                "prefix dump: round-trip {} bytes -> {}",
+                                back.len(),
+                                path.display()
+                            ),
+                            Err(e) => tracing::warn!("prefix dump round-trip: {e}"),
+                        }
+                    }
+                    Err(e) => tracing::warn!("prefix dump round-trip export: {e}"),
+                }
+            }
             " (saved boundary)"
         }
     };
@@ -564,6 +589,9 @@ fn prepare(
         cache.hits += 1;
     }
     cache.report(slot, skip, ids.len(), src);
+    // Distinct from `skip > 0`: a Live hit copies nothing at all, because the
+    // slot already sits on this prefix.  Only Boundary and Disk actually restore.
+    let did_restore = matches!(reuse, Reuse::Boundary(_) | Reuse::Disk(_, _));
     let max_tokens = job.max_tokens.min(max_t - ids.len());
     if max_tokens < job.max_tokens {
         // Worth saying out loud: an agent framework that asks for 32000 tokens
@@ -589,6 +617,7 @@ fn prepare(
         pos: skip,
         feed: 0,
         ready: false,
+        restored: did_restore,
         dead: false,
         all: Vec::new(),
         sent_len: 0,
@@ -754,6 +783,17 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                                     a.ids[..a.pf].to_vec(),
                                     Some(blob.clone()),
                                 );
+                                if let Some(dir) = std::env::var_os("QW_PREFIX_DUMP") {
+                                    let path = std::path::Path::new(&dir)
+                                        .join(format!("{}.saved.bin", a.pf));
+                                    if std::fs::write(&path, &blob).is_ok() {
+                                        tracing::info!(
+                                            "prefix dump: saved {} bytes at {}",
+                                            blob.len(),
+                                            path.display()
+                                        );
+                                    }
+                                }
                                 // And persist it, so the next process starts warm.
                                 // Only for a prefix long enough to be a real agent
                                 // system prompt: the blob costs about 0.1 MB a token.
@@ -846,6 +886,46 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 a.feed = next;
             }
             emit(tok, a, false);
+        }
+
+        // ---- QW_PREFIX_DUMP: is a resume equivalent to a cold prefill? ----
+        //
+        // At QW_PREFIX_DUMP_POS=L, write this slot's recurrent state, window and
+        // KV to $QW_PREFIX_DUMP/L.<cold|resumed>.bin.  Both runs of the same
+        // prompt in one process therefore land in the same directory, and
+        // comparing the two files answers directly whether resuming from a
+        // boundary and recomputing forward reproduces what prefilling from
+        // nothing produces.  Comparing whole files first says whether they differ
+        // at all; a byte offset and stride arithmetic then names the tensor.
+        if let Some(dir) = std::env::var_os("QW_PREFIX_DUMP") {
+            let want: usize = std::env::var("QW_PREFIX_DUMP_POS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if want > 0 {
+                for (slot, entry) in slots.iter().enumerate() {
+                    let Some(a) = entry.as_ref() else { continue };
+                    if a.pf != want {
+                        continue;
+                    }
+                    match model.export_prefix(slot, a.pf) {
+                        Ok(blob) => {
+                            let tag = if a.restored { "resumed" } else { "cold" };
+                            let path =
+                                std::path::Path::new(&dir).join(format!("{want}.{tag}.bin"));
+                            match std::fs::write(&path, &blob) {
+                                Ok(()) => tracing::info!(
+                                    "prefix dump: {} bytes -> {}",
+                                    blob.len(),
+                                    path.display()
+                                ),
+                                Err(e) => tracing::warn!("prefix dump: {e}"),
+                            }
+                        }
+                        Err(e) => tracing::warn!("prefix dump export: {e}"),
+                    }
+                }
+            }
         }
 
         // ---- retire ----

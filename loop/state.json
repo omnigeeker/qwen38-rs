@@ -1947,6 +1947,27 @@
         "why_it_hides": "export and import share strides and offsets, so the blob round-trips itself perfectly without equalling the real state.",
         "next_experiment": "in one process at one position L, compare cold state/window/KV against exported-then-imported, and against import-at-p-then-recompute-p..L."
       }
+    },
+    {
+      "round": 89,
+      "title": "Exonerated the snapshot mechanism and localised the fault to recomputing one step after a restore.  Built the instrument the previous round called for: QW_PREFIX_DUMP plus QW_PREFIX_DUMP_POS write a slot's state, window and KV at position L, the restore path immediately reads its own state back to L.roundtrip.bin, and the save point writes L.saved.bin.  With a 213-token prompt and L=213, two requests in one process give a decisive pair of results.  212.saved.bin and 212.roundtrip.bin are IDENTICAL, all 172,752,912 bytes of them, so export_prefix and import_prefix round-trip perfectly and the snapshot loses nothing - both are exonerated.  But 213.cold.bin and 213.resumed.bin DIFFER, 146,664,767 of 172,818,448 bytes, 85 per cent.  The shape of that difference carries information too: the first differing byte is at offset 16, immediately after the 16-byte header and so inside the first GDN layer's state, the last is the final byte, and the gaps between differing runs are 1,1,2,1,1,2, so the divergence spans the whole blob and every layer in it.  A defect in one place would leave localised differences; a global divergence across all 48 GDN and 16 full layers means the quantity fed into the first layer, or the position semantics after a restore, must be wrong.  That rules out the KV not being restored, since it is and round-trips exactly; it rules out misaligned snapshot offsets or lengths, because a stride error would not round-trip byte-for-byte; it rules out save_prefix, already deleted with no effect; it rules out an async race, since forward_rows ends in finish(true); and it rules out is_prefix, the accounting and the boundary position, all checked line by line.  What remains, in order of likelihood: the write pointer of the GDN convolution ring, because if the window is addressed as pos modulo conv_k then writing win_stride bytes back does not reset the pointer to where the cold path had it at 212 and the next token reads a misplaced window, which is exactly the kind of fault that starts at the first layer and propagates globally; the position or seq_len the attention uses after a restore, if the KV for 0..n comes back but attention still scopes itself by the previous request's pos; and import_prefix not clearing KV left past pos, which the invalid disk test of the previous round means has still never actually been verified.  Next: use the same instrument to export after exactly one step post-restore and compare with the cold path at n+1, which tells us whether the difference begins in the first layer or in a later one; if it is the first, check the ring pointer and the attention position.  Kept the instrument, which costs nothing when QW_PREFIX_DUMP is unset, and left QW_PREFIX_SNAPSHOT opt-in.  Oracle 6/6 and batch-check 16/16 pass.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "export/import round-trip proven byte-identical; recompute path diverges globally",
+        "G4": "cache remains opt-in; fault now localised to the first step after a restore"
+      },
+      "evidence": {
+        "instrument": "QW_PREFIX_DUMP=<dir> QW_PREFIX_DUMP_POS=L dumps state/window/KV at L; saved, roundtrip and per-run files.",
+        "roundtrip": "212.saved.bin vs 212.roundtrip.bin IDENTICAL over 172,752,912 bytes - export/import exonerated.",
+        "divergence": "213.cold.bin vs 213.resumed.bin differ in 146,664,767 of 172,818,448 bytes; first diff at offset 16, last at the final byte.",
+        "meaning": "global divergence across all 48 GDN and 16 full layers means the first step after a restore is already wrong.",
+        "ruled_out": "KV restore, snapshot strides/offsets, save_prefix, async race, is_prefix, accounting, boundary position.",
+        "suspects": "GDN conv ring write pointer; attention position/seq_len after restore; KV left past pos by the previous request.",
+        "next": "export after exactly one step post-restore and compare with cold at n+1 to see which layer diverges first."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
