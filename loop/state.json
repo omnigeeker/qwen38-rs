@@ -1869,6 +1869,26 @@
         "dispatches": "689 non-GEMV dispatches per token: rmsnorm 129, rmsnorm_s 128, ewise_add 128, silu_mul 64, gdn_step 48, rmsnorm_gated 48, rope_partial 32, others 112; about 4.1 ms of it is pure dispatch overhead.",
         "plan_change": "kernel is at 404 GB/s while the engine reaches 240, so the 1.7x is outside the sweep; cut dispatches first, since it helps decode and prefill together."
       }
+    },
+    {
+      "round": 85,
+      "title": "Found that a prefix-cache hit changes the output, and reverted the default-on.  The user asked for the memory-only prefix cache to be on by default, and the implementation is nearly free - Scratch's snap buffer is allocated whether or not the flag is set and PrefixCache holds nothing but token ids - so turning it on costs no extra memory.  With it on the function worked: a 613-token request took 8.2 s cold and 0.3 s on the repeat, logging 'prefix cache HIT (saved boundary) - skipped 612 of 613 (100%)'.  But the determinism check I ran before making it the default showed it is wrong.  One request at temperature 0, sent three times: with the cache on, run 1 cold gives a particular string while runs 2 and 3, both hits, give a DIFFERENT string and agree with each other; with QW_PREFIX_SNAPSHOT=0 all three runs give the cold string and are identical.  So the restored state is not equivalent to a real prefill, the cold path is self-consistent, and the hit path is the one that is wrong.  Why this was not caught before: the section 22 verification used a 1025-token prompt and found cold 15.5 s against a 0.5 s hit with token-for-token identical output, whereas this one is 613 tokens where the hit skips 612 and recomputes one.  The difference is the boundary position, because PREFIX_LADDER keys off the distance from the end of the prompt and 613 and 1025 land on different ladder values, at least one of which is a wrong case.  It is the same family as the bug section 22 fixed, where a snapshot at the prompt end leaves the first generated token's logits uncopied, and that fix was incomplete.  Reverted engine.rs to opt-in and confirmed oracle 6/6, batch-check 16/16 and three identical cold runs.  An optimisation that changes the output cannot be the default even when the user asked for it, since correctness outranks delivery, and this qualifies section 25's claim that the objective was met: 0.2 s is real, but on lengths like 613 tokens that path answers differently from a cold start.  Next, in priority order: find and fix the boundary bug with the determinism check - the same request sent N times must give identical output and must match QW_PREFIX_SNAPSHOT=0 - folded into accept.sh; then make the memory cache the default as the user approved; then cut the 689 dispatches from section 31.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "default-on reverted; cold path verified deterministic (3 identical runs)",
+        "G4": "cache hit measured 8.2 s -> 0.3 s but produces a different answer; not shipped as default"
+      },
+      "evidence": {
+        "cheap_default": "the snap buffer is allocated unconditionally and PrefixCache holds only token ids, so memory-only caching costs no extra memory.",
+        "worked": "613 tokens: 8.2 s cold, 0.3 s on repeat, 'skipped 612 of 613 (100%)'.",
+        "bug": "with the cache on, run 1 cold and runs 2-3 hits produce different strings; with the cache off all three agree.",
+        "why_missed": "section 22 verified at 1025 tokens; this reproduces at 613 where the hit skips 612 and recomputes 1, so it is boundary-position dependent.",
+        "action": "reverted to opt-in; oracle 6/6, batch-check 16/16, three identical cold runs.",
+        "priority": "fix the boundary bug with a determinism check in accept.sh, then default the memory cache, then cut the 689 dispatches."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
