@@ -3261,3 +3261,55 @@ GEMM 用 simdgroup_matrix 的 MAC，累加顺序与 GEMV 不同 ⇒ **每个 lin
 
 - `QW_GEMM_CHECK_ALL=1`：全量 497 linear 的 GPU 对 GPU 比对（CPU 参考太慢会超时）
 - `QW_GEMM_CHECK_OUTLIER=<倍数>`：注入每 64 通道一个的 outlier
+
+
+---
+
+## 62. otps 优势复核；服务器完全没有 spec，而 spec 值 +40%（第 56 轮）
+
+### otps 优势复核（配对、同 prompt、128 token、扣除 prefill）
+
+| 轮 | 我们 | Ollama | 领先 |
+|---|---|---|---|
+| 1 | 22.0 tok/s | 19.7 tok/s | **+12.0%** |
+| 2 | 21.4 tok/s | 19.5 tok/s | **+9.8%** |
+
+**⇒ otps 确实领先 Ollama 约 +10~12%。**（绝对值因热状态波动，配对比较有效。）
+**⇒ 三项指标现状：otps ✓ 赢、暖 TTFT ✓ 赢 1.7×、冷 TTFT ✗ 输 6.6×。**
+
+### 最大的剩余机会：投机解码
+
+`gen` 实测（同 prompt、256 token、`--no-stop`）：
+
+| | decode |
+|---|---|
+| 无 spec | 26.65 tok/s（37.52 ms/token） |
+| **`QW_SPEC=1`** | **37.46 tok/s（26.69 ms/token）** |
+
+**⇒ +40.6%，且输出逐字节相同**（既有门禁 `spec==plain: byte-identical over 300 tokens` 已验证）。
+
+**但 `qw-server` 对 `QW_SPEC` 的支持为零** ⇒ 服务器把这 40% 完全留在了桌上。
+若接上，otps 将从「领先 Ollama +10%」变成「**领先约 +64%**」。
+
+### 服务器集成的可行性评估（已查清）
+
+`spec_step(pos, next, out)` 是完整的单序列投机步（`mtp_step` 草稿 3 个 → `forward2` 验证 4 行 →
+取最长一致前缀 → `commit_row` 回滚），但：
+
+1. **`forward2(pos)` 硬编码序列 0**：`(0..TILE).map(|r| (0, pos + r))`
+2. **`commit_row(row)` 写到 `g.state` 偏移 0**（即槽 0 的状态）
+3. **MTP 的 `k_cache`/`v_cache` 是单序列的**（`Mtp` 结构体只有一份）
+
+**⇒ 单请求场景下槽 0 恰好映射序列 0，所以 `spec_step` 可直接复用。**
+
+### 集成方案（下一步）
+
+在引擎里加一条**严格受限的快速路径**：
+
+- 条件：`QW_SPEC` 已设（**默认关闭**）且**恰好一个活跃槽且为槽 0** 且该槽在解码
+- 解码：调用 `model.spec_step(a.pos, a.feed, &mut out)`，发出被接受的 token
+- prefill：在该槽的 pass 之后逐行调用 `mtp_step(ids[p+1], p+1, false)` 预热 MTP 缓存
+- 门禁：扩展 `spec==plain` 的逐字节一致性检查到服务器端点
+
+**代价**：MTP 预热使 prefill 变慢约 3.3%（gen 实测 0.979 s vs 0.948 s）——用一点冷 TTFT
+换 40% 的 otps。

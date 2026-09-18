@@ -2514,6 +2514,27 @@
         "gate_proven": "with the GEMM wired the gate fails (chunk 4 and chunk 32 disagree, 14 passed 1 failed, NOT ACCEPTED); after the revert it passes (15 passed 0 failed, ACCEPTED).",
         "diagnostics_kept": "QW_GEMM_CHECK_ALL for the all-linears GPU comparison and QW_GEMM_CHECK_OUTLIER for channel outliers."
       }
+    },
+    {
+      "round": 115,
+      "title": "Re-verified the otps lead with a paired measurement and found the biggest remaining win: speculative decoding is worth 40.6 per cent but the server does not support it at all.  Paired against Ollama on the same prompt with 128 tokens and prefill excluded, we lead by 12.0 and 9.8 per cent, so the otps win is real at about ten to twelve per cent, and the three-metric picture is unchanged: otps won, warm TTFT won by 1.7 times, cold TTFT lost by 6.6.  Then I measured QW_SPEC in gen: 26.65 tokens a second without it and 37.46 with it, a 40.6 per cent gain, with the output byte-identical under the existing spec-versus-plain gate.  qw-server has no support for QW_SPEC whatsoever - the string does not appear in that crate - so the server leaves that forty per cent on the table, and wiring it in would turn a ten per cent lead over Ollama into roughly sixty-four.  I worked out what the integration needs.  spec_step is a complete single-sequence speculative step: it drafts three tokens through mtp_step, verifies with a four-row forward2, takes the longest agreeing prefix, and rolls the recurrent state back with commit_row.  Three things pin it to one sequence: forward2 hardcodes sequence zero in its row list, commit_row copies into the recurrent state at offset zero, and the MTP head's k and v caches are single-sequence.  For a single-request server that is exactly the case that matters, since the first request lands in slot zero, so spec_step can be reused as it stands.  The plan is a strictly guarded fast path: only when QW_SPEC is set - default off - and exactly one slot is active and that slot is zero and it is decoding, call spec_step and emit the accepted tokens; warm the MTP cache during that slot's prefill by calling mtp_step per row after the pass; and extend the byte-identity gate to the server endpoint.  The cost is that warming the MTP cache slows prefill by about 3.3 per cent, measured at 0.979 against 0.948 seconds in gen - a little cold TTFT for forty per cent more otps.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "paired otps against Ollama: +12.0% and +9.8% on the same prompt with 128 tokens, prefill excluded",
+        "G2": "QW_SPEC measured in gen: 26.65 to 37.46 tokens/s, +40.6%, output byte-identical under the existing gate",
+        "G3": "qw-server has no QW_SPEC support at all, so the 40% is unrealised in the server",
+        "G4": "integration constraints identified: forward2 hardcodes sequence 0, commit_row writes state offset 0, MTP k/v caches are single-sequence"
+      },
+      "evidence": {
+        "otps_paired": "round 1: ours 22.0 against Ollama 19.7 tok/s, +12.0%; round 2: 21.4 against 19.5, +9.8%.",
+        "spec_gain": "gen with QW_SPEC: 37.46 tok/s (26.69 ms/token) against 26.65 tok/s (37.52 ms/token) without, +40.6%.",
+        "spec_is_safe": "the existing accept.sh gate proves spec and plain are byte-identical over 300 tokens.",
+        "server_gap": "QW_SPEC does not appear anywhere in crates/qw-server, so the server cannot use speculative decoding.",
+        "integration_constraints": "forward2 maps rows to (0, pos+r); commit_row copies g.snap at row*sh into g.state at offset 0; the MTP struct holds one k_cache and one v_cache.",
+        "plan": "guarded single-slot fast path gated on QW_SPEC (default off) and exactly one active slot at index zero, plus MTP warming after that slot's prefill rows, plus a server-side byte-identity gate.",
+        "cost": "MTP warming slows prefill about 3.3 per cent (0.979 against 0.948 s in gen)."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
