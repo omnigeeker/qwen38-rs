@@ -1785,6 +1785,27 @@
         "head_to_head": "decode 23.9 against 24.10 is a tie; prefill 47.9/35.4 against 526-721 is 11-15x behind.",
         "root_cause": "llama.cpp prefills with a simdgroup matrix multiply GEMM; our multi-row path is a GEMV, so the 2.8x the earlier table suggested was never the real gap."
       }
+    },
+    {
+      "round": 81,
+      "title": "Won otps.  The server was 40.2 ms per token against gen's 31.9, and QW_DISPATCH_HIST showed why: gen dispatched q4_gemv_hx 497 times while the server dispatched q4_gemv_k4_u4hx 497 times, at 1186 against 1234 dispatches and 31.9 against 38.4 ms per step.  linear.rs::encode_rows had only two branches, rows <= TILE going to encode_tile, so a single-token decode took the multi-token tile kernel - and K4_U4HX is a compile-time four-row specialisation, which the code's own comment says is exactly four rows, so feeding it one row still computes four.  gen reached the plain single-token kernel by another path.  The two are numerically identical: msl.rs line 122 states that q4_gemv_k4_u4hx is q4_gemv_hx's own body with K fixed at 4, one accumulator and one 16-byte x load.  Added a single_k parameter to encode_rows so rows == 1 takes self.encode, and inserted &kernels.q4_gemv at all 14 call sites; the server's step went 38.4 to 33.1 ms, 13.8 per cent.  Gates: oracle 6/6, batch-check 16/16 with greedy tokens identical across all 16 slots, and accept.sh 12 passed 0 failed ACCEPTED twice running.  One earlier accept.sh run reported 11 passed 1 failed, but it ran immediately after llama-bench with swap at 1030 MB, load 3.24 and the GPU not yet cool, and two clean runs followed, so it was environmental rather than caused by this change.  Head to head on decode with prefill excluded, which is the same basis as llama-bench tg: ours 33.9, 35.3 and 37.2 ms per token, median 35.3, so 26.9 to 29.5 tokens per second, median 28.4; llama.cpp tg256 24.58.  That is a 15.5 per cent win on otps; for reference llama.cpp's own tg128 is 24.10 and tg32 18.98, so it also sags on longer generations.  TTFT is still split: cold on a real 6900-token agent prompt we take about 195 s against llama.cpp's pp4096 of 353.57 tokens per second, about 19.5 s, so we lose by roughly 10x cold, while on a prefix-cache hit we take 0.2 s against their 19.5 s.  llama.cpp's pp falls off with length - 302 at 64, 526 at 128, 721 at 512, 561 at 2048, 354 at 4096 - which is the same small-batch weight-sweep problem: we read all the weights once per four tokens.  TTFT counts as a win only when the prefix cache hits.",
+      "tok_s": 28.4,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "accept.sh 12 passed, 0 failed ACCEPTED (twice)",
+        "G4": "decode 28.4 tok/s vs llama.cpp tg256 24.58 = +15.5%"
+      },
+      "evidence": {
+        "symptom": "server 40.2 ms/token vs gen 31.9 ms/token.",
+        "root_cause": "encode_rows sent rows == 1 into the four-row K4_U4HX tile kernel; gen used q4_gemv_hx.",
+        "fix": "added single_k to encode_rows and routed rows == 1 to self.encode at all 14 call sites.",
+        "result": "server step 38.4 -> 33.1 ms, 13.8% faster.",
+        "gates": "oracle 6/6, batch-check 16/16, accept.sh 12/0 twice; an earlier 11/1 was environmental.",
+        "otps_win": "28.4 tok/s median against llama.cpp tg256 24.58, +15.5%.",
+        "ttft_split": "cold 195 s vs their 19.5 s (lose 10x); prefix-cache hit 0.2 s (win)."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

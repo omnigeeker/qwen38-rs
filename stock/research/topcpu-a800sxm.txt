@@ -1,0 +1,48 @@
+NVIDIA A800 SXM4 80 GB AI GPU: Detailed Specifications and Benchmark Tests
+CPU
+GPU
+SoC
+Router
+Rankings
+CPU Rankings
+GPU Rankings
+SoC Rankings
+Router Ranking
+Categories
+Close menu
+Home
+CPU
+GPU
+SoC
+Router
+Categories
+CPU Rankings
+GPU Rankings
+SoC Rankings
+Router Ranking
+Home
+NVIDIA A800 SXM4 80 GB
+NVIDIA A800 SXM4 80 GB
+This is a GPU manufactured with TSMC 7nm process, based on Nvidia Ampere architecture and released on Aug 2022. It features 54.2 billion transistors, 6912 CUDA cores and 80GB HBM2e memory, with 40MB L2 cache, theoretical performance of 19.49TFLOPS, with total power consumption of 400W.
+获取免费访问码
+扫二维码关注
+扫二维码关注公众号获取访问码或小程序直达
+确定
+查看全部内容
+An error has occurred, please check your information.
+Thank you for your feedback!
+Name
+*
+Email
+*
+Model
+Message
+*
+captcha
+*
+Submit
+Close
+© 2026 - TopCPU.net
+浙ICP备2022007251号-3
+Contact Us
+Privacy Policy

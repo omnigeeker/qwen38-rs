@@ -1303,3 +1303,66 @@ HF bf16  ->  GGUF f16    52115.19 MiB (16.00 BPW)
 
 **decode 侧差距很小（23.9 对 24.10），值得单独打磨**：真实 decode 23.9 对纯 GEMV
 权重扫读的 33.1，中间约 28% 花在权重流之外，这是可以拿回来的。
+
+
+---
+
+## 28. 赢下 otps：单 token 走了四行的内核（第 23 轮）
+
+### 症状
+
+服务端每 token 40.2 ms，而 `gen` 只有 31.9 ms。用 `QW_DISPATCH_HIST` 一对就看出：
+
+| | 内核 | dispatch | commit+wait |
+|---|---|---|---|
+| `gen` | `q4_gemv_hx` ×497 | 1186 | **31.9 ms** |
+| `serve` | `q4_gemv_k4_u4hx` ×497 | 1234 | **38.4 ms** |
+
+### 根因
+
+`linear.rs::encode_rows` 只分两支：
+
+```rust
+if rows <= TILE { self.encode_tile(batch, tile_k, x, y, rows) }   // 多 token 的 tile 内核
+else            { self.encode_b(batch, batch_k, x, y, rows) }
+```
+
+单 token 时 `rows == 1 <= TILE`，于是**走进了多 token 的 tile 内核**。而 `K4_U4HX` 是
+**编译期固定四行的特化**（§172 注释原文："`K4_U4HX` is exactly four rows"）——
+喂一行它照样算四行。`gen` 走的是另一条路径，用的是真正的单 token 内核 `q4_gemv_hx`。
+
+两者数值一致：`msl.rs:122` 写明 `q4_gemv_k4_u4hx` 就是 `q4_gemv_hx` 的同一段函数体，
+只是 K 固定为 4（"one accumulator, one 16-byte x load"）。**所以换核不改结果，只少算三行。**
+
+### 修法
+
+`encode_rows` 加一个 `single_k` 参数，`rows == 1` 时走 `self.encode(batch, single_k, x, y)`；
+14 个调用点统一插入 `&kernels.q4_gemv`。**服务端每步 38.4 → 33.1 ms（省 13.8%）。**
+
+### 门禁
+
+oracle **6/6**、batch-check **16/16**（16 槽 greedy 逐 token 一致）、
+accept.sh **12 passed / 0 failed ACCEPTED**（连续两次）。
+
+> 一次 accept.sh 报 11/1 NOT ACCEPTED，是在紧接 llama-bench 之后跑的（`swap 1030M`、
+> load 3.24、GPU 未冷）。随后连续两次 12/0，判定为环境性抖动，非本次改动所致。
+
+### 与 llama.cpp 同口径对拍（decode 排除 prefill）
+
+| | ms/token | tok/s |
+|---|---|---|
+| 我们（三次，TTFT 0.3 s 已扣除） | 33.9 / 35.3 / 37.2，中位 35.3 | **26.9 – 29.5，中位 28.4** |
+| llama.cpp `tg256` | 41.5 | **24.58** |
+
+**⇒ otps 赢了约 15.5%。** 参照：`tg128` 24.10、`tg32` 18.98，llama.cpp 自己在长生成上也在掉。
+
+### TTFT 两侧仍然分裂
+
+| | 我们 | llama.cpp |
+|---|---|---|
+| 冷启动、约 6900 token 的真实 agent prompt | **约 195 s** | `pp4096` 353.57 t/s ⇒ **约 19.5 s** |
+| 命中前缀缓存后的 TTFT | **0.2 s** | 冷启动 19.5 s（除非它自己也缓存） |
+
+llama.cpp 的 pp 随长度衰减很明显：pp64 302、pp128 526、**pp512 721**、pp2048 561、pp4096 354。
+**冷 prefill 我们仍落后约 10 倍**——这正是 §27 说的"批量太小、权重每 4 个 token 读一遍"的后果，
+必须靠大 batch 的真 GEMM 才能解决。**TTFT 这一项只有在命中前缀缓存时才算赢。**

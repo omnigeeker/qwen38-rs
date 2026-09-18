@@ -1,0 +1,767 @@
+英伟达受限GPU与常规型号参数对比-天翼云开发者社区 - 天翼云
+AI创作平台套餐32.67元/年起，花卷聆记AI录音卡598元起
+查看详情
+活动
+天翼云最新优惠活动，涵盖免费试用，产品折扣等，助您降本增效！
+热门活动
+818 天翼云云智盛典
+NEW
+爆款云主机低至1.5折起，Token套餐低至9.9元/月起
+安全隔离版OpenClaw
+NEW
+OpenClaw云服务器专属“龙虾“套餐低至1.5折起
+聚力AI赋能 天翼云大模型专项
+大模型特惠专区·Token Plan 轻享包低至9.9元起
+青云志云端助力计划
+NEW
+一站式科研助手，海外资源安全访问平台，助力青年翼展宏图，平步青云
+企业出海解决方案
+NEW
+助力您的业务扬帆出海，通达全球！
+天翼云信创专区
+NEW
+“一云多芯、一云多态”,国产化软件全面适配，国产操作系统及硬件芯片支持丰富
+云上钜惠
+爆款云主机全场特惠，2核4G只要1.8折起！
+天翼云奖励推广计划
+加入成为云推官，推荐新用户注册下单得现金奖励
+免费活动
+免费试用中心
+HOT
+多款云产品免费试用，快来开启云上之旅
+天翼云用户体验官
+NEW
+您的洞察，重塑科技边界
+息壤智算
+领先开放的智算服务平台，提供算力、平台、数据、模型、应用“五位一体”智算服务体系，构建全流程的AI基础设施能力
+星辰TokenHub
+模型广场
+体验中心
+服务接入
+星辰MaaS平台
+星辰MaaS智能体平台
+星辰大模型
+大模型
+glm-5.3-flash
+GLM-5.2
+deepseek-v4-pro-0813
+deepseek-v4-flash-0731-new
+qwen3.8-flash
+AI Store
+算力市场
+模型市场
+应用市场
+应用托管
+天翼云DramaFlow2.0
+应用实例
+科研助手
+开发机
+并行计算
+训推服务
+模型开发
+训练任务
+服务部署
+智能体引擎
+智能体引擎
+可信数据空间
+可信数据空间
+公共算力服务
+裸金属
+定制裸金属
+智算一体机
+智算一体机
+模型适配专家服务
+模型适配专家服务
+算力服务商
+入驻算力服务商
+应用商城
+天翼云精选行业优秀合作伙伴及千余款商品，提供一站式云上应用服务
+进入甄选商城
+进入AI Store
+公有云生态专区
+智云上海应用生态专区
+建站工具
+新域名服务
+SSL证书
+翼建站
+企业办公
+智教云电脑
+WPS 365 天翼云版
+灾备迁移
+云管家2.0
+翼备份（SaaS版）
+琥珀数据压缩归档服务
+智慧教育
+智擎思政平台（个人版）
+智擎研学平台（个人基础版）
+定价
+协助您快速了解云产品计费模式、价格详情，轻松预估上云成本
+价格计算器
+动态测算产品价格
+定价策略
+快速了解计费模式
+合作伙伴
+天翼云携手合作伙伴，共创云上生态，合作共赢
+天翼云生态合作中心
+天翼云生态合作中心
+天翼云渠道合作伙伴
+天翼云代理渠道合作伙伴
+天翼云服务合作伙伴
+天翼云集成商交付能力认证
+天翼云应用合作伙伴
+天翼云甄选商城合作伙伴
+天翼云技术合作伙伴
+天翼云OpenAPI中心
+天翼云培训认证
+天翼云学堂
+天翼信创云专区
+信创云专区
+适配互认证
+开发者
+开发者相关功能入口汇聚
+技术社区
+专栏文章
+互动问答
+技术视频
+资源与工具
+OpenAPI中心
+培训与认证
+天翼云学堂
+天翼云认证
+开源社区
+魔乐社区
+OpenTeleDB
+支持与服务
+为您提供全方位支持与服务，全流程技术保障，助您轻松上云，安全无忧
+文档与工具
+文档中心
+新手上云
+自助服务
+OpenAPI中心
+定价
+价格计算器
+定价策略
+基础服务
+售前咨询
+在线支持
+在线支持
+工单服务
+服务保障
+会员中心
+增值服务
+红心服务
+首保服务
+客户支持计划
+专家技术服务
+备案管家
+我要反馈
+建议与反馈
+用户体验官
+信息公告
+客户公告
+了解天翼云
+天翼云秉承央企使命，致力于成为数字经济主力军，投身科技强国伟大事业，为用户提供安全、普惠云服务
+品牌介绍
+关于天翼云
+智算云
+新闻资讯
+天翼云APP
+基础设施
+全球基础设施
+信任中心
+最佳实践
+精选案例
+超级探访
+云杂志
+分析师和白皮书
+天翼云·创新直播间
+市场活动
+2026智能云生态大会
+2025智能云生态大会
+2024智算云生态大会
+2023云生态大会
+2022云生态大会
+天翼云中国行
+活动
+息壤智算
+产品
+解决方案
+应用商城
+定价
+合作伙伴
+开发者
+支持与服务
+了解天翼云
+文档
+控制中心
+备案
+管理中心
+活动
+查看全部
+息壤智算
+息壤智算
+解决方案
+息壤智算
+AI
+信创云
+出海
+大数据
+互联网应用开发
+迁移与上云
+政企业务
+安全
+网络
+最佳实践
+应用商城
+应用商城
+定价
+定价
+合作伙伴
+合作伙伴
+开发者
+开发者
+支持与服务
+支持与服务
+了解天翼云
+了解天翼云
+注册
+登录
+发布文章
+消息中心
+社区专栏
+>
+英伟达受限GPU与常规型号参数对比
+>
+点赞
+收藏
+评论
+分享
+原创
+英伟达受限GPU与常规型号参数对比
+云计算
+2023-07-24 09:18:01
+357
+0
+英伟达受限GPU与常规型号参数对比
+2022年10月7日，美国出台了对华半导体出口限制新规，其中就包括了对于高性能计算芯片对中国大陆的出口限制。并且以NVIDIA的A100芯片的性能指标作为限制标准。即同时满足以下两个条件的即为受管制的高性能计算芯片：（1）芯片的I/O带宽传输速率大于或等于600 Gbyte/s；（2）“数字处理单元 原始计算单元”每次操作的比特长度乘以TOPS 计算出的的算力之和大于或等于4800TOPS。这也使得NVIDIA A100/H100系列、AMD MI200/300系列AI芯片无法对华出口。
+随后NVIDIA为了在遵守美国限制规则的前提下，同时满足中国客户的需求，在2022年11月8日宣布将推出符合美国新规的A100的替代产品A800。从官方公布的参数来看，A800主要是将NVLink的传输速率由A100的600GB/s降至了400GB/s，其他参数与A100基本一致。
+参数/型号
+A100
+40GB PCIe
+A100
+80GB PCIe
+A100
+40GB SXM
+A100
+80GB SXM
+A800
+40GB PCIe
+A800
+80GB PCIe
+A800
+80GB SXM
+FP64
+9.7 TFLOPS
+FP64 Tensor Core
+19.5 TFLOPS
+FP32
+19.5 TFLOPS
+TF32 Tensor Core
+156 TFLOPS
+312 TFLOPS
+156 TFLOPS
+312 TFLOPS
+BFLOAT16 Tensor Core
+312 TFLOPS
+624 TFLOPS
+312 TFLOPS
+624 TFLOPS
+FP16 Tensor Core
+312 TFLOPS
+624 TFLOPS
+312 TFLOPS
+624 TFLOPS
+INT8 Tensor Core
+624 TOPS
+624 TOPS
+1248 TOPS
+1248 TOPS
+624 TOPS
+624 TOPS
+1248 TOPS
+GPU memory
+40GB
+HBM2e
+80GB
+HBM2e
+40GB
+HBM2e
+80GB
+HBM2e
+40GB
+HBM2e
+80GB
+HBM2e
+80GB
+HBM2e
+GPU memory带宽
+1555GB/s
+1935GB/s
+1555GB/s
+2039GB/s
+1555GB/s
+1935GB/s
+2039GB/s
+Max TDP
+250W
+300W
+400W
+400W
+250W
+300W
+400W
+Multi-instance GPUs
+Up to 7 MIGs @5GB
+Up to 7 MIGs @10GB
+Up to 7 MIGs @5GB
+Up to 7 MIGs @10GB
+Up to 7 MIGs @5GB
+Up to 7 MIGs @10GB
+Up to 7 MIGs @10GB
+Form factor
+PCIe
+双插槽风冷式
+单插槽液冷式
+SXM
+PCIe
+双插槽风冷式
+单插槽液冷式
+SXM
+Interconnect
+搭载 2 个 GPU 的
+NVIDIA NVLink 桥接
+器：600GB/s
+PCIe 4.0 ：64GB/s
+NVLink ：600GB/s
+PCIe 4.0 ：64GB/s
+搭载 2 个 GPU 的
+NVIDIA NVLink 桥接
+器：
+400GB/s
+PCIe 4.0 ：64GB/s
+NVLink ：
+400GB/s
+PCIe 4.0 ：64GB/s
+今年3月，英伟达发布了新一代基于4nm工艺，拥有800亿个晶体管、18432个核心的H100 GPU，采用CoWoS 2.5D封装技术，核心面积814平方毫米。它拥有18432个CUDA核心、576个Tensor核心、60MB二级缓存，可搭配6144-bit位宽的六颗HBM3/HBM2e，总容量80GB，支持PCIe 5.0、第四代NVLink总线。它有两种样式，其中SXM版本15872个CUDA核心、528个Tensor核心，显存带宽3.35TB/s，NVLink带宽900GB/s，PCIe 5.0带宽128GB/s，热设计功耗最高700W。PCIe 5.0版本14952个CUDA核心、456个Tensor核心，显存带宽2TB/s，NVLink带宽600GB/s，PCIe 5.0带宽128GB/s，热设计功耗300-350W。
+目前尚不清楚中国特供的H800是哪种样式，猜测很可能是PCIe，那么NVLink互连带宽就只有300GB/s，PCIe 5.0则应该不会缩水。
+参数/型号
+H100 SXM
+H100 PCIe
+H100 NVL
+FP64
+34 teraFLOPS
+26 teraFLOPS
+68 teraFLOPS
+FP64 Tensor Core
+67 teraFLOPS
+51 teraFLOPS
+134 teraFLOPS
+FP32
+67 teraFLOPS
+51 teraFLOPS
+134 teraFLOPS
+TF32 Tensor Core
+989 teraFLOPS
+756 teraFLOPS
+1,979 teraFLOPS
+BFLOAT16 Tensor Core
+1,979 teraFLOPS
+1,513 teraFLOPS
+3,958 teraFLOPS
+FP16 Tensor Core
+1,979 teraFLOPS
+1,513 teraFLOPS
+3,958 teraFLOPS
+FP8 Tensor Core
+3,958 teraFLOPS
+3,026 teraFLOPS
+7,916 teraFLOPS
+INT8 Tensor Core
+3,958 TOPS
+3,026 TOPS
+7,916 TOPS
+GPU memory
+80GB
+80GB
+188GB
+GPU memory bandwidth
+3.35TB/s
+2TB/s
+7.8TB/s
+Decoders
+7 NVDEC
+7 JPEG
+7 NVDEC
+7 JPEG
+14 NVDEC
+14 JPEG
+Max TDP
+Up to 700W
+(configurable)
+300-350W
+(configurable)
+2 x 350-400W
+(configurable)
+Multi-instance GPUs
+Up to 7 MIGs @
+10GB each
+Up to 7 MIGs @
+10GB each
+Up to 14 MIGs @
+12GB each
+Form factor
+SXM
+PCIe
+> dual-slot
+> air-cooled
+2x PCIe
+> dual-slot
+> air-cooled
+Interconnect
+NVLink:  900GB/s PCIe Gen5: 128GB/s
+NVLink: 600GB/s PCIe Gen5: 128GB/s
+NVLink: 600GB/s PCIe Gen5: 128GB/s
+版权声明：本文内容系天翼云实名用户自发贡献，版权归原作者所有，天翼云开发者社区不拥有其著作权，亦不承担相应法律责任，未经许可，不得转载。
+如有疑问或争议，请联系ctyunbbs@chinatelecom.cn删除。
+0条评论
+作者已关闭评论
+h****n
+3
+文章数
+1
+点赞数
+1
+粉丝数
+关注
+进入个人专栏
+h****n
+3
+文章
+|
+1
+粉丝
+关注
+Ta的热门文章
+查看更多
+国产化CPU生态情况简介
+英伟达受限GPU与常规型号参数对比
+CXL 深入探讨：可组合服务器架构和异构计算的未来
+h****n
+3
+文章数
+1
+点赞数
+1
+粉丝数
+关注
+进入个人专栏
+h****n
+3
+文章
+|
+1
+粉丝
+关注
+原创
+英伟达受限GPU与常规型号参数对比
+云计算
+2023-07-24 09:18:01
+357
+0
+英伟达受限GPU与常规型号参数对比
+2022年10月7日，美国出台了对华半导体出口限制新规，其中就包括了对于高性能计算芯片对中国大陆的出口限制。并且以NVIDIA的A100芯片的性能指标作为限制标准。即同时满足以下两个条件的即为受管制的高性能计算芯片：（1）芯片的I/O带宽传输速率大于或等于600 Gbyte/s；（2）“数字处理单元 原始计算单元”每次操作的比特长度乘以TOPS 计算出的的算力之和大于或等于4800TOPS。这也使得NVIDIA A100/H100系列、AMD MI200/300系列AI芯片无法对华出口。
+随后NVIDIA为了在遵守美国限制规则的前提下，同时满足中国客户的需求，在2022年11月8日宣布将推出符合美国新规的A100的替代产品A800。从官方公布的参数来看，A800主要是将NVLink的传输速率由A100的600GB/s降至了400GB/s，其他参数与A100基本一致。
+参数/型号
+A100
+40GB PCIe
+A100
+80GB PCIe
+A100
+40GB SXM
+A100
+80GB SXM
+A800
+40GB PCIe
+A800
+80GB PCIe
+A800
+80GB SXM
+FP64
+9.7 TFLOPS
+FP64 Tensor Core
+19.5 TFLOPS
+FP32
+19.5 TFLOPS
+TF32 Tensor Core
+156 TFLOPS
+312 TFLOPS
+156 TFLOPS
+312 TFLOPS
+BFLOAT16 Tensor Core
+312 TFLOPS
+624 TFLOPS
+312 TFLOPS
+624 TFLOPS
+FP16 Tensor Core
+312 TFLOPS
+624 TFLOPS
+312 TFLOPS
+624 TFLOPS
+INT8 Tensor Core
+624 TOPS
+624 TOPS
+1248 TOPS
+1248 TOPS
+624 TOPS
+624 TOPS
+1248 TOPS
+GPU memory
+40GB
+HBM2e
+80GB
+HBM2e
+40GB
+HBM2e
+80GB
+HBM2e
+40GB
+HBM2e
+80GB
+HBM2e
+80GB
+HBM2e
+GPU memory带宽
+1555GB/s
+1935GB/s
+1555GB/s
+2039GB/s
+1555GB/s
+1935GB/s
+2039GB/s
+Max TDP
+250W
+300W
+400W
+400W
+250W
+300W
+400W
+Multi-instance GPUs
+Up to 7 MIGs @5GB
+Up to 7 MIGs @10GB
+Up to 7 MIGs @5GB
+Up to 7 MIGs @10GB
+Up to 7 MIGs @5GB
+Up to 7 MIGs @10GB
+Up to 7 MIGs @10GB
+Form factor
+PCIe
+双插槽风冷式
+单插槽液冷式
+SXM
+PCIe
+双插槽风冷式
+单插槽液冷式
+SXM
+Interconnect
+搭载 2 个 GPU 的
+NVIDIA NVLink 桥接
+器：600GB/s
+PCIe 4.0 ：64GB/s
+NVLink ：600GB/s
+PCIe 4.0 ：64GB/s
+搭载 2 个 GPU 的
+NVIDIA NVLink 桥接
+器：
+400GB/s
+PCIe 4.0 ：64GB/s
+NVLink ：
+400GB/s
+PCIe 4.0 ：64GB/s
+今年3月，英伟达发布了新一代基于4nm工艺，拥有800亿个晶体管、18432个核心的H100 GPU，采用CoWoS 2.5D封装技术，核心面积814平方毫米。它拥有18432个CUDA核心、576个Tensor核心、60MB二级缓存，可搭配6144-bit位宽的六颗HBM3/HBM2e，总容量80GB，支持PCIe 5.0、第四代NVLink总线。它有两种样式，其中SXM版本15872个CUDA核心、528个Tensor核心，显存带宽3.35TB/s，NVLink带宽900GB/s，PCIe 5.0带宽128GB/s，热设计功耗最高700W。PCIe 5.0版本14952个CUDA核心、456个Tensor核心，显存带宽2TB/s，NVLink带宽600GB/s，PCIe 5.0带宽128GB/s，热设计功耗300-350W。
+目前尚不清楚中国特供的H800是哪种样式，猜测很可能是PCIe，那么NVLink互连带宽就只有300GB/s，PCIe 5.0则应该不会缩水。
+参数/型号
+H100 SXM
+H100 PCIe
+H100 NVL
+FP64
+34 teraFLOPS
+26 teraFLOPS
+68 teraFLOPS
+FP64 Tensor Core
+67 teraFLOPS
+51 teraFLOPS
+134 teraFLOPS
+FP32
+67 teraFLOPS
+51 teraFLOPS
+134 teraFLOPS
+TF32 Tensor Core
+989 teraFLOPS
+756 teraFLOPS
+1,979 teraFLOPS
+BFLOAT16 Tensor Core
+1,979 teraFLOPS
+1,513 teraFLOPS
+3,958 teraFLOPS
+FP16 Tensor Core
+1,979 teraFLOPS
+1,513 teraFLOPS
+3,958 teraFLOPS
+FP8 Tensor Core
+3,958 teraFLOPS
+3,026 teraFLOPS
+7,916 teraFLOPS
+INT8 Tensor Core
+3,958 TOPS
+3,026 TOPS
+7,916 TOPS
+GPU memory
+80GB
+80GB
+188GB
+GPU memory bandwidth
+3.35TB/s
+2TB/s
+7.8TB/s
+Decoders
+7 NVDEC
+7 JPEG
+7 NVDEC
+7 JPEG
+14 NVDEC
+14 JPEG
+Max TDP
+Up to 700W
+(configurable)
+300-350W
+(configurable)
+2 x 350-400W
+(configurable)
+Multi-instance GPUs
+Up to 7 MIGs @
+10GB each
+Up to 7 MIGs @
+10GB each
+Up to 14 MIGs @
+12GB each
+Form factor
+SXM
+PCIe
+> dual-slot
+> air-cooled
+2x PCIe
+> dual-slot
+> air-cooled
+Interconnect
+NVLink:  900GB/s PCIe Gen5: 128GB/s
+NVLink: 600GB/s PCIe Gen5: 128GB/s
+NVLink: 600GB/s PCIe Gen5: 128GB/s
+版权声明：本文内容系天翼云实名用户自发贡献，版权归原作者所有，天翼云开发者社区不拥有其著作权，亦不承担相应法律责任，未经许可，不得转载。
+如有疑问或争议，请联系ctyunbbs@chinatelecom.cn删除。
+文章来自个人专栏
+文章
+|
+订阅
+订阅
+0条评论
+作者已关闭评论
+作者已关闭评论
+0
+0
+7*24小时售后
+无忧退款
+免费备案
+专家服务
+售前咨询热线
+400-810-9889转1
+关注天翼云
+服务与支持
+备案中心
+售前咨询
+智能客服
+自助服务
+工单管理
+客户公告
+涉诈举报
+账户管理
+管理中心
+订单管理
+余额管理
+发票管理
+充值汇款
+续费管理
+快速入口
+天翼云旗舰店
+文档中心
+最新活动
+免费试用
+信任中心
+天翼云学堂
+云网生态
+甄选商城
+渠道合作
+云市场合作
+了解天翼云
+关于天翼云
+天翼云APP
+服务案例
+新闻资讯
+联系我们
+热门产品
+云电脑
+弹性云主机
+云电脑政企版
+天翼云手机
+云数据库
+对象存储
+云硬盘
+Web应用防火墙
+息壤智算平台
+CDN加速
+热门推荐
+云服务备份
+边缘安全加速平台
+全站加速
+安全加速
+云服务器
+云主机
+智能边缘云
+应用编排服务
+微服务引擎
+共享流量包
+更多推荐
+web应用防火墙
+密钥管理
+等保咨询
+安全专区
+应用运维管理
+云日志服务
+文档数据库服务
+云搜索服务
+数据湖探索
+数据仓库服务
+友情链接
+中国电信集团
+天翼云国际站
+189邮箱
+天翼企业云盘
+天翼云盘
+©2026 天翼云科技有限公司版权所有 增值电信业务经营许可证A2.B1.B2-20090001
+公司地址：北京市东城区青龙胡同甲1号、3号2幢2层205-32室
+用户协议
+隐私政策
+个人信息保护
+法律声明
+京公网安备11010802043424号
+京ICP备 2021034386号

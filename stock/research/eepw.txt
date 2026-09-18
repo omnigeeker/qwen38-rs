@@ -1,0 +1,420 @@
+传英伟达正开发新款中国特供版AI芯片：HGX H20/L20 PCle/L2 PCle
+首页
+每日头条
+设计
+嵌入式系统
+元件/连接器
+电源与新能源
+安防与国防
+汽车电子
+EDA/PCB
+消费电子
+工业自动化
+模拟技术
+医疗电子
+测试测量
+通信技术
+光电显示
+网络与存储
+智能计算
+物联网与传感器
+机器人
+在线研讨会
+资源
+EETV
+培训
+电子方案
+资料下载
+技术汇
+PI技术专区
+ADI技术专区
+美信技术专区
+研华技术专区
+贝能技术社区
+Fluke技术社区
+ZYNQ技术社区
+世强专区技术社区
+Microchip资源专区
+Microchip视频专区
+Quark技术社区
+Xilinx社区
+MultiSIM BLUE
+Andes专区
+TE金属混合保护专区
+ADI视频专区
+OpenVINO生态社区
+金升阳电源技术专区
+Led技术社区
+DSP技术社区
+FPGA技术社区
+MCU技术社区
+USB技术社区
+CPLD技术社区
+Zigbee技术社区
+Labview技术社区
+Arduino技术社区
+示波器技术社区
+步进电机技术社区
+无线充电技术社区
+人脸识别技术社区
+指纹识别技术社区
+互动社区
+论坛
+开发板试用
+博客
+活动中心
+积分礼品
+技术应用
+汽车电子
+嵌入式系统
+模拟技术
+电源与新能源
+元件/连接器
+手机与无线通信
+网络与存储
+光电显示
+EDA/PCB
+工控自动化
+消费电子
+医疗电子
+物联网与传感器
+测试测量
+安全与国防
+智能计算
+机器人
+EEPW
+论坛
+开发板试用
+电子设计方案
+博客
+在线研讨会
+EETV
+白皮书
+资料库
+<a href='https://ad.eepw.com.cn/www/delivery/ck.php?n=a4c46fa4&amp;cb=INSERT_RANDOM_NUMBER_HERE' target='_blank'><img src='https://ad.eepw.com.cn/www/delivery/avw.php?zoneid=89&amp;cb=INSERT_RANDOM_NUMBER_HERE&amp;n=a4c46fa4' border='0' alt='' /></a>
+专栏中心
+EEPW首页
+>
+专栏
+> 传英伟达正开发新款中国特供版AI芯片：HGX H20/L20 PCle/L2 PCle
+传英伟达正开发新款中国特供版AI芯片：HGX H20/L20 PCle/L2 PCle
+发布人：
+芯智讯
+时间：2023-11-16
+来源：工程师
+加入技术交流群
+扫码加入
+和技术大咖面对面交流
+海量资料库查询
+发布文章
+<a href='https://ad.eepw.com.cn/www/delivery/ck.php?n=a635e61e&amp;cb=INSERT_RANDOM_NUMBER_HERE' target='_blank'><img src='https://ad.eepw.com.cn/www/delivery/avw.php?zoneid=88&amp;cb=INSERT_RANDOM_NUMBER_HERE&amp;n=a635e61e' border='0' alt='' /></a>
+11月9日消息，据《科创板日报》报道，产业链人士称英伟达（NVIDIA）现已开发出针对中国区的最新改良版 AI 芯片，包括 HGX H20、L20 PCle 和 L2 PCle。
+知情人士称，这三款芯片均基于英伟达 H100 改良而来，英伟达预计最快将于 11 月 16 号之后公布，国内厂商最快将在这几天拿到样品。
+对此传闻，英伟达方面目前暂未回应。
+公开资料显示，NVIDIA H100 Tensor Core GPU 采用全新 Hopper 架构，基于台积电 N4 工艺，集成了 800 亿个晶体管。与上一代产品相比，可为多专家 (MoE) 模型提供高 9 倍的训练速度。
+它配备第四代 Tensor Core 和 Transformer 引擎（FP8 精度），还具有高度可扩展的 NVLink 互连技术（最多可连接达 256 个 H100 GPU，相较于上一代采用 HDR Quantum InfiniBand 网络，带宽高出 9 倍，带宽速度为 900GB/s）等功能。
+编辑：芯智讯-林子
+专栏文章内容及配图由作者撰写发布，仅供工程师学习之用，如有侵权或者其他违规问题，请联系本站处理。
+联系我们
+<a href='https://ad.eepw.com.cn/www/delivery/ck.php?n=ae6854a5&amp;cb=INSERT_RANDOM_NUMBER_HERE' target='_blank'><img src='https://ad.eepw.com.cn/www/delivery/avw.php?zoneid=119&amp;cb=INSERT_RANDOM_NUMBER_HERE&amp;n=ae6854a5' border='0' alt='' /></a>
+关键词：
+芯片
+相关推荐
+DS2413 1-Wire 双通道寻址开关
+DS2413 是双通道可编程 I/O 1-Wire 芯片。PIO 输出
+配置为漏极开路，提供最高 20mA 的吸电流能力，关
+断状态工作电压可达 28V。...
+资源下载
+Maxim
+双通道寻址开关
+DS2413
+1-Wire 芯片
+2007-03-20
+【圣邦微电子】SGM37460Q
+【圣邦微电子】SGM37460Q...
+视频
+圣邦微电子，车规级，芯片，汽车电子
+2026-04-04
+am29lv160db芯片烧写/擦除判断位d7不够可靠?!
+seasoblue
+2002-05-24
+中微半导：发布自研32M bit SPI NOR Flash芯片
+2026年5月12日，中微半导体（深圳）股份有限公司（简称“中微半导”）发布《关于自愿披露公司发布新产品的公告》，正式推出自研32Mbit SPI NOR Flash芯片，型号为CMS25Q32A，这是公司继今年1月发布...
+中微半导
+芯片
+2026-05-13
+纳芯微推出 NSUC1527 氛围灯驱动芯片 赋能智能座舱区域化动态光效
+随着智能座舱不断升级，汽车氛围灯已从单纯装饰照明，逐步转变为座舱智能交互的重要组成部分，对灯光系统的集成度、动态效果与系统可靠性提出更高要求。为此，纳芯微推出 NovoGenius® 系列车规级 “MCU+” 氛围灯驱动...
+元件/连接器
+纳芯微
+芯片
+智能座舱
+2026-04-21
+基于D类功放专用驱动芯片驱动的高保真纯正弦波逆变器1
+设计方案
+基于
+功放
+专用
+驱动
+芯片
+高保真
+正弦波
+逆变器
+2009-07-06
+阿斯麦CEO：首批High-NA光刻机生产的芯片将在数月内面世
+据路透社消息，全球顶尖芯片设备制造商阿斯麦（ASML）首席执行官克里斯托夫·富凯于当地时间周二在比利时微电子研究中心（imec）举办的行业会议上公开表示，公司预计未来数月内，将迎来首批采用新款高数值孔径（High-NA）...
+EDA/PCB
+ASML
+阿斯麦
+光刻机
+芯片
+High-NA EUV
+2026-05-20
+Q1服务器CPU均价大涨27% 英特尔被曝出售原本将报废的芯片
+据 Tom’s Hardware 援引消息人士报道，在 CPU 需求异常强劲的背景下，英特尔正在出售原本会被报废或划为低等级的芯片，客户也愿意接受这类产品，为公司带来额外收入。芯片生产时，晶圆边缘的晶粒通常缺陷更多、性能...
+网络与存储
+服务器
+CPU
+英特尔
+芯片
+2026-04-28
+AI催生“芯片通胀”：2D NAND价格失控，300%涨幅背后的行业博弈
+2026年，全球存储芯片行业正经历一场前所未有的结构性剧变。在人工智能算力需求的狂飙式增长下，全球存储芯片大厂正以前所未有的力度将生产资源全面集中至HBM（高带宽内存）与先进3D NAND等高端领域，导致2D NAND、...
+AI
+芯片
+2D NAND
+HBM
+2026-05-19
+预测：全球通信芯片市场2003年将反弹
+hpnet
+2002-05-25
+s3c4510 芯片手册
+s3c4510 芯片手册...
+资源下载
+s3c4510 芯片
+手册
+2007-02-28
+英伟达CFO：我们早就知道内存大涨价要来了
+英伟达首席财务官科莱特·克雷斯近日在接受采访时表示，当前席卷行业的内存短缺，本可以通过更早下单来规避，并暗指不少竞争对手对价格飙升的预判严重不足。 她强调，英伟达很早就意识到高性能 AI 芯片将推高高带宽内存（HBM）和...
+英伟达
+AI
+芯片
+内存
+2026-05-24
+ep7312芯片原理及应用
+本文重点讲了 EP7312 的结构、功能、接口特性及其在嵌入式系统中的应用。...
+资源下载
+Cirrus Logic 公司
+ARM 芯片
+EP7312
+嵌入式
+内存映射
+2007-02-16
+用MAX610系列AC／DC芯片构成的小功率无变压器稳压电源
+设计方案
+MAX610
+系列
+芯片
+构成
+功率
+变压器
+稳压电源
+2009-07-06
+苹果A20芯片大概率无缘WMCM 封装技术
+当前持续的DRAM 内存缺货现状，显然正迫使苹果大幅下调新一代A20 芯片的研发规格与性能预期。这款芯片原定用于标准版 iPhone 18，这也充分说明，即便是苹果，如今也无法完全规避&nb...
+EDA/PCB
+苹果
+A20
+芯片
+WMCM
+封装技术
+2026-04-30
+先进的锂电池线性充电管理芯片BQ2057充电电路
+设计方案
+先进
+锂电池
+线性
+充电
+管理
+芯片
+BQ2057
+电路
+2009-07-06
+[原创]集成光学/IC模块 -- 将系统级芯片提高到新水平
+Gao
+2002-07-01
+可编程快速充电管理芯片MAX712/ MAX713电路
+设计方案
+可编程
+快速
+充电
+管理
+芯片
+MAX712
+MAX713
+2009-07-06
+Arm遭遇监管危机：FTC针对其技术授权启动反垄断调查
+全球芯片架构霸主Arm正遭遇前所未有的监管危机。5月15日消息，美国联邦贸易委员会（FTC）正式对Arm启动反垄断调查，重点审查其CPU技术授权是否构成非法垄断，同时核查该公司在推进自研芯片过程中，是否存在拒绝授权、降低...
+Arm
+FTC
+反垄断
+CPU
+芯片
+架构
+2026-05-18
+经验点滴之二：烧写器PICKIT
+jackwang
+2002-06-19
+保证航天飞机起飞 NASA到处寻找8086芯片
+hpnet
+2002-05-17
+数据传输影响AI芯片性能，浅析NoC互联架构
+各类AI芯片存在共性设计问题，云端、边缘、车载、工业机器人芯片的性能，不仅取决于计算核心算力，还和数据传输效率密切相关。数据传输出现延迟时，计算核心会处于闲置状态，造成吞吐降低、延迟增加、功耗浪费。片上网络（NoC）是一...
+智能计算
+芯片
+数据搬运
+片上网络
+2026-05-21
+Dallas实时时钟（RTC)芯片DS1306硬件手册
+Dallas实时时钟（RTC)芯片DS1306硬件手册...
+资源下载
+MAXIM
+INTEGRATED PRODUCTS
+Dallas
+实时时钟（RTC)芯片
+DS1306
+2007-02-09
+基于D类功放专用驱动芯片驱动的高保真纯正弦波逆变器
+设计方案
+基于
+功放
+专用
+驱动
+芯片
+高保真
+正弦波
+逆变器
+2009-07-06
+华为麒麟9030S芯片首发
+4月20日，华为Pura系列及全场景新品发布会正式拉开帷幕。在这场备受瞩目的盛会上，华为常务董事、产品投资评审委员会主任、终端BG董事长余承东宣布，Pura 90 Pro/Pro Max将首发麒麟9030S芯片。根据官方...
+华为
+麒麟
+芯片
+2026-04-21
+KS8999 以太网络交换机芯片
+KS8999 以太网络交换机芯片...
+资源下载
+KS8999
+以太网络交换机
+芯片
+2007-02-28
+上一篇：Arm上市后首份财报公布：四季度展望不及预期，盘后股价大跌近7%
+下一篇：被迫出售NWF股权，安世半导体与Vishay达成协议
+<a href='https://ad.eepw.com.cn/www/delivery/ck.php?n=a674caa6&amp;cb=INSERT_RANDOM_NUMBER_HERE' target='_blank'><img src='https://ad.eepw.com.cn/www/delivery/avw.php?zoneid=86&amp;cb=INSERT_RANDOM_NUMBER_HERE&amp;n=a674caa6' border='0' alt='' /></a>
+更多
+培训课堂
+更多
+焦点
+<a href='https://ad.eepw.com.cn/www/delivery/ck.php?n=a50e4511&amp;cb=INSERT_RANDOM_NUMBER_HERE' target='_blank'><img src='https://ad.eepw.com.cn/www/delivery/avw.php?zoneid=85&amp;cb=INSERT_RANDOM_NUMBER_HERE&amp;n=a50e4511' border='0' alt='' /></a>
+更多
+视频
+<a href='https://ad.eepw.com.cn/www/delivery/ck.php?n=aaeb3436&amp;cb=INSERT_RANDOM_NUMBER_HERE' target='_blank'><img src='https://ad.eepw.com.cn/www/delivery/avw.php?zoneid=84&amp;cb=INSERT_RANDOM_NUMBER_HERE&amp;n=aaeb3436' border='0' alt='' /></a>
+技术专区
+FPGA
+DSP
+MCU
+示波器
+步进电机
+Zigbee
+LabVIEW
+Arduino
+RFID
+NFC
+STM32
+Protel
+GPS
+MSP430
+Multisim
+滤波器
+CAN总线
+开关电源
+单片机
+PCB
+USB
+ARM
+CPLD
+连接器
+MEMS
+CMOS
+MIPS
+EMC
+EDA
+ROM
+陀螺仪
+VHDL
+比较器
+Verilog
+稳压电源
+RAM
+AVR
+传感器
+可控硅
+IGBT
+嵌入式开发
+逆变器
+Quartus
+RS-232
+Cyclone
+电位器
+电机控制
+蓝牙
+PLC
+PWM
+汽车电子
+转换器
+电源管理
+信号放大器
+技术频道
+嵌入式
+元件/连接器
+电源管理
+安防电子
+汽车电子
+EDA与制造
+消费电子
+工业电子
+模拟IC
+医疗电子
+测试测量
+通信技术
+光电显示
+智能计算
+网络与存储
+物联网
+技术子站
+PI技术专区
+ADI视频专区
+ZYNQ技术社区
+ADI技术专区
+维博专区
+贝能技术社区
+Microchip资源技术社区
+Fluke技术社区
+Microchip视频技术社区
+赛灵思社区
+IR iMotion 数字电机技术社区
+英特尔Quark开发者俱乐部
+MultiSIM BLUE
+Andes专区
+蔡司光学专栏
+全媒体矩阵
+EEPW微信公众号
+EEPW视频号
+EEPW Bilibili号
+EEPW头条号
+EEPW抖音号
+EEPW编辑部日常
+Copyright © 电子产品世界
+关于我们
+联系我们
+网站地图

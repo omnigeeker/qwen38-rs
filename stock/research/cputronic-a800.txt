@@ -1,0 +1,189 @@
+NVIDIA A800 SXM4 80 GB: Detailed Specifications and Benchmark Ratings - CpuTronic
+CpuTronic
+Home
+Comparisons
+CPU Comparison
+GPU Comparison
+SoC Comparison
+Ratings
+CPU Ratings
+GPU Ratings
+SoC Ratings
+Categories
+CPU Categories
+GPU Categories
+SoC Categories
+English
+English
+Español
+Deutsch
+Français
+Italiano
+Português
+한국어
+日本語
+Русский
+CpuTronic
+Home
+Comparisons
+CPU Comparison
+GPU Comparison
+SoC Comparison
+Ratings
+CPU Ratings
+GPU Ratings
+SoC Ratings
+Categories
+CPU Categories
+GPU Categories
+SoC Categories
+Home
+/
+NVIDIA
+/
+NVIDIA A800 SXM4 80 GB: Performance and Specs
+NVIDIA A800 SXM4 80 GB
+The NVIDIA A800 SXM4 80GB GPU is a high-performance professional grade graphics processing unit designed to meet the demanding needs of modern data centers and computational workloads. With a base clock of 1155MHz and a boost clock of 1410MHz, this GPU delivers exceptional processing power and speed for a variety of applications.
+One of the standout features of the A800 is its massive 80GB of HBM2e memory, allowing for large datasets to be processed and stored with ease. The high memory clock speed of 1593MHz ensures that data can be accessed and utilized efficiently, resulting in improved overall performance.
+With a substantial 6912 shading units and 40MB of L2 cache, the A800 is capable of handling complex graphics and compute workloads with ease. Its impressive theoretical performance of 19.49 TFLOPS makes it well-suited for deep learning, AI, and scientific computing tasks.
+Despite its high-performance capabilities, the A800 does come with a hefty TDP of 400W, requiring adequate cooling and power delivery solutions to operate optimally.
+Overall, the NVIDIA A800 SXM4 80GB GPU is a powerhouse of a graphics processing unit, ideal for professionals and organizations that require top-tier performance for their data center and computational needs. Its high memory capacity, fast clock speeds, and robust shading units make it a valuable asset for a wide range of compute-intensive workloads.
+Tell about us on social media
+Or Link To Us
+<a href="https://cputronic.com/en/gpu/nvidia-a800-sxm4-80-gb" target="_blank">NVIDIA A800 SXM4 80 GB</a>
+Copy
+GPU Comparison
+Compare A800 SXM4 80 GB with other GPUs
+Please select GPU from the dropdown list.
+GO
+Basic
+Label Name
+NVIDIA
+Platform
+Professional
+Launch Date
+August 2022
+Model Name
+A800 SXM4 80 GB
+Generation
+Ampere
+Base Clock
+1155MHz
+Boost Clock
+1410MHz
+Bus Interface
+PCIe 4.0 x16
+Transistors
+54,200 million
+Tensor Cores
+?
+Tensor Cores are specialized processing units designed specifically for deep learning, providing higher training and inference performance compared to FP32 training. They enable rapid computations in areas such as computer vision, natural language processing, speech recognition, text-to-speech conversion, and personalized recommendations. The two most notable applications of Tensor Cores are DLSS (Deep Learning Super Sampling) and AI Denoiser for noise reduction.
+432
+TMUs
+?
+Texture Mapping Units (TMUs) serve as components of the GPU, which are capable of rotating, scaling, and distorting binary images, and then placing them as textures onto any plane of a given 3D model. This process is called texture mapping.
+432
+Foundry
+TSMC
+Process Size
+7 nm
+Architecture
+Ampere
+Memory Specifications
+Memory Size
+80GB
+Memory Type
+HBM2e
+Memory Bus
+?
+The memory bus width refers to the number of bits of data that the video memory can transfer within a single clock cycle. The larger the bus width, the greater the amount of data that can be transmitted instantaneously, making it one of the crucial parameters of video memory. The memory bandwidth is calculated as: Memory Bandwidth = Memory Frequency x Memory Bus Width / 8. Therefore, when the memory frequencies are similar, the memory bus width will determine the size of the memory bandwidth.
+5120bit
+Memory Clock
+1593MHz
+Bandwidth
+?
+Memory bandwidth refers to the data transfer rate between the graphics chip and the video memory. It is measured in bytes per second, and the formula to calculate it is: memory bandwidth = working frequency × memory bus width / 8 bits.
+2039 GB/s
+Display and Media
+Outputs
+No outputs
+Theoretical Performance
+Pixel Rate
+?
+Pixel fill rate refers to the number of pixels a graphics processing unit (GPU) can render per second, measured in MPixels/s (million pixels per second) or GPixels/s (billion pixels per second). It is the most commonly used metric to evaluate the pixel processing performance of a graphics card.
+225.6 GPixel/s
+Texture Rate
+?
+Texture fill rate refers to the number of texture map elements (texels) that a GPU can map to pixels in a single second.
+609.1 GTexel/s
+FP16 (half)
+?
+An important metric for measuring GPU performance is floating-point computing capability. Half-precision floating-point numbers (16-bit) are used for applications like machine learning, where lower precision is acceptable. Single-precision floating-point numbers (32-bit) are used for common multimedia and graphics processing tasks, while double-precision floating-point numbers (64-bit) are required for scientific computing that demands a wide numeric range and high accuracy.
+77.97 TFLOPS
+FP64 (double)
+?
+An important metric for measuring GPU performance is floating-point computing capability. Double-precision floating-point numbers (64-bit) are required for scientific computing that demands a wide numeric range and high accuracy, while single-precision floating-point numbers (32-bit) are used for common multimedia and graphics processing tasks. Half-precision floating-point numbers (16-bit) are used for applications like machine learning, where lower precision is acceptable.
+9.746 TFLOPS
+FP32 (float)
+?
+An important metric for measuring GPU performance is floating-point computing capability. Single-precision floating-point numbers (32-bit) are used for common multimedia and graphics processing tasks, while double-precision floating-point numbers (64-bit) are required for scientific computing that demands a wide numeric range and high accuracy. Half-precision floating-point numbers (16-bit) are used for applications like machine learning, where lower precision is acceptable.
+19.1
+TFLOPS
+Miscellaneous
+SM Count
+?
+Multiple Streaming Processors (SPs), along with other resources, form a Streaming Multiprocessor (SM), which is also referred to as a GPU's major core. These additional resources include components such as warp schedulers, registers, and shared memory. The SM can be considered the heart of the GPU, similar to a CPU core, with registers and shared memory being scarce resources within the SM.
+108
+Shading Units
+?
+The most fundamental processing unit is the Streaming Processor (SP), where specific instructions and tasks are executed. GPUs perform parallel computing, which means multiple SPs work simultaneously to process tasks.
+6912
+L1 Cache
+192 KB (per SM)
+L2 Cache
+40MB
+TDP
+400W
+OpenCL Version
+3.0
+CUDA
+8.0
+Power Connectors
+None
+ROPs
+?
+The Raster Operations Pipeline (ROPs) is primarily responsible for handling lighting and reflection calculations in games, as well as managing effects like anti-aliasing (AA), high resolution, smoke, and fire. The more demanding the anti-aliasing and lighting effects in a game, the higher the performance requirements for the ROPs; otherwise, it may result in a sharp drop in frame rate.
+160
+Suggested PSU
+800W
+Benchmarks
+FP32 (float)
+Score
+19.1
+TFLOPS
+Compared to Other GPU
+FP32 (float)
+/ TFLOPS
+Radeon RX 7600 XT
+20.992
++9.9%
+GeForce RTX 4060 AD106
+19.859
++4%
+A800 SXM4 80 GB
+19.1
+Radeon RX 8800 XT
+17.768
+-7%
+CMP 70HX
+16.797
+-12.1%
+Share in social media
+Tell about us on social media
+Or Link To Us
+<a href="https://cputronic.com/en/gpu/nvidia-a800-sxm4-80-gb" target="_blank">NVIDIA A800 SXM4 80 GB</a>
+Copy
+CpuTronic
+2023
+Contact Us
+Privacy Policy

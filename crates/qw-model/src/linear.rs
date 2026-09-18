@@ -179,13 +179,21 @@ impl<'a> QLinear<'a> {
     pub fn encode_rows(
         &self,
         batch: &mut CommandBatch,
+        single_k: &Kernel,
         tile_k: &Kernel,
         batch_k: &Kernel,
         x: &GpuBuffer,
         y: &GpuBuffer,
         rows: usize,
     ) {
-        if rows <= crate::runner::TILE {
+        if rows == 1 {
+            // A one-row pass has nothing for the TILE-wide kernel to share, and
+            // `K4_U4HX` is a four-row specialisation: fed a single row it still
+            // computes four.  The plain single-token kernel does one.  Measured
+            // over a real decode step, this is the whole difference between the
+            // server's 497 tile dispatches and `gen`'s 497 `q4_gemv_hx` ones.
+            self.encode(batch, single_k, x, y);
+        } else if rows <= crate::runner::TILE {
             self.encode_tile(batch, tile_k, x, y, rows);
         } else {
             self.encode_b(batch, batch_k, x, y, rows);

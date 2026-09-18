@@ -1,0 +1,256 @@
+NVIDIA L20 48GB GPU
+Skip to content
+Solutions
+Server NIC
+Memory Cards
+Server Solution
+Server HDD/SSD/Ram
+Server CPU
+AI Solution
+All Products
+Server Solution
+Rackmount Server
+GPU Server
+Blade Server
+Twin Server
+Storage
+Synology Storage
+QSAN Storage
+Supermicro Storage
+HPE Storage
+QNAP Storage
+Switches
+Mellanox Switches
+Brocade Switches
+Cisco Switches
+Huawei Switches
+Components
+Network Communication
+Memory Cards & USB Flash Drives
+SSD
+Wholesale RAM Memory
+Wholesale HDD (Hard Disk Drive)
+GPU
+Processors
+Server and Storage Accessories
+Motherboards
+Partner
+Contact Us
+About Us
+Inquiry
+Search
+Search
+Search for:
+Search
+Search
+Home
+>
+Components
+>
+GPU
+> NVIDIA L20 48GB GPU
+* NOTE: Image may not exactly match the product
+NVIDIA L20 48GB GPU
+The NVIDIA L20 48GB GPU is a high-performance accelerator designed for AI inference and lightweight training workloads. Featuring 48GB of high-bandwidth memory, it delivers exceptional performance for large language models, computer vision, and recommendation systems while maintaining energy efficiency. Key advantages include superior memory capacity for handling complex AI models, optimized architecture for inference acceleration, and cost-effective deployment for enterprise AI applications. The L20 bridges the gap between consumer and data center GPUs, offering professional-grade AI capabilities with improved price-performance ratio, making it ideal for organizations seeking powerful AI processing without the premium cost of flagship data center solutions.
+Read More
+Quote
+1 pcs(MOQ)
+Minimum Order Quantity
+Bulk Order Discounts Available
+Inquiry
+Brand
+NVIDIA
+Application
+Workstation
+Products Status
+New
+Interface
+PCIe 4.0 x16
+Bus Width
+384-bit
+Description
+Additional information
+Nvidia L20 Enterprise 48GB
+??
+GPU Architecture:
+?NVIDIA Ada Lovelace
+??
+GPU Memory:
+?48 GB GDDR6 with ECC
+??
+Memory Bandwidth:
+?864 GB/s
+??
+Tensor Cores:
+INT8 | FPB Tensor Core?: 239 | 239 TFLOPS
+BF16 | FP16 Tensor Core*: 119.5 | 119.5 TFLOPS
+TF32 Tensor Core*: 59.8 TFLOPS
+??
+FP32 Processing Power:
+?59.8 TFLOPS
+??
+FP64 Processing Power:
+?N/A
+??
+RT Core:
+?Yes
+??
+MIG Support:
+?Yes
+??
+L2 Cache:
+?96 MB
+??
+Media Engine:
+3 NVENC (+AV1)
+3 NVDEC
+4 NVJPEG
+??
+Power Consumption:
+?275 W
+??
+Form Factor:
+?2-slot FHFL
+??
+Interconnect:
+?PCIe Gen4 x16 with a speed of 64 GB/s
+NVIDIA L20: Elevating Processing Power with Ada Lovelace Architecture
+Embodying the cutting-edge Ada Lovelace architecture, the NVIDIA L20 stands as a technological marvel in the realm of GPUs. With 48 GB of GDDR6 memory featuring ECC and a formidable memory bandwidth of 864 GB/s, it ensures efficient data handling for demanding applications. The tensor cores, including INT8, FPB, BF16, and FP16, contribute to the L20’s robust processing capabilities, reaching up to 59.8 TFLOPS for FP32 operations. With support for RT cores, Multi-Instance GPU (MIG), and a substantial 96 MB L2 Cache, the L20 is designed for versatility and optimal workload management. Its power-efficient design, consuming 275 W and housed in a 2-slot FHFL form factor, positions the L20 as a dynamic solution for various computing needs.
+Brand
+NVIDIA
+Application
+Workstation
+Products Status
+New
+Interface
+PCIe 4.0 x16
+Bus Width
+384-bit
+Cores
+11776
+ROPs
+128
+Memory Type
+GDDR6
+Boost Clock
+2520 MHz
+Inquiry Now
+Contact us for more discounts!
+device
+Product Name Model
+Quantity
+Contact Name
+*
+Email Address
+*
+Phone/WhatsApp
+*
+Inquiry Details
+Referering Type
+newsletter
+Get notified of our best prices!
+Website
+Submit
+Solutions
+Server NIC
+Memory Cards
+Server Solution
+Server HDD/SSD/Ram
+Server CPU
+AI Solution
+All Products
+Server Solution
+Rackmount Server
+GPU Server
+Blade Server
+Twin Server
+Storage
+Synology Storage
+QSAN Storage
+Supermicro Storage
+HPE Storage
+QNAP Storage
+Switches
+Mellanox Switches
+Brocade Switches
+Cisco Switches
+Huawei Switches
+Components
+Network Communication
+Memory Cards & USB Flash Drives
+SSD
+Wholesale RAM Memory
+Wholesale HDD (Hard Disk Drive)
+GPU
+Processors
+Server and Storage Accessories
+Motherboards
+Partner
+Contact Us
+About Us
+Inquiry
+About Us
+About Us
+Contact Us
+Service
+Terms of Use
+Cookies Policy
+Privacy Policy
+News Center
+Contact Us
+Telephone: +31-653743644
+E-mail:
+[email protected]
+BTW number : NL 865813164B01
+Billing address: Kraijenhoffstraat 137 A, 1018RG Amsterdam, Netherlands.
+Office Address: 6-Spaces Rotterdam Hofplein-office 1603 Hofplein 20, 3032 AC Rotterdam
+Copyright ©2026 Hypertek Systems B.V. All rights reserved.
+Request for
+Get
+Quote
+Manage Consent
+To provide the best experiences, we use technologies like cookies to store and/or access device information. Consenting to these technologies will allow us to process data such as browsing behavior or unique IDs on this site. Not consenting or withdrawing consent, may adversely affect certain features and functions.
+Functional
+Functional
+Always active
+The technical storage or access is strictly necessary for the legitimate purpose of enabling the use of a specific service explicitly requested by the subscriber or user, or for the sole purpose of carrying out the transmission of a communication over an electronic communications network.
+Preferences
+Preferences
+The technical storage or access is necessary for the legitimate purpose of storing preferences that are not requested by the subscriber or user.
+Statistics
+Statistics
+The technical storage or access that is used exclusively for statistical purposes.
+The technical storage or access that is used exclusively for anonymous statistical purposes. Without a subpoena, voluntary compliance on the part of your Internet Service Provider, or additional records from a third party, information stored or retrieved for this purpose alone cannot usually be used to identify you.
+Marketing
+Marketing
+The technical storage or access is required to create user profiles to send advertising, or to track the user on a website or across several websites for similar marketing purposes.
+Manage options
+Manage services
+Manage {vendor_count} vendors
+Read more about these purposes
+Accept
+Deny
+View preferences
+Save preferences
+View preferences
+{title}
+{title}
+{title}
+Manage consent
+Scroll to Top
+Request Quote
+device
+Product Name Model
+Quantity
+Contact Name
+*
+Email Address
+*
+Phone/WhatsApp
+*
+Inquiry Details
+Referering Type
+newsletter
+Get notified of our best prices!
+Website
+Submit

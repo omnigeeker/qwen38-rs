@@ -1,0 +1,557 @@
+NVIDIA L20 48GB Ada Lovelace Data Center GPU | MillionMiner
+Shop
+Hosting
+AI Hardware
+Resources
+Contact
+Searching…
+No products found for ""
+en
+English
+Deutsch
+Français
+Italiano
+Español
+Português
+Čeština
+Română
+Nederlands
+中文
+日本語
+Русский
+العربية
+Türkçe
+Magyar
+Polski
+Ελληνικά
+한국어
+Tiếng Việt
+ไทย
+हिन्दी
+Indonesia
+עברית
+Currency
+USD
+USD
+EUR
+GBP
+CAD
+AUD
+HUF
+THB
+CNY
+AED
+RUB
+PLN
+Electricity
+0.05 $/kWh
+$/kWh
+Login
+ASIC Miners
+Bitcoin Miners
+SHA-256
+Dogecoin / Litecoin Miners
+Scrypt
+Zcash Miners
+Equihash
+Kaspa Miners
+kHeavyHash
+Ethereum Classic Miners
+ETCHash
+Siacoin Miners
+Blake2b-Sia
+Monero Miners
+RandomX
+Other Asic Miners
+More algorithms
+Hydro Miners
+Liquid-cooled
+Lottery Miners
+Solo Mining
+Equipment
+Mining Containers
+Turnkey container farms
+Racks & Cabinets
+Rack-ready infrastructure
+Hydro Radiators
+Liquid-cooling loops
+Other Equipment
+Bestseller
+Bitmain Antminer Z15 Pro 840 kSol/s Zcash Miner
+$7,300.00
+Shop now
+Buy & host in our farms
+All products
+Profit calculator
+Hosting services
+ASIC Miner Hosting
+Full-service, from delivery to uptime
+GPU Hosting
+New
+H100, H200 & AI racks
+Cloud Mining
+Mine without hardware
+Free Test Miner
+Free
+24 hours on a real miner — $0
+Our facilities
+Mining Farms
+Where your miners run
+Regulated Farms
+Audited, compliant sites
+Hydro Mining
+Liquid-cooled infrastructure
+Inside our mining farms
+Real sites with their own substations — see where your hardware runs.
+Tour the farms
+Or start with a free 24h test
+99.9% uptime · 30,000+ miners hosted
+Talk to the hosting team
+AI Hardware
+Request-based pricing
+GPU
+NVIDIA H100, H200 & more
+Server
+Ready-to-run GPU systems
+Storage
+High-throughput NVMe
+Plan your build
+GPU & AI Benchmarks
+78 GPUs · 48 servers compared
+GPU Buying Guide
+New
+Benchmarks & terms, plain language
+GPU Hosting & Colocation
+Rack what you buy — or bring your own
+AI Data Center Colocation
+New
+Rent, colocate or build — MW of AI capacity
+Enterprise AI hardware
+H100 and H200 systems — configured, delivered and optionally hosted.
+Get a quote
+Configured to order — full quote within 24 hours
+Talk to an AI specialist
+Free tools
+GPU & AI Benchmarks
+78 GPUs · 48 servers compared
+Profit Calculator
+Live mining profitability
+Mining Calculator
+New
+Profit by coin & hashrate
+Free Test Miner
+Free
+24 hours of real mining, on us
+Learn
+News & Guides
+Mining & AI insights
+GPU Buying Guide
+New
+Benchmarks & terms, plain language
+How Green Is Mining?
+New
+The real 2026 energy data
+Best Mining Pools
+New
+8 pools compared — fees & payouts
+Best Solo Bitcoin Miners Under $500 To...
+Sep 16, 2026
+Best Ethereum Classic Miners To Buy In...
+Sep 15, 2026
+FAQ
+Quick answers
+Company
+About Us
+30,000+ units shipped
+How We Build Miners
+Sourcing, testing, QA
+Shipping
+DDP, customs handled
+Payment Methods
+Wire, card & crypto
+Questions? Chat on WhatsApp
+Telegram
+en
+English
+Deutsch
+Français
+Italiano
+Español
+Português
+Čeština
+Română
+Nederlands
+中文
+日本語
+Русский
+العربية
+Türkçe
+Magyar
+Polski
+Ελληνικά
+한국어
+Tiếng Việt
+ไทย
+हिन्दी
+Indonesia
+עברית
+USD
+USD
+EUR
+GBP
+CAD
+AUD
+HUF
+THB
+CNY
+AED
+RUB
+PLN
+$/kWh
+Login
+Searching…
+No products found for ""
+Shop
+ASIC Miners
+Bitcoin Miners
+Dogecoin / Litecoin Miners
+Zcash Miners
+Kaspa Miners
+Ethereum Classic Miners
+Siacoin Miners
+Monero Miners
+Other Asic Miners
+Hydro Miners
+Lottery Miners
+Equipment
+Mining Containers
+Racks & Cabinets
+Hydro Radiators
+Other Equipment
+All products
+Hosting
+ASIC Miner Hosting
+GPU Hosting
+New
+Mining Farms
+Regulated Farms
+Hydro Mining
+Cloud Mining
+Free Test Miner
+Free
+AI Hardware
+Enterprise AI Hardware
+GPU
+Server
+Storage
+Compare GPUs & servers
+GPU Hosting & Colocation
+AI Data Center Colocation
+New
+Resources
+GPU & AI Benchmarks
+78 GPUs · 48 servers
+Profit Calculator
+Live profitability
+Mining Calculator
+By coin & hashrate
+Learn
+News & Guides
+GPU Buying Guide
+New
+How Green Is Mining?
+New
+Best Mining Pools
+New
+FAQ
+Company
+About Us
+How We Build Miners
+Shipping
+Payment Methods
+Contact
+Free Test Miner
+Home
+AI Hardware
+GPU
+NVIDIA L20 48GB Ada Lovelace Tensor Core Inference GPU
+In Stock
+4.7 out of 5
+Verified customer reviews
+Trustpilot
+NVIDIA
+NVIDIA L20 48GB Ada Lovelace Tensor Core Inference GPU
+Model:
+L20 Enterprise 48GB
+The NVIDIA L20 48GB is the export-market member of NVIDIA's Ada Lovelace data center family, built for AI inference and media compute: 48GB of GDDR6 with ECC, 864 GB/s of bandwidth, and 59.8 TFLOPS of FP32 in a 275W
+…
+passively cooled dual-slot card. Ada Lovelace Tensor cores support FP8, INT8, BF16, and FP16, and dedicated NVENC, NVDEC, and NVJPEG engines accelerate media workloads. Related to the L40 and L40S by silicon. NVIDIA-certified and shipped worldwide DDP by MillionMiner.
+Read More
+Show Less
+Select Availability
+In Stock
+Starting At
+Quantity
+$6,500.00
+Total Price
+Add to Cart
+Adding...
+Buying 10 or more?
+Get custom bulk pricing
+Pay with
+Prices and availability move with the market. We confirm both with you before your order becomes binding.
+Check price and availability
+Genuine
+Tested hardware
+Worldwide
+Global shipping
+Support
+Mining experts
+The NVIDIA L20 48GB is the export-market member of NVIDIA's Ada Lovelace data center family, built for AI inference and media compute: 48GB of GDDR6 with ECC, 864 GB/s of bandwidth, and 59.8 TFLOPS of FP32 in a 275W
+…
+passively cooled dual-slot card. Ada Lovelace Tensor cores support FP8, INT8, BF16, and FP16, and dedicated NVENC, NVDEC, and NVJPEG engines accelerate media workloads. Related to the L40 and L40S by silicon. NVIDIA-certified and shipped worldwide DDP by MillionMiner.
+Read More
+Show Less
+What can this GPU run?
+Pick a workload to check the L20 with 48 GB.
+LLM
+AI Images
+AI Video
+Excellent fit
+Llama 3.1 8B
+A common local assistant model at 4-bit quantisation.
+Check a larger model
+1
+GPU
+~4.8 GB VRAM needed (estimate)
+4.8 GB of 48 GB
+10%
+VRAM figures are estimates for single-user inference and include headroom for context and system overhead. Throughput depends on model, settings and driver stack.
+Full Specifications
+Model
+L20 Enterprise 48GB
+Memory
+48 GB GDDR6 with ECC
+Memory Bandwidth
+864 GB/s
+FP32 Performance
+59.8 TFLOPS
+Tensor Cores
+INT8, FPB, BF16, FP16
+Power Consumption
+275 W
+Form Factor
+2-slot FHFL
+L2 Cache
+96 MB
+NVENC
+3 NVENC (+AV1)
+NVDEC
+3 NVDEC
+NVJPEG
+4 NVJPEG
+Request a GPU or AI Server Quote
+Free quote, reply in 24h. No sales call.
+4.4
+4.7 / 5 on Trustpilot
+Verified customer reviews
+30,000+ miners delivered
+Shipped worldwide since 2020
+1,200+ customers globally
+Trusted in 50+ countries
+Get a Quote for the
+NVIDIA L20 48GB Ada Lovelace Tensor Core Inference GPU
+Pricing, lead time, and hosting options. Personal advice from our sales team.
+Name
+*
+Email
+*
+Phone number
+*
+Quantity
+*
+How many units?
+1 – 5
+6 – 20
+21 – 100
+100+
+What do you need?
+*
+Single card
+Multi-GPU server
+Not sure — advise me
+Reply within 24h via
+email, WhatsApp, or call
+.
+Get a Quote for the
+NVIDIA L20 48GB Ada Lovelace Tensor Core Inference GPU
+Pricing, lead time, and hosting options. Personal advice from our sales team.
+Name
+*
+Email
+*
+Phone number
+*
+Quantity
+*
+How many units?
+1 – 5
+6 – 20
+21 – 100
+100+
+What do you need?
+*
+Single card
+Multi-GPU server
+Not sure — advise me
+Reply within 24h via
+email, WhatsApp, or call
+.
+Request a GPU or AI Server Quote
+Free quote, reply in 24h. No sales call.
+4.4
+4.7 / 5 on Trustpilot
+Verified customer reviews
+30,000+ miners delivered
+Shipped worldwide since 2020
+1,200+ customers globally
+Trusted in 50+ countries
+Product Details
+NVIDIA L20 48GB Ada Lovelace Data Center GPU: The Export-Market Inference Role, the L40 Family Context, and Where It Fits
+The L20 is a genuine Ada Lovelace data center inference GPU, and the thing to understand is its place: it is the export-market member of NVIDIA's Ada data center family, the China-market card related to the L40 and L40S, configured to sit under export performance thresholds and positioned for AI inference and data center compute. What the L20 is for. The L20 is an inference and compute card. It carries 48GB of GDDR6 with ECC, 864 GB/s of memory bandwidth, and 59.8 TFLOPS of FP32, with Ada Lovelace Tensor cores supporting the precisions inference relies on, FP8, INT8, BF16, and FP16. That makes it suited to AI inference and model serving, where the 48GB holds substantial production models,
+…
+and to media processing: its dedicated encode and decode engines (three NVENC with AV1, three NVDEC, four NVJPEG) accelerate video and image throughput for media-heavy and visual-AI workloads. A 96MB L2 cache supports the on-card data movement inference benefits from. The L40 family context. The L20 shares the Ada Lovelace data center platform with the L40 and L40S, and the honest way to place it is by role within that family. The L40 leans toward data center graphics, rendering, and virtual workstations. The L40S is tuned for higher AI compute, inference, fine-tuning, and smaller-scale training. The L20 is the export-market card, configured to meet export thresholds and positioned for inference and media compute. For a buyer comparing them, the L20 is the export-tier inference member; where the L40 and L40S are the broad-market graphics and AI-compute cards, the L20 serves the export-market inference and media role. What it is, and is not. It is a data center inference, media, and compute card. It is not a gaming GPU, it is a passively cooled, headless data center card built for server airflow. And it is not a flagship large-scale training accelerator: as an export-tier Ada card it is positioned for inference and media rather than the largest distributed training, which needs the HBM and data center NVLink fabric of the Hopper and Blackwell systems in this catalog. Its honest strengths are inference, media throughput, and data center compute, with 48GB to hold real production models. Where it fits, and how to buy it. The L20 is the export-market, inference-and-media member of the Ada Lovelace data center family in the GPU lineup, alongside the graphics-leaning L40 and the AI-compute L40S, with the A10 and A30 as other data center inference and compute cards, below the Hopper and Blackwell training flagships, and apart from the workstation and display cards. Because it is an export-market part, MillionMiner confirms the card, its condition, destination suitability, and the deployment in the quote; units may be new or secondary-market, verified before shipment. Every unit is tested and shipped worldwide DDP with duties handled, with hosting in MillionMiner's own data centers available. If your need is data center AI inference, media processing, or compute, the L20 fits; if it is broad-market graphics or AI compute, the L40 or L40S may suit better; and if it is large-scale training, MillionMiner will steer you to the flagship systems.
+Read More
+Show Less
+NVIDIA L20 48GB: Ada Lovelace, Export-Market, Inference-Tuned
+The L20 is the export-market member of NVIDIA's Ada Lovelace data center family, related to the L40 and L40S by silicon but configured to meet export performance thresholds, and positioned for AI inference and data center compute. What it offers. 48GB of GDDR6 with ECC and 864 GB/s of bandwidth, 59.8 TFLOPS of FP32, and Ada Lovelace Tensor cores supporting the inference-relevant precisions, FP8, INT8, BF16, and FP16, in a 275W passively cooled dual-slot card. A 96MB L2 cache and dedicated media engines (NVENC, NVDEC, NVJPEG, with AV1) add
+…
+throughput for inference and media-heavy workloads. Where it fits. AI inference and model serving, media processing and transcode, and general data center compute, the production work that runs trained models and processes media at scale. It is a genuine data center inference card, not a gaming GPU, and as an export-tier part it is positioned for inference rather than the largest training, which belongs to the Hopper and Blackwell systems in this catalog. Within the Ada data center family, the L40 leans to graphics, the L40S to AI compute, and the L20 is the export-market inference card. NVIDIA-certified, and shipped worldwide DDP by MillionMiner.
+Read More
+Show Less
+Need Help Choosing?
+Our mining specialists can help you find the perfect miner for your setup and budget.
+All Products
+Contact Sales
+NVIDIA L20 48GB: The Export-Market Ada Inference GPU
+The L20 is an Ada Lovelace data center GPU built for export markets, the China-market member of the same Ada data center family as the L40 and L40S, positioned for AI inference. It carries 48GB of GDDR6 with ECC, 864 GB/s of memory bandwidth, 59.8 TFLOPS of FP32, and Ada Lovelace Tensor cores supporting FP8, INT8, BF16, and FP16, in a passively cooled, 275W dual-slot data center card. The large memory and inference-tuned precision support suit AI inference and serving, media processing, and data center compute, with hardware video encode and
+…
+decode engines for media-heavy workloads. It is a genuine data center inference card, not a gaming GPU and not a flagship large-scale training accelerator, for the largest training, the catalog's Hopper and Blackwell silicon is the tool. NVIDIA-certified and shipped worldwide DDP by MillionMiner.
+Read More
+Show Less
+48GB, Ada Lovelace Inference
+48GB of GDDR6 with ECC, 864 GB/s bandwidth, and FP8/INT8/BF16/FP16 Tensor support. Built to hold and serve substantial production inference models.
+The Export-Market Ada Card
+The China-market member of the Ada data center family, related to the L40 and L40S, configured to meet export thresholds and positioned for inference and media compute.
+Strong Media Engines
+Three NVENC (with AV1), three NVDEC, and four NVJPEG engines plus a 96MB L2 cache, for media processing, transcode, and visual-AI throughput.
+Related Products
+NVIDIA
+NVIDIA RTX 4090 48GB Blower — Custom 48GB VRAM Modification
+$4,099.00
+NVIDIA
+NVIDIA RTX PRO 6000 Blackwell Server Edition (96GB)
+Contact for price
+NVIDIA
+NVIDIA RTX PRO 6000 Blackwell Workstation Edition 96GB (Boxed)
+Contact for price
+NVIDIA
+NVIDIA H100 SXM5 80GB HBM3 Hopper Tensor Core GPU for AI Training
+$26,500.00
+NVIDIA
+NVIDIA GeForce RTX 3090 24GB Blower Edition
+$2,200.00
+NVIDIA
+Nvidia H200 NVL (141GB) AI and HPC GPU
+$46,899.00
+NVIDIA
+NVIDIA GeForce RTX 5090D V2 24GB Blower (China Edition)
+$5,199.50
+NVIDIA
+NVIDIA B100 192GB Blackwell Data Center GPU
+$32,000.00
+NVIDIA
+NVIDIA RTX 5090 32GB Blower — Dual-Slot Multi-GPU Configuration
+$6,099.00
+NVIDIA
+NVIDIA A100 80GB Custom PCIe Tensor Core GPU
+$13,500.00
+NVIDIA
+Nvidia H200 SXM (141GB) AI and HPC GPU
+$36,500.00
+NVIDIA
+NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition (96GB)
+$8,499.00
+View All Products
+FAQ
+Frequently Asked Questions
+What is the L20 built for?
+AI inference and data center compute, with strong media processing. It serves trained models at scale, with 48GB to hold substantial production models, and its dedicated encode and decode engines accelerate video and image throughput for media-heavy and visual-AI workloads. It is the export-market inference member of NVIDIA's Ada Lovelace data center family.
+How does the L20 relate to the L40 and L40S?
+They share the Ada Lovelace data center platform and 48GB of memory, but fill different roles. The L40 leans toward data center graphics, rendering, and virtual workstations; the L40S is tuned for higher AI compute, inference, fine-tuning, and smaller training; the L20 is the export-market card, configured to meet export thresholds and positioned for inference and media. If you are comparing them, the L20 is the export-tier inference option, the L40 and L40S the broad-market graphics and AI-compute cards.
+Is it an export-market GPU?
+Yes. The L20 is configured to meet US export performance thresholds, the Ada-generation counterpart to how the A800 and H800 serve export markets in their generations, though the L20 is positioned as an inference card rather than a detuned flagship. MillionMiner confirms destination suitability and the compliance position for your deployment in the quote, since this is export-market hardware.
+Is it a gaming GPU?
+No. The L20 is a passively cooled, headless data center card built for server airflow, not a desktop gaming card. Its role is data center inference, media processing, and compute, deployed in servers. It should be evaluated as data center hardware, not a gaming or workstation card.
+Can it train AI models?
+It can handle lighter training and fine-tuning, but it is positioned for inference, and as an export-tier card it is not built for the largest-scale distributed training, which needs the HBM and data center NVLink fabric of the Hopper and Blackwell systems in this catalog. The L20's strengths are inference, model serving, and media compute; the flagships handle large training runs.
+What are the specs?
+NVIDIA Ada Lovelace architecture, 48GB of GDDR6 with ECC, 864 GB/s memory bandwidth, 59.8 TFLOPS of FP32, Ada Lovelace Tensor cores supporting FP8, INT8, BF16, and FP16, a 96MB L2 cache, dedicated media engines (3 NVENC with AV1, 3 NVDEC, 4 NVJPEG), and 275W power in a passively cooled 2-slot full-height full-length form. MillionMiner confirms the full configuration, including CUDA and Tensor core counts, in the quote.
+Why do the media engines matter?
+For media-heavy and visual-AI workloads, dedicated hardware encode and decode is a real advantage. The L20's three NVENC engines (with AV1 support), three NVDEC engines, and four NVJPEG engines offload video and image processing from the main compute, which suits video transcode, streaming, and visual-AI inference pipelines that process large volumes of media alongside model serving.
+Why does the 48GB memory matter?
+It lets the L20 hold substantial production inference models and large media workloads in memory. 48GB of GDDR6 with ECC is generous capacity for an inference card, and the ECC adds the data integrity data center workloads require. The large memory is part of what makes the L20 capable for serving larger models and handling demanding media pipelines.
+Is it new or used?
+As an Ada Lovelace export-market data center part, units may be new or secondary-market depending on availability. MillionMiner verifies each card and confirms its condition in the quote, the same discipline applied across the catalog's data center inventory. The exact condition is stated before you order.
+How do I order, and how is it delivered?
+Submit your workload, AI inference, media processing, or compute, and scale through the quote form. A MillionMiner specialist confirms the card, its condition, destination suitability, and the deployment, and will help resolve the L20-versus-L40-or-L40S choice if relevant. Every unit is tested before shipment and shipped worldwide DDP with duties handled, with hosting in MillionMiner's own data centers available.
+Read more
+Global ASIC Miner & Hosting Provider
+Germany
++49 176 777 888 33
+United States
++1 754 212 3521
+info@millionminer.com
+WhatsApp
+CRYPTO NEWSLETTER
+Subscribe to our newsletter to receive our crypto news and weekly price updates by email.
+Subscribe
+...
+Buy miners
+ASIC miners
+Bitcoin miners
+Dogecoin & Litecoin miners
+Kaspa miners
+Hydro miners
+Lottery miners
+Equipment
+AI Hardware
+Service
+Hosting
+GPU Hosting
+Cloud Mining
+Free Test Miner
+Shipping
+Payment Methods
+Order status
+Tools
+Mining Calculator
+Profit Calculator
+GPU & AI Benchmarks
+Mining pools
+News
+Company
+About us
+How We Build ASIC Miners
+Mining Farms
+Green Bitcoin mining
+FAQ
+Contact
+Free DDP delivery worldwide, no extra costs.
+Payment by SEPA, US dollar or crypto.
+© MillionMiner 2020-2026
+· ASIC Miners for Professionals
+Imprint
+Privacy Policy
+Terms & Conditions
+Right of Withdrawal

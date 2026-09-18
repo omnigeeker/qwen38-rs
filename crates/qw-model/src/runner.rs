@@ -1492,6 +1492,7 @@ impl Qwen38 {
                     // q (with output gate), k, v projections
                     a.q.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.h,
@@ -1501,6 +1502,7 @@ impl Qwen38 {
                     b.barrier();
                     a.k.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.h,
@@ -1509,6 +1511,7 @@ impl Qwen38 {
                     );
                     a.v.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.h,
@@ -1628,6 +1631,7 @@ impl Qwen38 {
                     b.barrier();
                     a.o.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.attn_gated,
@@ -1638,6 +1642,7 @@ impl Qwen38 {
                 Kind::Gdn(g) => {
                     g.in_z.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.h,
@@ -1646,6 +1651,7 @@ impl Qwen38 {
                     );
                     g.in_b.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.h,
@@ -1654,6 +1660,7 @@ impl Qwen38 {
                     );
                     g.in_a.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.h,
@@ -1668,6 +1675,7 @@ impl Qwen38 {
                     // the weights are read once instead of n times.
                     g.in_qkv.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.h,
@@ -1775,6 +1783,7 @@ impl Qwen38 {
                     }
                     g.out_proj.encode_rows(
                         &mut b,
+                        &kernels.q4_gemv,
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_b16,
                         &scratch.gdn_gated,
@@ -1805,6 +1814,7 @@ impl Qwen38 {
             b.barrier();
             layer.gate.encode_rows(
                 &mut b,
+                &kernels.q4_gemv,
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_b16,
                 &scratch.h,
@@ -1813,6 +1823,7 @@ impl Qwen38 {
             );
             layer.up.encode_rows(
                 &mut b,
+                &kernels.q4_gemv,
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_b16,
                 &scratch.h,
@@ -1833,6 +1844,7 @@ impl Qwen38 {
             b.barrier();
             layer.down.encode_rows(
                 &mut b,
+                &kernels.q4_gemv,
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_b16,
                 &scratch.mlp_act,
@@ -1874,6 +1886,7 @@ impl Qwen38 {
         b.barrier();
         lm_head.encode_rows(
             &mut b,
+            &kernels.q4_gemv,
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_b16,
             &scratch.h,
@@ -2472,6 +2485,7 @@ impl Qwen38 {
         for _ in 0..iters {
             full.q.encode_rows(
                 &mut b,
+                &kernels.q4_gemv,
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_b16,
                 &scratch.h,

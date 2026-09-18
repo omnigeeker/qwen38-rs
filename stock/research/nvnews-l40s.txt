@@ -1,0 +1,168 @@
+News Archive | NVIDIA Newsroom
+Artificial Intelligence Computing Leadership from NVIDIA
+PLATFORMS
+Autonomous Machines
+Cloud & Data Center
+Deep Learning & Ai
+Design & Pro Visualization
+Healthcare
+High Performance Computing
+Self-Driving Cars
+Gaming & Entertainment
+other links
+Developers
+Industries
+Shop
+Drivers
+Support
+About NVIDIA
+View All Products
+GPU TECHNOLOGY CONFERENCE
+NVIDIA Blog
+Community
+Careers
+TECHNOLOGIES
+Newsroom
+NVIDIA in Brief
+Exec Bios
+NVIDIA Blog
+Podcast
+Media Assets
+In the News
+Press Contacts
+Online Press Kits
+NVIDIA in Brief
+Exec Bios
+NVIDIA Blog
+Podcast
+Media Assets
+In the News
+Press Contacts
+Online Press Kits
+News Archive
+Sort By:
+Press releases
+Blog
+Year:
+All Years
+2026
+2025
+2024
+2023
+2022
+2021
+2020
+2019
+2018
+2017
+2016
+2015
+2014
+2013
+2012
+2011
+2010
+ic_arrow-back-to-top
+September 10, 2026
+Skild AI Taps NVIDIA Physical AI to Teach Robots New Tasks From a Single Video
+Manufacturing floors, warehouses and production lines rarely stay fixed — tasks change, layouts shift and new products arrive, and most robots can’t keep up without significant reprogramming. Skild AI’s new S1 robot foundation model helps address ...
+Read Blog
+September 10, 2026
+Physical AI Takes the Wheel: How the World’s Robotaxi Leaders Are Building With NVIDIA Technologies
+The global robotaxi market — physical AI’s first commercial breakthrough — is projected to reach $400 billion by 2035, with over 6 million commercial vehicles in operation as driverless fleets are already moving people through some of the world’s ...
+Read Blog
+September 10, 2026
+d-Matrix Adopts NVIDIA NVLink Fusion for Rack-Scale XPU Deployment
+AI inference chipmaker d-Matrix today announced it will use NVIDIA NVLink Fusion to connect its next-generation Raptor XPUs to NVIDIA’s AI infrastructure platform — joining a growing roster of ecosystem partners. By connecting Raptor to NVIDIA ...
+Read Blog
+September 10, 2026
+Boots on the Ground: ‘WARDOGS’ Goes All Out on GeForce NOW at Early-Access Launch
+Gear up: The latest PC games and major updates are ready to play on GeForce NOW this week. WARDOGS drops onto the cloud at early-access launch, alongside the Valheim 1.0 Deep North update and Bus Simulator 27 — part of nine new titles joining the ...
+Read Blog
+September 10, 2026
+NVIDIA and Palantir Bring Sovereign Intelligence to Critical Supply Chains
+Palantir Technologies Inc. (NASDAQ: PLTR) and NVIDIA (NASDAQ: NVDA) today announced a collaboration to bring sovereign AI to critical supply chains, starting with NVIDIA’s own operations.
+Read Press Release
+September 09, 2026
+NVIDIA Expands AI Infrastructure Capacity in Partnership With Australia’s Data Center Ecosystem
+NVIDIA today announced that it is collaborating with a growing ecosystem of Australian NVIDIA Cloud Partners (NCPs) and AI infrastructure partners to expand land, power and shell capacity designed to host multiple generations of NVIDIA DSX™ AI ...
+Read Press Release
+September 09, 2026
+NVIDIA Brings Real-Time AI to Broadcast, Sports and Global Streaming at IBC
+At the IBC conference, running Sept. 11-14 in Amsterdam, the creative, technology and business communities are coming together to turn ideas into action and discuss innovations across the media and entertainment industries. More than 44,000 ...
+Read Blog
+September 03, 2026
+Sparks Fly: NVIDIA Accelerates Local AI at IFA 2026
+Frontier intelligence is going local. At IFA 2026, NVIDIA, Microsoft and its partners are teaming up to provide faster inference and new tools that make agents easier to set up and run locally on NVIDIA hardware. New compact NVIDIA RTX Spark Windows ...
+Read Blog
+September 03, 2026
+‘NBA 2K27’ With NVIDIA DLSS 5 Leads 26 New Games Coming to GeForce NOW
+September is here with 26 more games streaming on GeForce NOW this month, led by a slam dunk: NBA 2K27 with the NVIDIA DLSS 5 3D-Guided Neural Rendering feature. Through NVIDIA’s close collaboration with Visual Concepts and 2K, DLSS 5 brings a new ...
+Read Blog
+September 03, 2026
+NVIDIA to Acquire Hugging Face
+I’m excited to announce that NVIDIA has agreed to acquire Hugging Face for $12,930,300,000. Together, we will scale Hugging Face’s platform, strengthen its infrastructure and expand access to AI for developers and institutions worldwide. Over the ...
+Read Blog
+1
+2
+3
+4
+5
+6
+...
+505
+Next
+Last
+Media Contacts
+Global contacts for media inquiries.
+All Contacts
+Stay Informed
+Newsroom updates delivered to your inbox.
+Subscribe
+Corporate Information
+About NVIDIA
+Corporate Overview
+Technologies
+NVIDIA Research
+Investors
+Social Responsibility
+NVIDIA Foundation
+Get Involved
+Forums
+Careers
+Developer Home
+Join the Developer Program
+NVIDIA Partner Network
+NVIDIA Inception
+Resources for Venture Capitalists
+Venture Capital (NVentures)
+Technical Training
+Training for IT Professionals
+Professional Services for Data Science
+News & Events
+Newsroom
+NVIDIA Blog
+NVIDIA Technical Blog
+Webinars
+Stay Informed
+Events Calendar
+NVIDIA GTC
+NVIDIA On-Demand
+Sign Up for NVIDIA News
+Subscribe
+Follow NVIDIA
+Facebook
+LinkedIn
+Instagram
+YouTube
+NVIDIA
+USA - United States
+Privacy Policy
+Your Privacy Choices
+Manage Cookie Settings
+Terms of Service
+Accessibility
+Corporate Policies
+Product Security
+Contact
+Copyright © 2026 NVIDIA Corporation

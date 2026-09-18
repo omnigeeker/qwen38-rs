@@ -1,0 +1,222 @@
+NVIDIA A800 PCIe 40 GB
+Skip to content
+Solutions
+Server NIC
+Memory Cards
+Server Solution
+Server HDD/SSD/Ram
+Server CPU
+AI Solution
+All Products
+Server Solution
+Rackmount Server
+GPU Server
+Blade Server
+Twin Server
+Storage
+Synology Storage
+QSAN Storage
+Supermicro Storage
+HPE Storage
+QNAP Storage
+Switches
+Mellanox Switches
+Brocade Switches
+Cisco Switches
+Huawei Switches
+Components
+Network Communication
+Memory Cards & USB Flash Drives
+SSD
+Wholesale RAM Memory
+Wholesale HDD (Hard Disk Drive)
+GPU
+Processors
+Server and Storage Accessories
+Motherboards
+Partner
+Contact Us
+About Us
+Inquiry
+Search
+Search
+Search for:
+Search
+Search
+Home
+>
+Components
+>
+GPU
+> NVIDIA A800 PCIe 40 GB
+* NOTE: Image may not exactly match the product
+NVIDIA A800 PCIe 40 GB
+The NVIDIA A800 PCIe 40GB is a high-performance data center GPU designed for AI training, inference, and HPC workloads. Built on the Ampere architecture, it delivers exceptional computational power with 40GB of high-bandwidth HBM2e memory and 1,555 GB/s memory bandwidth. Key features include third-generation RT cores for ray tracing, third-generation Tensor cores for AI acceleration, and PCIe 4.0 connectivity for versatile deployment. The A800 excels in large-scale machine learning models, scientific computing, and data analytics while offering enterprise-grade reliability and multi-instance GPU capability for workload isolation. Its substantial memory capacity enables processing of massive datasets and complex neural networks, making it ideal for organizations requiring cutting-edge AI performance in standard server configurations.
+Read More
+Quote
+1 pcs(MOQ)
+Minimum Order Quantity
+Bulk Order Discounts Available
+Inquiry
+Brand
+NVIDIA
+Application
+Workstation
+Products Status
+New
+Interface
+PCIe 4.0 x16
+Bus Width
+256-bit
+Description
+Additional information
+The A800 PCIe 40 GB is a professional graphics card by NVIDIA, launched on November 8th, 2022. Built on the 7 nm process, and based on the GA100 graphics processor, the card does not support DirectX. Since A800 PCIe 40 GB does not support DirectX 11 or DirectX 12, it might not be able to run all the latest games. The GA100 graphics processor is a large chip with a die area of 826 mm2 and 54,200 million transistors. It features 6912 shading units, 432 texture mapping units, and 160 ROPs. Also included are 432 tensor cores which help improve the speed of machine learning applications. NVIDIA has paired 40 GB HBM2e memory with the A800 PCIe 40 GB, which are connected using a 5120-bit memory interface. The GPU is operating at a frequency of 765 MHz, which can be boosted up to 1410 MHz, memory is running at 1215 MHz.
+Being a dual-slot card, the NVIDIA A800 PCIe 40 GB draws power from an 8-pin EPS power connector, with power draw rated at 250 W maximum. This device has no display connectivity, as it is not designed to have monitors connected to it. A800 PCIe 40 GB is connected to the rest of the system using a PCI-Express 4.0 x16 interface. The card measures 267 mm in length, 111 mm in width, and features a dual-slot cooling solution.
+Features
+The ThinkSystem NVIDIA A800 PCIe 4.0 GPU delivers unprecedented acceleration??at every scale??to power the world??s highest-performing elastic data centers for AI, data analytics, and high-performance computing (HPC) applications. The?NVIDIA A800 GPU can efficiently scale up or be partitioned into seven isolated GPU instances with Multi-Instance GPU (MIG), providing a unified platform that enables elastic data centers to dynamically adjust to shifting workload demands.
+NVIDIA A800 Tensor Core technology supports a broad range of math precisions, providing a single accelerator for every workload. The latest generation A800 80GB doubles GPU memory and debuts the world??s fastest memory bandwidth at 2 terabytes per second (TB/s), speeding time to solution for the largest models and most massive datasets.
+A800 is part of the complete NVIDIA data center solution that incorporates building blocks across hardware, networking, software, libraries, and optimized AI models and applications from the NVIDIA NGC? catalog. Representing the most powerful end-to-end AI and HPC platform for data centers, it allows researchers to deliver real-world results and deploy solutions into production at scale.
+NVIDIA Ampere Architecture
+Whether using MIG to partition an A800 GPU into smaller instances or NVLink to connect multiple GPUs to speed large-scale workloads, A800 can readily handle different-sized acceleration needs, from the smallest job to the biggest multi-node workload. A800??s versatility means IT managers can maximize the utility of every GPU in their data center, around the clock.
+Third-Generation Tensor CoresNVIDIA A800 delivers 312 teraFLOPS (TFLOPS) of deep learning performance. That??s 20X the Tensor floating-point operations per second (FLOPS) for deep learning training and 20X the Tensor tera operations per second (TOPS) for deep learning inference compared to NVIDIA Volta GPUs.
+Next-Generation NVLinkNVIDIA NVLink in A800 delivers higher throughput compared to the previous generation. When combined with NVIDIA NVSwitch, A800 GPUs can be interconnected at up to 400 gigabytes per second (GB/sec), unleashing the highest application performance possible on a single server. NVLink is available in SXM GPUs via HGX server boards and in PCIe GPUs via an NVLink Bridge for up to 2 GPUs.
+Brand
+NVIDIA
+Application
+Workstation
+Products Status
+New
+Interface
+PCIe 4.0 x16
+Bus Width
+256-bit
+Cores
+6912
+ROPs
+160
+Memory Type
+HBM2e
+Slot Width
+Dual Slots
+Length
+267 mm/10.5 inches
+Inquiry Now
+Contact us for more discounts!
+device
+Product Name Model
+Quantity
+Contact Name
+*
+Email Address
+*
+Phone/WhatsApp
+*
+Inquiry Details
+Referering Type
+newsletter
+Get notified of our best prices!
+Phone
+Submit
+Solutions
+Server NIC
+Memory Cards
+Server Solution
+Server HDD/SSD/Ram
+Server CPU
+AI Solution
+All Products
+Server Solution
+Rackmount Server
+GPU Server
+Blade Server
+Twin Server
+Storage
+Synology Storage
+QSAN Storage
+Supermicro Storage
+HPE Storage
+QNAP Storage
+Switches
+Mellanox Switches
+Brocade Switches
+Cisco Switches
+Huawei Switches
+Components
+Network Communication
+Memory Cards & USB Flash Drives
+SSD
+Wholesale RAM Memory
+Wholesale HDD (Hard Disk Drive)
+GPU
+Processors
+Server and Storage Accessories
+Motherboards
+Partner
+Contact Us
+About Us
+Inquiry
+About Us
+About Us
+Contact Us
+Service
+Terms of Use
+Cookies Policy
+Privacy Policy
+News Center
+Contact Us
+Telephone: +31-653743644
+E-mail:
+[email protected]
+BTW number : NL 865813164B01
+Billing address: Kraijenhoffstraat 137 A, 1018RG Amsterdam, Netherlands.
+Office Address: 6-Spaces Rotterdam Hofplein-office 1603 Hofplein 20, 3032 AC Rotterdam
+Copyright ©2026 Hypertek Systems B.V. All rights reserved.
+Request for
+Get
+Quote
+Manage Consent
+To provide the best experiences, we use technologies like cookies to store and/or access device information. Consenting to these technologies will allow us to process data such as browsing behavior or unique IDs on this site. Not consenting or withdrawing consent, may adversely affect certain features and functions.
+Functional
+Functional
+Always active
+The technical storage or access is strictly necessary for the legitimate purpose of enabling the use of a specific service explicitly requested by the subscriber or user, or for the sole purpose of carrying out the transmission of a communication over an electronic communications network.
+Preferences
+Preferences
+The technical storage or access is necessary for the legitimate purpose of storing preferences that are not requested by the subscriber or user.
+Statistics
+Statistics
+The technical storage or access that is used exclusively for statistical purposes.
+The technical storage or access that is used exclusively for anonymous statistical purposes. Without a subpoena, voluntary compliance on the part of your Internet Service Provider, or additional records from a third party, information stored or retrieved for this purpose alone cannot usually be used to identify you.
+Marketing
+Marketing
+The technical storage or access is required to create user profiles to send advertising, or to track the user on a website or across several websites for similar marketing purposes.
+Manage options
+Manage services
+Manage {vendor_count} vendors
+Read more about these purposes
+Accept
+Deny
+View preferences
+Save preferences
+View preferences
+{title}
+{title}
+{title}
+Manage consent
+Scroll to Top
+Request Quote
+device
+Product Name Model
+Quantity
+Contact Name
+*
+Email Address
+*
+Phone/WhatsApp
+*
+Inquiry Details
+Referering Type
+newsletter
+Get notified of our best prices!
+Website
+Submit
