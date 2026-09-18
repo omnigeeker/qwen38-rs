@@ -3313,3 +3313,49 @@ GEMM 用 simdgroup_matrix 的 MAC，累加顺序与 GEMV 不同 ⇒ **每个 lin
 
 **代价**：MTP 预热使 prefill 变慢约 3.3%（gen 实测 0.979 s vs 0.948 s）——用一点冷 TTFT
 换 40% 的 otps。
+
+
+---
+
+## 63. 位置约定门禁补上；服务器集成 spec 的前提被查清（第 57 轮）
+
+### 最大剩余机会：spec 值 +40.6%，服务器完全没有
+
+`gen` 实测：无 spec 26.65 tok/s → `QW_SPEC=1` **37.46 tok/s（+40.6%）**，且逐字节一致。
+**`qw-server` 里 `QW_SPEC` 一次都没出现** ⇒ 服务器把这 40% 全留在桌上。
+
+### 已完成：`mtp_step_at(hrow, ...)`
+
+`mtp_step` 读 `scratch.h`/`scratch.x` **偏移 0**（上一个位置的 hidden），所以只有逐行
+forward 的 gen 能逐步预热 MTP 缓存。服务器的分块 prefill（一次 pass 最多 32 行）需要
+**按行指定 hidden 来源**。已把实现改为 `mtp_step_at(hrow, ...)` 并保留 `mtp_step` 作为
+`hrow=0` 的薄封装；只偏移**第一处读**（decoder hidden），MTP 自身 scratch 的三处读写保持偏移 0。
+
+**验证**：`spec==plain` 逐字节一致 **300 token** ✓
+
+### 阻断点：位置约定（因此本轮不集成 spec）
+
+**实测确认**：生成期间的位置是 **0-based 相对**（`QW_POS_DEBUG=1` 打出 `pos=0`、`pos=1`），
+而 **prefill 用绝对位置**（`a.pf + k`）。gen 的 `spec_step` 用 `pos = ids.len()`（绝对）。
+
+**⇒ 服务器的位置约定与 spec_step 的约定不一致，而这些位置是 load-bearing 的**
+（GDN 卷积环按 `pos % conv_ring` 索引，草稿头也按它给自己的缓存建索引）。
+
+**这个区域此前是欠门禁的**：早先已发现「把相对生成位置改成绝对会改变部分输出，却仍然通过
+oracle 6/6」——因为六个 oracle prompt 全都短到掩盖了它。
+
+**⇒ 因此本轮不把 spec 接进服务器**（引擎保持未改动）。先补门禁。
+
+### 新门禁：generation position determinism
+
+`accept.sh` 新增：固定长 prompt，**钉死服务器返回的完整答案**（293 字符）与存储期望一致。
+
+**验证它真能抓 bug**：把解码的位置推进从 `a.pos += 1` 改成 `+= 2` 后，
+**门禁 FAIL，答案在字符 8 处漂移**（want `"<think>\nThe user is asking…"` vs got `"<think>\nYou"`）。
+回退后 PASS。
+
+**⇒ 这个门禁覆盖了服务器端的位置约定**（CLI 的 `gen` 走绝对位置，覆盖不到它）。
+
+### 套件状态
+
+**16 passed / 0 failed, ACCEPTED**（新增 position pin；prefill width determinism 仍在）。

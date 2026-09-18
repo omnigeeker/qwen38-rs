@@ -2535,6 +2535,30 @@
         "plan": "guarded single-slot fast path gated on QW_SPEC (default off) and exactly one active slot at index zero, plus MTP warming after that slot's prefill rows, plus a server-side byte-identity gate.",
         "cost": "MTP warming slows prefill about 3.3 per cent (0.979 against 0.948 s in gen)."
       }
+    },
+    {
+      "round": 116,
+      "title": "Found the biggest remaining win - speculative decoding is worth 40.6 per cent and the server has none of it - did the enabling refactor, then discovered the blocker before touching the engine, and closed the gate that blocker sits behind.  First I re-verified the otps lead by paired measurement against Ollama: plus 12.0 and plus 9.8 per cent, so otps is genuinely won at about ten to twelve.  Then QW_SPEC in gen: 26.65 tokens a second without, 37.46 with, a 40.6 per cent gain, byte-identical under the existing gate.  qw-server never mentions QW_SPEC, so the server leaves all of that on the table.  I worked out that spec_step is a complete single-sequence step - draft three through mtp_step, verify with a four-row forward2, keep the longest agreeing prefix, roll the recurrent state back with commit_row - pinned to sequence zero by forward2, by commit_row writing the recurrent state at offset zero, and by the draft head holding one k and one v cache.  The first real piece of work is done and verified: mtp_step reads the decoder hidden at offset zero, so only a one-row-at-a-time prefill can keep the draft head in step, and a chunked prefill that computes up to thirty-two rows in one weight sweep needs to point it at whichever row produced each token.  I renamed the body to mtp_step_at(hrow, ...) and kept mtp_step as a thin wrapper at row zero, offsetting only the decoder-hidden read and leaving the head's three internal scratch accesses at zero; the spec-versus-plain gate still shows byte-identical output over three hundred tokens.  Then I stopped, because I found the blocker before writing any engine code.  Generation is driven with relative positions - QW_POS_DEBUG prints pos zero then pos one - while a prefill pass feeds absolute ones, and gen's spec_step starts at ids.len().  Those positions are load-bearing: the GDN convolution ring indexes by pos modulo conv_ring and the draft head keys its own cache by them.  Worse, that area was ungated: it was already known that turning the relative generation positions absolute altered some outputs and still passed the six-case oracle, because every oracle prompt is short enough to hide it.  So integrating spec now would mean building on an unverified convention.  Instead I closed the gate first.  accept.sh now pins the server's entire answer to a long prompt, 293 characters, against a stored expectation, and I proved the gate works rather than assuming it: advancing the decode position by two instead of one makes it fail with the answer drifting at character eight, from 'The user is asking' to 'You', and reverting makes it pass.  The engine itself is untouched, so no risk was taken. The suite is at 16 passed and 0 failed, ACCEPTED.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "paired otps against Ollama: +12.0% and +9.8%",
+        "G2": "mtp_step_at added; spec==plain byte-identical over 300 tokens after the refactor",
+        "G3": "new accept.sh gate pins a long prompt's whole server answer; proven to catch a position-convention change (fails at char 8 when decode positions advance by 2)",
+        "G4": "suite 16 passed, 0 failed, ACCEPTED; engine untouched"
+      },
+      "evidence": {
+        "otps_paired": "plus 12.0 and plus 9.8 per cent against Ollama on the same prompt, 128 tokens, prefill excluded.",
+        "spec_gain": "gen 26.65 tok/s without QW_SPEC against 37.46 with, plus 40.6 per cent, byte-identical.",
+        "server_gap": "QW_SPEC does not appear in crates/qw-server at all.",
+        "refactor_done": "mtp_step_at(hrow, ...) lets a multi-row pass warm the draft head from any row; only the decoder-hidden read is offset, the head's own scratch stays at zero; wrapper keeps mtp_step at row zero.",
+        "refactor_verified": "spec==plain byte-identical over 300 tokens.",
+        "blocker": "generation uses relative positions (0,1,2,...) while prefill uses absolute and gen's spec_step starts at ids.len(); the GDN ring and the draft cache both key on it.",
+        "blocker_history": "it was already known that making those positions absolute changed some outputs yet still passed the oracle 6/6, because all six oracle prompts are short.",
+        "gate_added": "accept.sh pins the server's whole answer to a long prompt (293 chars) against loop/artifacts/position_pin.json.",
+        "gate_proven": "advancing decode positions by 2 makes the gate fail at character 8 (want 'The user is asking', got 'You'); reverting passes.",
+        "no_risk_taken": "crates/qw-server/src/engine.rs was left unmodified; the spec fast path is deferred until the convention is gated."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

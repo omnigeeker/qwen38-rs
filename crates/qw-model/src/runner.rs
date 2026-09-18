@@ -1970,6 +1970,28 @@ impl Qwen38 {
     /// With `want_logits == false` the head only advances its cache (the final
     /// head sweep is skipped), which is what prefill wants.
     pub fn mtp_step(&mut self, next_token: u32, pos: usize, want_logits: bool) -> Result<Vec<f32>> {
+        self.mtp_step_at(0, next_token, pos, want_logits)
+    }
+
+    /// `mtp_step`, but reading the decoder's hidden state from row `hrow` of the
+    /// pass instead of row 0.
+    ///
+    /// The draft head consumes the decoder's hidden state for the position
+    /// *before* the token being fed, and that state sits at `hrow * hidden` in
+    /// the scratch residual stream once a multi-row pass has run.  A chunked
+    /// prefill computes up to `PASS_ROWS_MAX` rows in one weight sweep, so it
+    /// can only keep the draft head in step with the decoder if it can point
+    /// the head at whichever row produced each token - which is what this
+    /// offset is for.  Rows must be warmed in increasing order, because the
+    /// head writes its own internal norm back into row 0's slot; every row
+    /// above 0 is untouched by that write.
+    pub fn mtp_step_at(
+        &mut self,
+        hrow: usize,
+        next_token: u32,
+        pos: usize,
+        want_logits: bool,
+    ) -> Result<Vec<f32>> {
         let e = self.embed_row(next_token)?;
         let max_t = self.max_t as i32;
         let vocab = self.vocab;
@@ -2016,7 +2038,7 @@ impl Qwen38 {
         );
         b.encode(
             Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
-                .buf(0, if postnorm { &scratch.h } else { &scratch.x })
+                .buf_offset(0, if postnorm { &scratch.h } else { &scratch.x }, hrow * h * 2)
                 .buf(1, &m.pre_norm_h)
                 .buf_offset(2, &m.cat, h_off * 2)
                 .scalar(3, h as i32)
@@ -2287,7 +2309,7 @@ impl Qwen38 {
         let mut d = [0u32; TILE - 1];
         for i in 0..TILE - 1 {
             let tok_in = if i == 0 { next } else { d[i - 1] };
-            d[i] = Self::argmax_of(&self.mtp_step(tok_in, pos + i, true)?);
+            d[i] = Self::argmax_of(&self.mtp_step_at(0, tok_in, pos + i, true)?);
         }
         let draft = t_draft.elapsed().as_secs_f64();
         let t_verify = Instant::now();
@@ -2343,7 +2365,7 @@ impl Qwen38 {
         // it actually needs.  Dropping this costs 6 points of acceptance.
         if k >= 1 {
             self.promote_hidden(k - 1)?;
-            self.mtp_step(d[k - 1], pos + k, false)?;
+            self.mtp_step_at(0, d[k - 1], pos + k, false)?;
         }
         self.promote_hidden(k)?;
         if std::env::var("QW_TAIL").is_ok() {

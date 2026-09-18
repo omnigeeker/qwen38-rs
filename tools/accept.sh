@@ -217,6 +217,47 @@ else
   no "cache hit differs from the cold start ($A vs $D)"
 fi
 
+# ------------------------------------------------- the position convention must not drift
+head1 "generation position determinism"
+# The decoder is driven with RELATIVE positions during generation (0, 1, 2, ...)
+# while a prefill pass feeds absolute ones, and the kernels use them directly - the
+# GDN convolution ring indexes as `pos % conv_ring`, and the draft head keys its own
+# cache by them too.  That makes the convention load-bearing, and it was ungated: a
+# change that turned these relative positions absolute altered some outputs and still
+# passed the six-case oracle, because every oracle prompt is short enough to hide it.
+# This pins a long prompt's whole answer instead.  The expectation was generated from
+# the verified GEMV path, so it pins behaviour rather than proving correctness - its
+# job is to fail the moment the convention moves, which is what silently happened once.
+PIN=loop/artifacts/position_pin.json
+if [ -f "$PIN" ]; then
+  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_pin.log" 2>&1 &
+  serve_up
+  PIN_BODY=$(python3 -c 'import json;print(json.dumps({"model":"qwen3.8-27b-fp4","temperature":0,"max_tokens":64,"messages":[{"role":"user","content":json.load(open("'"$PIN"'"))["prompt"]}]}))')
+  curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'content-type: application/json' \
+    -d "$PIN_BODY" > "$TMP/pin.json"
+  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  python3 - "$PIN" "$TMP/pin.json" <<'PY'
+import json, sys
+want = json.load(open(sys.argv[1]))["server_text"]
+try:
+    got = json.load(open(sys.argv[2]))["choices"][0]["message"]["content"]
+except Exception as e:
+    print("  \033[31mFAIL\033[0m position pin: no answer (%s)" % e); sys.exit(1)
+if got == want:
+    print("  \033[32mPASS\033[0m position pin: a long prompt's whole answer is unchanged (%d chars)" % len(want))
+    sys.exit(0)
+n = min(len(got), len(want))
+i = next((k for k in range(n) if got[k] != want[k]), n)
+print("  \033[31mFAIL\033[0m position pin: answer moved at char %d of %d\n    want %r\n    got  %r"
+      % (i, len(want), want[max(0,i-30):i+30], got[max(0,i-30):i+30]))
+sys.exit(1)
+PY
+  if [ $? -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+else
+  no "position pin: $PIN missing"
+fi
+
 # ------------------------------------------------- prefill width must not change the answer
 head1 "prefill width determinism"
 # The gate the GEMM class of bug needed and did not have.  The six-case oracle is
