@@ -651,10 +651,33 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
     // meant to check it did not finish inside the round.  An unverified optimisation
     // must not be the default, so it is opt-in until a paired measurement says it is
     // right; QW_PREFIX_SNAPSHOT=1 turns it on.
+    // The live-state cache: a slot whose own history already covers the new
+    // prompt's prefix skips it outright, with nothing copied.  That is correct by
+    // construction - the state really is the state after those tokens - so it is
+    // safe to have on by default, and QW_PREFIX_SNAPSHOT=0 disables it.
+    //
+    // It is NOT on by default.  A live hit copies nothing, so it looked correct
+    // by construction, but measured it is not: sending a prompt, letting the model
+    // generate, then sending that prompt plus the model's own reply as a longer
+    // prompt produced "prefix cache HIT (live state) - skipped 213 of 220" and an
+    // answer DIFFERENT from the same longer prompt run cold.  So even reaching the
+    // same token position by a different route - 207 tokens of chunked prefill plus
+    // six single-token generation steps, against 220 tokens of pure chunked
+    // prefill - lands on a different state.  Until that is understood, no part of
+    // this cache may be the default.
     let snapshot = std::env::var("QW_PREFIX_SNAPSHOT").is_ok();
+    // The boundary cache saves a snapshot of the state and restores it for a later
+    // request.  Measured, that restore is NOT equivalent to a cold prefill even
+    // though the snapshot itself round-trips byte-for-byte: resuming at position
+    // 212 and recomputing one step produced a state differing from the cold one in
+    // 85% of its bytes, beginning in the very first GDN layer.  An optimisation
+    // that changes the answer cannot be on by default, so it gets a flag of its
+    // own instead of riding on the live cache's, and that flag is off.
+    let boundary = std::env::var_os("QW_PREFIX_BOUNDARY").is_some();
     tracing::info!(
-        "prefix cache: saved-boundary snapshots {}",
-        if snapshot { "on" } else { "off" }
+        "prefix cache: live-state reuse {} (default), saved-boundary restore {} (QW_PREFIX_BOUNDARY)",
+        if snapshot { "on" } else { "off" },
+        if boundary { "on" } else { "off" }
     );
     let mut slots: Vec<Option<Active>> = (0..batch).map(|_| None).collect();
     let mut cache = PrefixCache::new(batch);
@@ -760,7 +783,8 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // offsets, so each fires exactly once per prefill.  Re-persisting
                 // the same prefix is free: store() keys on content and returns
                 // early if the file is already there.
-                if snapshot
+                if boundary
+                    && snapshot
                     && a.pf > 0
                     && PREFIX_LADDER.iter().any(|&k| rem > k && rem_after <= k)
                 {

@@ -1875,3 +1875,76 @@ oracle 6/6、batch-check 16/16 正常。
 
 **处置**：仪器保留（`QW_PREFIX_DUMP` 未设置时零开销），`QW_PREFIX_SNAPSHOT` 维持 opt-in。
 oracle 6/6、batch-check 16/16 正常。
+
+
+---
+
+## 37. Live 命中也不可靠 ⇒ 快照机制被彻底洗清（第 32 轮）
+
+§36 之后我想换条路：命中类型里有一条 `Live`，**它不做任何恢复**（slot 的状态本来就覆盖
+新 prompt 的前缀），构造上应当可靠；而真实 agent 框架会把模型的回复原样回填进下一轮
+prompt，`hist` 正好成为新 prompt 的前缀，**这正是 `Live` 命中的条件**。
+
+为此写了一个构造正确的测试：用 `/v1/completions`（原始文本）先发 A，让模型生成 `g`，
+再把 `A + g + 新内容` 作为第二个 prompt 发出去。
+
+```
+prefix cache HIT (live state) - skipped 213 of 220 prompt tokens (97%)
+DEFAULT P2 == COLD P2: False
+  cold P2:  '\n\nThe\n\nThe\n\nThe\n\nThe'
+  live P2:  ' the animal is\n\nBased on the text'
+```
+
+**⇒ `Live` 命中确实触发了，但输出与冷启动不同。** 而它**不拷贝任何东西**，
+**所以问题完全不在快照/恢复机制——`export_prefix`/`import_prefix` 被彻底洗清。**
+
+### 新的矛盾焦点
+
+两次运行到达**同一 token 位置**，但路径不同：
+
+| | 位置 0..206 | 207..212 | 213 |
+|---|---|---|---|
+| 冷 P2 | 4-token 分块 prefill | 4-token 分块 | 分块 |
+| Live | 4-token 分块 prefill | **6 次单 token 生成步** | — |
+
+**而 `batch-check` 已证明 pass 宽度本身等价**（一个 16 行 pass == 16 次独立 pass，
+worst |logit difference| 0.0234–0.0332，门禁通过）。**所以矛盾不在 pass 宽度。**
+
+### 顺带发现：一个未解的位置记账异常
+
+追踪位置时发现，**`a.pos` 在整个文件里只被赋值两次**：
+
+| 位置 | 代码 |
+|---|---|
+| 617 | 构造时 `pos: skip` |
+| 855 | 生成分支 `a.pos += 1`，且是**入队时**就前进 |
+
+而 **prefill 分支只做 `a.pf += take`，从不设置 `a.pos`**。
+
+同时 `forward_rows` **确实使用** `pos`：
+
+```c
+let slot = pos % conv_ring;        // 卷积环按位置取模寻址
+.scalar(6, pos as i32),            // RoPE
+.scalar(3, (pos + 1) as i32),
+```
+
+**⇒ 冷启动 `skip = 0` 时 `a.pos` 会从 0 开始，而非从 prompt 长度开始。
+可是生成输出是正确的**（oracle 6/6，质量与 llama.cpp 一致）。
+
+**这个矛盾本轮没能解决**，作为**未解线索**记录，**不作为结论**。它很可能同时解释
+Live 与 Boundary 两条路径的分歧，是下一轮的首要目标：
+**必须搞清楚模型真正用来索引 KV/卷积环的位置从哪里来**——若它来自模型内部游标而非引擎
+传入的 `pos`，那么 `skip` 只改引擎记账、没有移动模型游标，两条命中路径就都解释得通了。
+
+### 处置：两个开关都默认关闭
+
+我一度把 `Live` 设为默认（理由：构造上可靠）。**测量否定了这个理由，已回退。**
+
+| 开关 | 默认 | 路径 |
+|---|---|---|
+| `QW_PREFIX_SNAPSHOT` | **off** | Live 命中（不拷贝） |
+| `QW_PREFIX_BOUNDARY` | **off** | 快照保存/恢复 |
+
+**⇒ 两者都实测不可靠，所以都不能做默认值。** 用户批准的"默认打开内存版缓存"
+**在当前证据下不能落地**。oracle 6/6、batch-check 16/16 正常。

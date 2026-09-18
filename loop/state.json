@@ -1968,6 +1968,27 @@
         "suspects": "GDN conv ring write pointer; attention position/seq_len after restore; KV left past pos by the previous request.",
         "next": "export after exactly one step post-restore and compare with cold at n+1 to see which layer diverges first."
       }
+    },
+    {
+      "round": 90,
+      "title": "The live hit is unsound too, which exonerates the snapshot machinery and moves the question to how the model is positioned.  I reasoned that the Live path needs no copy at all - the slot's state already covers the new prompt's prefix - so it should be sound by construction, and that in an agent framework the model's own reply is echoed back so hist becomes a prefix of the next prompt, which is exactly when Live fires.  I built a proper test for that with /v1/completions on raw text: send A, let the model generate g, then send A + g + more.  It produced 'prefix cache HIT (live state) - skipped 213 of 220 prompt tokens (97%)' and an answer different from the same prompt run cold.  Since Live copies nothing at all, the fault cannot be in the snapshot or the restore - export_prefix and import_prefix are now completely exonerated.  Both runs reach the same token position, but by different routes: the cold run prefills all 220 tokens in 4-token chunks, while the live run prefills 207 in chunks and then advances 6 tokens through single-token generation passes.  Batch-check already proves pass width itself is equivalent, one 16-row pass matching 16 independent passes with worst logit difference 0.0234 to 0.0332, so the contradiction lies elsewhere.  While tracing the position bookkeeping I found an unresolved anomaly worth recording: a.pos is assigned in exactly two places, pos: skip at construction and a.pos += 1 in the generation branch taken when the row is queued, while the prefill branch only ever does a.pf += take and never sets a.pos.  Yet forward_rows really does use pos - let slot = pos % conv_ring addresses the convolution ring by position, and pos is passed as the RoPE scalar.  So on a cold start with skip zero, a.pos would begin at zero rather than at the prompt length, and generation is nevertheless correct, matching llama.cpp in quality and passing the oracle 6 of 6.  I could not resolve that this round, so it is recorded as an open lead and not as a finding.  It is the most promising next target because it would explain both hit paths at once: if the position that indexes the KV cache and the convolution ring comes from a cursor inside the model rather than from the pos the engine passes, then changing skip moves the engine's bookkeeping without moving the model's cursor, which accounts for both the live and the boundary divergence.  I had briefly made Live the default on the grounds that it was sound by construction; the measurement refuted that and I reverted it, so QW_PREFIX_SNAPSHOT and QW_PREFIX_BOUNDARY are both opt-in and both off. The memory cache that was approved for default-on cannot land on this evidence.  Oracle 6/6 and batch-check 16/16 pass.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "live hit verified unsound with a proper prefix-extension test; default-on reverted",
+        "G4": "both cache flags opt-in and off; snapshot machinery exonerated"
+      },
+      "evidence": {
+        "live_test": "/v1/completions raw text: send A, generate g, then send A+g+more; HIT (live state) skipping 213 of 220, output differs from cold.",
+        "exonerated": "Live copies nothing, so the fault cannot be in export_prefix/import_prefix or the restore.",
+        "route_difference": "cold: 220 tokens in 4-token chunks.  live: 207 in chunks then 6 single-token generation steps.",
+        "pass_width_ruled_out": "batch-check proves one 16-row pass equals 16 independent passes.",
+        "open_lead": "a.pos is only ever skip or skip+emitted and never set to the prompt length, yet pos indexes the conv ring via pos % conv_ring and feeds RoPE, and generation is still correct.",
+        "hypothesis": "if the real position comes from a model-internal cursor, changing skip moves engine bookkeeping without moving the cursor, explaining both divergences.",
+        "action": "reverted the default-on; QW_PREFIX_SNAPSHOT and QW_PREFIX_BOUNDARY are both opt-in and off."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
