@@ -346,6 +346,15 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K3_R2)?
             } else if rows == 4 {
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K3_R4)?
+            } else if rows == 7 {
+                // The weight-stationary kernel with NK=6.  Same trap as rows 5: the
+                // accumulator loop is unrolled over NK, so --tokens must be 6.
+                anyhow::ensure!(
+                    k == 6,
+                    "--rows 7 is K_Q4_GEMV_K6_U4H, unrolled over a compile-time NK of 6, so \
+                     --tokens must be 6 (got {k})."
+                );
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K6_U4H)?
             } else if rows == 6 {
                 // The weight-stationary kernel with NK=8.  `--tokens` must be 8 for
                 // the timing to match the work done; anything else is rejected below.

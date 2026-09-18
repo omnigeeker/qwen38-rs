@@ -2159,6 +2159,28 @@
         "measured": "k=4 8.649 and 10.045 ms/token vs k=8 11.000 and 11.766; effective bandwidth 417 GB/s down to 154-164 GB/s.",
         "conclusion": "four tokens per sweep is the ceiling for GEMV; the row-amortising simdgroup GEMM is the only remaining path."
       }
+    },
+    {
+      "round": 99,
+      "title": "Refuted k=6 as well, which closes the GEMV route for good, and measured the bandwidth headroom that remains.  Last round's k=6 figure was an artefact of the same bench trap, so this time I used the real K_Q4_GEMV_K6_U4H kernel - which the macro already instantiates with NK=6 - wired to a new --rows 7 with the same guard requiring --tokens 6, and ran an interleaved A/B.  k=4 gives 8.636 and 8.992 ms a token at 417.2 and 400.7 GB/s, while k=6 gives 9.027 and 11.041 at 266.1 and 217.6, so k=6 is 4 to 23 per cent slower with the same bandwidth collapse seen at k=8 (17 to 27 per cent slower) and k=16 (22 per cent slower).  Every k above four loses to register pressure, so four tokens per weight sweep is the sweet spot and the GEMV route is closed.  Sweeping also turned up a real if modest headroom: the round-3 k=1 kernel reaches 440 to 536 GB/s while the k=4 tile kernel reaches only 352 to 418, a 20 to 25 per cent bandwidth deficit that matches the kernel comment about re-reads of x from L2 growing with k.  k=4 is still three times better per token, so the amortisation is real, but closing that deficit would need several output rows to share a threadgroup so x could live in shared memory, and round 20 already measured that breaking weight-load coalescing costs more than it saves.  That leaves the simdgroup GEMM as the only path, and I wrote the design down for the next round.  The reason it is not optional is register economy: a simdgroup_matrix<half,8,8> fragment is 64 halfs spread over 32 lanes, one register each, whereas the GEMV accumulator costs one register per output element per thread, which is exactly why k=8 spills.  The design is a 64 by 32 output tile per threadgroup with K chunked by 32, weights dequantised into shared memory once per tile so one copy serves 32 tokens, activations staged in shared, and simdgroup_multiply_accumulate for the MACs.  K=5120 divides by 32 cleanly, but out_f takes several values including 248320 so tail blocks need handling.  Correctness first: a single-layer, single-tile version compared element by element against the existing GEMV before anything is wired into the runner.  Expected payoff is weight traffic dropping from 226 sweeps to between 1 and 14, which should bring cold prefill from 11.6 s into the 2 to 3 second range.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "real K6_U4H kernel wired to --rows 7 with a --tokens 6 guard",
+        "G2": "k=6 measured 4-23 per cent slower, consistent with k=8 and k=16 - GEMV route closed",
+        "G3": "bandwidth headroom quantified: k=1 440-536 GB/s vs k=4 352-418 GB/s",
+        "G4": "simdgroup GEMM design written down with tile shapes, shared-memory budget and a correctness-first plan"
+      },
+      "evidence": {
+        "k6": "k=4 8.636/8.992 ms/token at 417.2/400.7 GB/s vs k=6 9.027/11.041 at 266.1/217.6 - slower.",
+        "consistency": "k=6 4-23 per cent slower, k=8 17-27 per cent slower, k=16 22 per cent slower: register pressure above k=4.",
+        "headroom": "round-3 k=1 reaches 440-536 GB/s against the k=4 tile kernel's 352-418, a 20-25 per cent deficit matching the documented x re-reads from L2.",
+        "why_not_exploit": "closing it needs several output rows per threadgroup so x can be staged in shared memory, and round 20 measured that breaking weight-load coalescing costs more than it saves.",
+        "why_tensor_cores": "a simdgroup_matrix<half,8,8> fragment is 64 halfs over 32 lanes, one register each, against the GEMV's one register per output element per thread.",
+        "design": "64x32 output tile per threadgroup, K chunked by 32, weights dequantised into shared memory once per tile, activations staged in shared, simdgroup_multiply_accumulate for the MACs; K=5120 divides cleanly, out_f tails need handling.",
+        "plan": "single-layer single-tile version compared element by element against the existing GEMV before wiring into the runner.",
+        "payoff": "weight traffic from 226 sweeps to 1-14, cold prefill from 11.6 s toward 2-3 s."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
