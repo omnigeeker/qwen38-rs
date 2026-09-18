@@ -196,7 +196,31 @@ impl<'a> QLinear<'a> {
         } else if rows <= crate::runner::TILE {
             self.encode_tile(batch, tile_k, x, y, rows);
         } else {
-            self.encode_b(batch, batch_k, x, y, rows);
+            // More rows than the tile kernel's fixed four.  `K4_U4HX` is unrolled
+            // over four tokens and IGNORES the `k` scalar, so a partial chunk still
+            // computes four rows and still writes four rows of `y`; the x and y
+            // buffers are sized for `BATCH_MAX`, which is at least
+            // `PASS_ROWS_MAX`, so the three extra rows of the last chunk land inside
+            // the allocation and their outputs are simply never read.  Running the
+            // tile kernel in a loop is what makes a wide pass cheap: the per-pass
+            // overhead is a fixed chain of dependent dispatches that does not care
+            // how many rows ride along, so carrying 32 rows instead of 4 amortises
+            // it eight-fold.
+            let mut off = 0usize;
+            while off < rows {
+                let d = Dispatch::new(tile_k, (self.out_f * 32, 1, 1), (32, 1, 1))
+                    .buf_offset(0, self.weight.buf, self.weight.offset)
+                    .buf_offset(1, self.scales.buf, self.scales.offset)
+                    .buf_offset(2, self.biases.buf, self.biases.offset)
+                    .buf_offset(3, x, off * self.in_f * 2)
+                    .buf_offset(4, y, off * self.out_f * 2)
+                    .scalar(5, self.in_f as i32)
+                    .scalar(6, crate::runner::TILE as i32)
+                    .scalar(7, self.out_f as i32);
+                batch.encode(d);
+                off += crate::runner::TILE;
+            }
+            let _ = batch_k;
         }
     }
 

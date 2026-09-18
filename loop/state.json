@@ -2311,6 +2311,28 @@
         "not_shipped": "parity is not enough to replace a working kernel.",
         "remaining_path": "have each thread construct its own fragment elements directly, bypassing shared memory."
       }
+    },
+    {
+      "round": 106,
+      "title": "Widened the prefill chunk from 4 to 32 by giving the row path a loop over the tile kernel and sizing the convolution ring from a new PASS_ROWS_MAX, which is verified correct and consistently faster but only by 3 to 14 per cent, refuting my amortisation theory - the per-pass overhead turns out to be per-row.  I started by recomputing what llama.cpp actually does, and found I had it wrong: at pp512 it takes 0.71 s for 512 tokens, which is ONE weight sweep at 20 GB/s, so its prefill is compute bound at roughly 41 TFLOPS, while our GEMM at BN=32 needs sixteen sweeps for the same 512 tokens.  The gap is therefore both that each of our sweeps is slow and that we need too many of them.  The row path was the part I could change cheaply: encode_rows sent anything above four rows to encode_b, the batch-b kernel that costs 25.84 ms a row, so I replaced it with a loop over the tile kernel, and decoupled the convolution ring from TILE by introducing PASS_ROWS_MAX of 32, which makes conv_ring 64, BATCH_MAX 32 and the prefill chunk 32.  The subtlety is that K4_U4HX is unrolled over four tokens and ignores the k scalar - the trap from round 15 - so a partial chunk still computes and writes four rows; sizing BATCH_MAX at least as large as PASS_ROWS_MAX keeps those three extra rows inside the allocation, where their outputs are simply never read.  My prediction was that this would amortise the fixed per-pass overhead of about 14.5 ms eight-fold, taking the non-GEMV part from 3.36 s to 0.42 s.  It did not: an interleaved A/B on one prompt with fresh servers gave 1.03x and 1.14x, 11.822 and 11.630 against 12.126 and 13.242 seconds.  That refutes the model - the non-GEMV cost is per row, not per pass, and the round-17 measurement that looked like a fixed per-chunk cost was taken with four rows in every chunk, so it could not tell the two apart.  I also feared the ring growth would cost eight times the convolution window buffer, but measurement says memory is neutral: RSS 41.82 GB at chunk 4 against 41.81 at chunk 32.  All three gates pass: verify at parity 6 of 6, the batch gate with a worst logit difference of 0.0000, and accept.sh at 14 passed and 0 failed.  So the change is kept - verified, consistently faster, and memory neutral - but it is a modest win, not the one I predicted.  Separately, an interleaved A/B of the GEMM against the GEMV over three rounds gives 1.09 to 1.15 times, 240 to 253 ms for one sweep against 275 to 276 for the eight sweeps the GEMV needs, which is the next step: wiring the GEMM into this wide row path.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "verify --oracle: parity 6/6",
+        "G2": "batch-check --slots 16 --max-t 512: PASSED, worst |logit difference| 0.0000",
+        "G3": "tools/accept.sh: 14 passed / 0 failed, ACCEPTED",
+        "G4": "interleaved cold-prefill A/B: chunk 32 is 1.03x and 1.14x faster than chunk 4"
+      },
+      "evidence": {
+        "llamacpp_recomputed": "pp512 is 0.71 s for 512 tokens = one weight sweep at 20 GB/s, so it is compute bound at ~41 TFLOPS, not bandwidth bound; our GEMM at BN=32 needs sixteen sweeps for the same batch.",
+        "change": "encode_rows now loops the tile kernel instead of using encode_b; PASS_ROWS_MAX=32 makes conv_ring 64, BATCH_MAX 32 and PREFILL_CHUNK 32.",
+        "nk4_trap": "K4_U4HX ignores the k scalar, so a partial chunk still writes four rows; BATCH_MAX >= PASS_ROWS_MAX contains the overflow and those outputs are never read.",
+        "amortisation_refuted": "predicted 3.36 -> 0.42 s; measured only 1.03x and 1.14x, so the non-GEMV cost is per row, not per pass.",
+        "why_round17_misled": "the per-chunk cost was measured with four rows in every chunk, which cannot distinguish a per-chunk cost from a per-row one.",
+        "memory_neutral": "RSS 41.82 GB at chunk 4 against 41.81 at chunk 32, so the feared eight-fold convolution window growth did not happen.",
+        "gemm_ab": "interleaved three times: GEMV eight sweeps 275-276 ms against GEMM one sweep 240-253 ms, 1.09-1.15x for the GEMM.",
+        "cold_prefill": "11.6-11.8 s at chunk 32 against 12.1-13.2 s at chunk 4, and 12.57 s previously - a modest real gain, still about five times behind llama.cpp's 2.23 s."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

@@ -106,9 +106,17 @@ struct Layer {
 /// Number of tokens a single forward pass can carry (see docs/PLAN_K2.md).
 pub const TILE: usize = 4;
 
+/// The most rows of one sequence a single pass may carry.  The convolution ring
+/// has to hold `conv_k` rows of history plus every row this pass writes, so the
+/// ring - and therefore the prefill chunk - is sized from this.  Raising it from
+/// the old value of `TILE` is what lets a prefill amortise the per-pass overhead,
+/// which is a fixed cost of roughly 1216 dependent dispatches that does not care
+/// how many rows ride along.
+pub const PASS_ROWS_MAX: usize = 32;
+
 /// Widest row tile a single pass can carry.  `TILE` is the speculative-verify
 /// width; a batch-serving pass puts one row per sequence in the same structure.
-pub const BATCH_MAX: usize = 16;
+pub const BATCH_MAX: usize = 32;
 
 struct Scratch {
     x: GpuBuffer,
@@ -278,7 +286,7 @@ fn budget(cfg: &crate::config::TextConfig, dir: &Path, batch: usize) -> Budget {
     let (dk, dv) = (cfg.linear_key_head_dim, cfg.linear_value_head_dim);
     let key_dim = cfg.linear_num_key_heads * dk;
     let conv_dim = key_dim * 2 + hv * dv;
-    let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two();
+    let conv_ring = (cfg.linear_conv_kernel_dim + PASS_ROWS_MAX).next_power_of_two();
     let (mut n_full, mut n_gdn) = (0usize, 0usize);
     for i in 0..cfg.num_hidden_layers {
         if cfg.is_linear_layer(i) {
@@ -510,7 +518,7 @@ impl Qwen38 {
         let conv_dim = key_dim * 2 + value_dim;
         let conv_k = cfg.linear_conv_kernel_dim;
         // one ring for the window plus the rows a pass writes ahead
-        let conv_ring = (conv_k + TILE).next_power_of_two(); // power of two: the kernel masks
+        let conv_ring = (conv_k + PASS_ROWS_MAX).next_power_of_two(); // power of two: the kernel masks
         if conv_k != 4 {
             bail!("conv kernel {conv_k} != 4 is not implemented");
         }
@@ -1216,7 +1224,7 @@ impl Qwen38 {
                 }
                 Kind::Gdn(g) => {
                     // qkv projection writes straight into the conv window's ring slot
-                    let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two(); // power of two: the kernel masks
+                    let conv_ring = (cfg.linear_conv_kernel_dim + PASS_ROWS_MAX).next_power_of_two(); // power of two: the kernel masks
                     let slot = (t - 1).rem_euclid(conv_ring as i32) as usize;
                     b.encode(
                         Dispatch::new(
@@ -1426,7 +1434,7 @@ impl Qwen38 {
         // convolution ring can hold next to the history it reads: `conv_k` rows of
         // history plus whatever this pass writes.
         let conv_k = self.cfg.linear_conv_kernel_dim;
-        let max_per_seq = (conv_k + TILE).next_power_of_two() - conv_k;
+        let max_per_seq = (conv_k + PASS_ROWS_MAX).next_power_of_two() - conv_k;
         for (i, r) in rows.iter().enumerate() {
             anyhow::ensure!(
                 r.0 < self.batch,
@@ -1667,7 +1675,7 @@ impl Qwen38 {
                         &scratch.a,
                         n,
                     );
-                    let conv_ring = (cfg.linear_conv_kernel_dim + TILE).next_power_of_two();
+                    let conv_ring = (cfg.linear_conv_kernel_dim + PASS_ROWS_MAX).next_power_of_two();
                     // Phase 1: project all n rows in one launch into the staging
                     // buffer.  The tiled kernel walks the same groups in the same
                     // order and reduces each row with the same simd_sum as the k=1

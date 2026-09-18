@@ -2818,3 +2818,54 @@ occupancy 掉，实测更慢（13.0–17.6 vs 8.7–10.6）。
 
 **⇒ 剩余路径只剩一条：让每个线程直接构造自己 fragment 需要的元素，彻底绕开 shared 往返。**
 **未接入（打平不足以取代现有内核）。**
+
+
+---
+
+## 53. 宽行路径：chunk 4 → 32（第 47 轮）
+
+### 动机与先算清 llama.cpp 的账
+
+我重新核算了 llama.cpp 的 prefill，发现一个此前搞错的关键事实：
+
+| | 512 token 的权重扫描 | 有效带宽 |
+|---|---|---|
+| llama.cpp pp512（0.71 s） | **1 次** | 20 GB/s（**算力受限，约 41 TFLOPS**） |
+| 我们的 GEMM（BN=32） | **16 次** | 42–52 GB/s |
+
+**⇒ llama.cpp 的 prefill 是算力受限、一次扫描覆盖整批；我们的 BN=32 让 512 token 要扫 16 次。
+所以差距来自「每次扫描都太慢」+「扫描次数太多」。**
+
+### 改动
+
+`encode_rows` 原来对 rows>4 走 `encode_b`（25.84 ms/行，灾难）。现在改为**把 tile 内核按 TILE 循环**，
+并把 `conv_ring` 从 `TILE` 解耦：新增 `PASS_ROWS_MAX = 32`，`conv_ring = (conv_k + 32).next_power_of_two() = 64`，
+`BATCH_MAX` 16 → 32，`PREFILL_CHUNK` = 32。
+
+**关键约束**：`K4_U4HX` 的 NK=4 展开**忽略 `k` 标量**（第 15 轮的陷阱），部分块仍会算 4 行并写 4 行。
+靠 `BATCH_MAX ≥ PASS_ROWS_MAX` 让那 3 行的越界写落在分配内、输出无人读取。
+
+### 结果：理论被否，但改动净收益为正
+
+**摊销理论被否**：我预测非 GEMV 的固定开销会摊销 8 倍（3.36 → 0.42 s）。实测只快 3–14%：
+
+```
+轮1: chunk=4 -> 12.126 s | chunk=32 -> 11.822 s | 1.03x
+轮2: chunk=4 -> 13.242 s | chunk=32 -> 11.630 s | 1.14x
+```
+
+**⇒ 说明非 GEMV 的开销是「每行」而非「每 pass」**——§47 的「每 chunk 固定 13–16 ms」其实是在
+固定 4 行的前提下测的，从未变过行数，所以两种模型都能解释那组数据。
+
+**内存中性**：RSS 41.82 GB（chunk=4）vs 41.81 GB（chunk=32）——我预估的 8 倍 conv window 增长并未发生。
+
+### 门禁
+
+- `verify --oracle`：**parity 6/6**
+- `batch-check --slots 16 --max-t 512`：**PASSED**（worst |logit diff| 0.0000）
+- `tools/accept.sh`：**14 passed / 0 failed, ACCEPTED**
+
+### GEMM 的 A/B（下一步的依据）
+
+交错三次：GEMV 8 次扫描 275–276 ms vs GEMM 1 次扫描 240–253 ms ⇒ **GEMM 稳定快 1.09–1.15×**。
+把它接进这条宽行路径，可再省约 13%。

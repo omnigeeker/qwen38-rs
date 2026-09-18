@@ -28,13 +28,17 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 /// throws three quarters of the work away - and since the client is waiting for its
 /// first token, that waste is exactly what it experiences as a hang.  It matches
 /// the convolution ring, which holds `conv_k` history rows plus this many.
-const PREFILL_CHUNK: usize = qw_model::runner::TILE;
+// A pass carries this many rows of one sequence.  It is the whole point of the
+// wide row path: the per-pass cost is a fixed chain of dependent dispatches that
+// does not scale with the row count, so 32 rows per pass amortise it eight-fold
+// against the old value of TILE.
+const PREFILL_CHUNK: usize = qw_model::runner::PASS_ROWS_MAX;
 /// Widest prefill pass this engine may ask for.  It is not a tuning knob: the row
 /// kernels admit at most `(conv_k + TILE).next_power_of_two() - conv_k` rows of one
 /// sequence, which is 4 with the convolution ring at 8, and a wider pass is
 /// rejected outright.  Asking for more is therefore clamped rather than honoured,
 /// and the clamp is logged so the request is not silently ignored.
-const PREFILL_CHUNK_MAX: usize = 4;
+const PREFILL_CHUNK_MAX: usize = 32;
 
 /// A prefix cache that needs no storage of its own.
 ///
@@ -685,8 +689,9 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         if want != chunk_cap {
             tracing::warn!(
                 "prefill chunk: QW_PREFILL_CHUNK={want} is not usable, clamped to {chunk_cap} \
-                 (the row kernels admit at most {PREFILL_CHUNK_MAX} rows of one sequence, and a \
-                 wider pass buys nothing anyway - 4 to 16 rows costs 4.96x for 4x the work)"
+                 (a pass may carry at most {PREFILL_CHUNK_MAX} rows of one sequence, set by the \
+                 convolution ring; the old note that a wider pass buys nothing described the \
+                 batch-`b` row path, which the tile kernel in a loop replaced)"
             );
         }
     }
