@@ -2424,6 +2424,28 @@
         "gate_flakiness": "after the revert, verify failed once then passed 6/6 on a re-run of the byte-identical binary, and the batch gate's worst logit difference moved from 0.0000 to 0.0352.",
         "reverted": "binary md5 matches the pre-change build exactly."
       }
+    },
+    {
+      "round": 111,
+      "title": "Mapped the GEMM's cost structure and knocked out both remaining hypotheses.  Raising the shared footprint hurts (a 256-wide weight staging span, which gives each row 128 contiguous bytes, went from 256 to 298 ms; BM=16 went to 334) and lowering it hurts too (BM=16 at 9.5 KB, three threadgroups per SM, 334 ms), so the baseline BM=32 BK=64 is a local optimum and occupancy is not the limit.  Then I built a direct bandwidth probe: mode 5 reads the weights at the address a K-major layout would put them at, which is wrong on purpose but times the access pattern.  My first version of that probe was dishonest - it changed the address without changing the lane mapping, so consecutive lanes still strode across out_f and it came out worse at 269 ms - and I fixed it so consecutive lanes take consecutive output columns, which is what a K-major layout actually needs to read 128 contiguous bytes.  Corrected, it was 268 ms against the row-major 259, so the 32-byte-per-row granularity is not what costs the bandwidth.  That closes the access-pattern explanation as well.  What the mode diagnostics do give is the cost structure: weight staging about 120 ms for 14.4 GB, which is 120 GB/s against the GEMV's 400, the activation staging about 92 ms, and the MACs about 47 ms.  The activation staging is the one that is clearly wrong rather than merely slow: consecutive lanes take consecutive tokens, so neighbouring lanes are K*2 = 10240 bytes apart and every load is its own line, saved only by the tile being L2 resident.  The comment in the kernel records that swapping the indices to coalesce the read was tried and made the kernel 40 per cent slower, because the shared write then conflicts.  Getting both at once needs the shared tile stored as [token][k] - contiguous lanes read contiguous k, so the global read coalesces and the shared write stays contiguous - followed by a transposed load into the fragment.  I tried that twice, once straight from device memory and once from a transposed shared tile, and both gave a relative error of 1.7 with numerically identical errors, so the transpose semantics are still not pinned down and I am not adopting it.  The fallback for next round is to avoid the transposed load entirely: stage the weights as [k][row] and the activations as [token][k], load both without transpose, and let the accumulator come out as [token][out], storing it back with simdgroup_store's transpose flag.  gemm-check passed at 3.347e-4 after every experiment and after the revert.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "occupancy hypothesis refuted: BM=16 at 9.5 KB shared and 3 threadgroups per SM measured 334 ms against the baseline 256",
+        "G2": "granularity hypothesis refuted by a corrected K-major probe: 268 ms against the row-major 259",
+        "G3": "cost structure measured: weight staging about 120 ms, activation staging about 92 ms, MACs about 47 ms",
+        "G4": "gemm-check PASSED at 3.347e-4 after every experiment and after the revert"
+      },
+      "evidence": {
+        "shared_footprint": "WK=256 at 26 KB gave 298 ms and 48.4 GB/s; BM=16 at 9.5 KB gave 334 ms and 43.1 GB/s; baseline BM=32 BK=64 at 13.8 KB gave 256 ms and 56.3 GB/s.",
+        "probe_first_attempt": "changing only the address left consecutive lanes striding across out_f, so it measured 269 ms - worse, and it would have refuted the hypothesis for the wrong reason.",
+        "probe_corrected": "with consecutive lanes taking consecutive output columns, 268 ms against the row-major 259 ms and 53.8 against 55.6 GB/s.",
+        "cost_structure": "weight staging about 120 ms for 14.4 GB = 120 GB/s against the GEMV's 400; activation staging about 92 ms; MACs about 47 ms.",
+        "activation_staging_flaw": "consecutive lanes take consecutive tokens, so neighbours are K*2 = 10240 bytes apart and every load is its own line, saved only by L2 residency.",
+        "known_tradeoff": "the kernel's own comment records that coalescing the read alone made it 40 per cent slower because the shared write then conflicts.",
+        "transpose_unresolved": "simdgroup_load with transpose gave a relative error of 1.7 from device memory and from a transposed shared tile, with numerically identical errors, so the semantics are not pinned down.",
+        "fallback": "stage weights as [k][row] and activations as [token][k], load both without transpose, and store the [token][out] accumulator with simdgroup_store's transpose flag."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

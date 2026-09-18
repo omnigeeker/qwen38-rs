@@ -735,13 +735,28 @@ kernel void q4_gemm_tile(
         // reason the GEMM ran at 33.6 GB/s against the GEMV's 417.
         const int nwords = Q4_GEMM_BK / 8;
         for (int idx = (int)tid; idx < Q4_GEMM_BM * nwords; idx += Q4_GEMM_NT) {
-            const int r  = idx / nwords;
-            const int wd = idx - r * nwords;
+            // mode 5 probes a K-major weight layout: there the tile's 32 output
+            // columns sit contiguously inside one K-row, so consecutive lanes must
+            // take consecutive COLUMNS to read 128 contiguous bytes.  Swapping which
+            // index varies fastest is what makes the probe honest - changing only the
+            // address would leave the lanes striding across out_f, which is worse, not
+            // better, and would refute the hypothesis for the wrong reason.
+            const int r  = (mode == 5) ? (idx - (idx / Q4_GEMM_BM) * Q4_GEMM_BM) : (idx / nwords);
+            const int wd = (mode == 5) ? (idx / Q4_GEMM_BM) : (idx - r * nwords);
             const int row = row0 + r;
             const int g0  = k0 + wd * 8;
             half v[8];
             if (row < out_f && g0 < K) {
-                const uint word = w[(size_t)row * (size_t)(K / 8) + (size_t)(g0 >> 3)];
+                // mode 5 is a bandwidth probe, not a computation: it reads the weight
+                // at the address a K-major (transposed) layout would put it at.  The
+                // results are wrong on purpose.  The row-major layout gives this tile
+                // only 32 contiguous bytes per row, so if the memory system fetches
+                // 128-byte lines then three quarters of every line is wasted; a
+                // K-major layout would give 128 contiguous bytes and no waste.  The
+                // probe says which of the two the 56 GB/s is.
+                const uint word = (mode == 5)
+                    ? w[(size_t)(k0 / 8 + wd) * (size_t)out_f + (size_t)row]
+                    : w[(size_t)row * (size_t)(K / 8) + (size_t)(g0 >> 3)];
                 const float s  = as_type<float>((uint)scales[(size_t)row * (size_t)n_groups + (size_t)(g0 / GROUP_SIZE)] << 16);
                 const float bb = as_type<float>((uint)biases[(size_t)row * (size_t)n_groups + (size_t)(g0 / GROUP_SIZE)] << 16);
                 _Pragma("unroll") for (int i = 0; i < 8; ++i) {
