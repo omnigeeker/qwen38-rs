@@ -2166,3 +2166,72 @@ export         904 tok 208 MB  17.8 ms    ← 每次请求都做，包括暖命�
 | 冷 TTFT（913 tok） | 11.9 s | 2.23 s | **输 5.4×** |
 
 **⇒ TTFT 目标尚未达成。暖路径已接近，冷路径仍是 5.4 倍的差距。**
+
+
+---
+
+## 41. 静默钳制陷阱、`conv_ring` 否定理由的重申、以及冷 prefill 差距的精确定位（第 36 轮）
+
+本轮目标是冷 prefill（11.9 s vs llama.cpp 2.23 s）。三条结论。
+
+### 1. 一个真实的陷阱：`QW_PREFILL_CHUNK` 被静默钳死
+
+```rust
+.unwrap_or(PREFILL_CHUNK)
+.min(PREFILL_CHUNK);      // ← 任何值都被压回 4
+```
+
+**⇒ `QW_PREFILL_CHUNK=16` 看起来生效、日志也照常打印，实际什么都没做。**
+我因此白跑了一轮实验（三次 chunk 4/8/16 全是 13–15.6 s，还误以为是热漂移）。
+
+修法：上限改为**结构性合法值**，并且**钳制时明确告警**：
+
+```
+prefill chunk: QW_PREFILL_CHUNK=16 is not usable, clamped to 4 (the row kernels admit at
+most 4 rows of one sequence, and a wider pass buys nothing anyway - 4 to 16 rows costs
+4.96x for 4x the work)
+```
+
+### 2. 4 行上限是结构性的
+
+```rust
+let max_per_seq = (conv_k + TILE).next_power_of_two() - conv_k;   // (4+4)->8, 8-4 = 4
+```
+
+超过就以明确错误拒绝：`a pass may carry at most 4 rows of one sequence, 16 were given`。
+`conv_ring` 在核里是参数化的（`.scalar(5, conv_ring as i32)`），技术上可加宽到 32 换 16 行，
+**但 §20 已测过并判定为零收益**：
+
+```
+4 行 → 16 行: 935.31 / 188.58 = 4.96x   （行数正好 4 倍，纯线性，长位置下更差）
+原因: encode_rows(n) 在 n>4 切到 q4_gemv_b16，而该核 25.84 ms/row，并不比 tile 核 27.47 ms/row 省
+```
+
+**⇒ 引擎当前的 chunk=4 已经走的是更快的那条路。本轮没有重复这项已否定的工作。**
+
+### 3. 冷 prefill 差距的精确定位
+
+先否证一个猜测：**位置劣化不是主因**。实测 3405 token 的边际速率：
+
+| 位置区间 | ms/token |
+|---|---|
+| 852–1704 | 14.91 |
+| 1704–2556 | 16.55 |
+
+**⇒ 1700 个 token 只劣化 11%**，远小于文档里"pos 6000 时 44.58 ms/token"给人的印象
+（那是 4 行扫描的另一种测量语境）。总计 3405 token / 52.9 s = **15.5 ms/token**。
+
+**⇒ 差距是一个平坦的约 6× 每 token 赤字。** 结合 §20 的每行数据可以精确定位：
+
+| | 每行成本 | 含义 |
+|---|---|---|
+| tile 核（4 行） | ~7.5 ms（30 ms / 4 行） | **确实摊薄 4 倍** |
+| `q4_gemv_b16`（16 行） | **25.84 ms/row** | **完全不摊薄，每行重读全部 14.4 GB** |
+| llama.cpp | 2.46 ms/token | 每次权重扫描处理约 12 个 token，非 GEMV 开销近零 |
+
+**⇒ 差距 = 「缺少真正摊薄的 GEMM」+「689 个 dispatch 的非 GEMV 开销（约 5.5 ms/token）」。**
+
+两项都是多轮的内核工程，不是一轮能完成的。**§31 的时间模型已指出**：真正的转置
+activation / simdgroup GEMM 的价值在于让 chunk 16 摊薄，而天花板受非 GEMV 工作限制
+（chunk 16 ⇒ 约 131 tok/s，而 llama.cpp 是 406 tok/s）——**所以即便完成，冷 prefill
+仍会落后，必须同时削减 dispatch。**

@@ -29,6 +29,12 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 /// first token, that waste is exactly what it experiences as a hang.  It matches
 /// the convolution ring, which holds `conv_k` history rows plus this many.
 const PREFILL_CHUNK: usize = qw_model::runner::TILE;
+/// Widest prefill pass this engine may ask for.  It is not a tuning knob: the row
+/// kernels admit at most `(conv_k + TILE).next_power_of_two() - conv_k` rows of one
+/// sequence, which is 4 with the convolution ring at 8, and a wider pass is
+/// rejected outright.  Asking for more is therefore clamped rather than honoured,
+/// and the clamp is logged so the request is not silently ignored.
+const PREFILL_CHUNK_MAX: usize = 4;
 
 /// A prefix cache that needs no storage of its own.
 ///
@@ -671,7 +677,19 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|c| *c > 0)
         .unwrap_or(PREFILL_CHUNK)
-        .min(PREFILL_CHUNK);
+        .min(PREFILL_CHUNK_MAX);
+    if let Some(want) = std::env::var("QW_PREFILL_CHUNK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if want != chunk_cap {
+            tracing::warn!(
+                "prefill chunk: QW_PREFILL_CHUNK={want} is not usable, clamped to {chunk_cap} \
+                 (the row kernels admit at most {PREFILL_CHUNK_MAX} rows of one sequence, and a \
+                 wider pass buys nothing anyway - 4 to 16 rows costs 4.96x for 4x the work)"
+            );
+        }
+    }
     tracing::info!("prefill chunk: {chunk_cap} token(s) per pass");
     // Taking a copy of the recurrent state at the end of every prefill is what lets a
     // byte-identical retry hit: after decoding, the slot's state sits past the prompt
