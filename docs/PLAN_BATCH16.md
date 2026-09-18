@@ -3214,3 +3214,50 @@ GEMM（BN=32）能把扫描次数减 8 倍，但自身带宽只有 56 GB/s ⇒ �
 **即使 GEMM 达到理想带宽（36 ms/扫描），也是 1.04 s + 3.4 s = 4.4 s，仍落后 Ollama 2.5 倍。**
 **⇒ 冷 TTFT 在当前架构下结构性不可达；GEMM 的带宽之谜经 11 轮假设（bank 冲突、屏障、占用率、
 字节在飞、BM、双缓冲、合并、MAC、反量化、粒度、K-major）全部被否后仍无解释。**
+
+
+---
+
+## 61. GEMM 缺陷定位完毕：内核无错，错在数值路径；门禁盲区已补上（第 55 轮）
+
+### 内核是干净的
+
+把 `gemm-check` 的全量模式改成 **GPU 对 GPU**（GEMM vs 引擎实际用的 GEMV tile 内核），
+**全部 497 个 linear 通过**：
+
+| 激活分布 | worst rel |
+|---|---|
+| 均匀随机 [-1,1) | **9.662e-4** |
+| 带 10× outlier（每 64 通道一个，各 token 相同） | 9.718e-4 |
+| 带 30× outlier | 9.416e-4 |
+
+**⇒ 内核正确，且 outlier 不是原因**（我上一轮的假设被自己否掉）。
+
+### 真正的缺陷
+
+GEMM 用 simdgroup_matrix 的 MAC，累加顺序与 GEMV 不同 ⇒ **每个 linear 相差约 1e-3，而 GEMV 路径
+与单行内核是逐位一致的**。这个差异经过 **64 层 + GDN 递推**放大到 **~17 logits**，足以翻转 token。
+长 prompt 的实测结果是 GEMM **把问题误读**（"asking about the evaporator" vs 正确的
+"asking me to explain how a refrigerator works"）。
+
+**⇒ 这不是「内核 bug」，而是「数值路径差异」。19% 的冷 prefill 收益不足以换取破坏逐位一致性
+和改变（实测中是变差）的答案。不采用。**
+
+### oracle 盲区的精确解释
+
+六个 oracle prompt 只有 **5–20 token**，全部远低于 26 行的切换阈值 ⇒ `verify` 永远走 GEMV。
+`batch-check` 的独立运行走单行内核。**所以没有任何既有门禁覆盖 GEMM。**
+
+### 已补上门禁（并证明它有效）
+
+`accept.sh` 新增 **prefill width determinism**：同一长 prompt 在 `QW_PREFILL_CHUNK=4`（必然 GEMV）
+与 `=32`（宽 pass）下**必须给出相同答案**。
+
+**验证它确实能抓 bug：**
+- 接上 GEMM：**FAIL**（`chunk 4 and chunk 32 disagree`）→ **14 passed, 1 failed, NOT ACCEPTED**
+- 回退后：**PASS** → **15 passed, 0 failed, ACCEPTED**
+
+### 新增诊断
+
+- `QW_GEMM_CHECK_ALL=1`：全量 497 linear 的 GPU 对 GPU 比对（CPU 参考太慢会超时）
+- `QW_GEMM_CHECK_OUTLIER=<倍数>`：注入每 64 通道一个的 outlier

@@ -2491,6 +2491,29 @@
         "cold_prefill_structure": "232 weight sweeps = 3.34 TB at about 400 GB/s = 8.35 s, plus 3.4 s non-GEMV.",
         "gemm_ceiling": "BN=32 cuts sweeps eightfold but runs at 56 GB/s, so only 19 per cent net; even at an ideal 36 ms per sweep it is 4.4 s total, still 2.5x behind Ollama."
       }
+    },
+    {
+      "round": 114,
+      "title": "Pinned down the GEMM defect exactly as the user asked and closed the gate blind spot that hid it.  The kernel is clean: I rewrote gemm-check's all-linears mode as a GPU-against-GPU comparison against the GEMV tile kernel the engine actually runs, and all 497 quantised linears pass at a worst relative error of 9.662e-4 on uniform random activations, 9.718e-4 with a ten-times outlier in one channel of every sixty-four, and 9.416e-4 at thirty times. That also refutes my own hypothesis from last round that outliers were the cause.  The real defect is not in the kernel but in the numerical path: the GEMM accumulates with simdgroup_matrix in a different order from the GEMV, so it agrees only to about 1e-3 per linear, whereas the GEMV path is bit-identical to the single-row kernel by construction.  That difference compounds through sixty-four layers and the GDN recurrence into roughly seventeen logits, which is enough to flip tokens, and on a long prompt the GEMM misread the question - answering about the evaporator where the GEMV correctly explained how a refrigerator works.  So the nineteen per cent cold-prefill gain is not worth breaking bit-identity and changing, and in the one case measured degrading, the answer.  I am not shipping it.  The oracle blind spot is now explained precisely: all six oracle prompts are five to twenty tokens, far below the twenty-six-row switch, so verify never reaches the GEMM, and batch-check's independent runs use the single-row kernel.  To close it I added a prefill-width determinism gate to accept.sh: the same long prompt under QW_PREFILL_CHUNK=4, which must take the GEMV, and =32, which takes the wide path, has to give the same answer. I proved the gate works rather than assuming it: with the GEMM wired in it fails with chunk 4 and chunk 32 disagreeing, 14 passed and 1 failed, NOT ACCEPTED, and after the revert it passes at 15 passed and 0 failed, ACCEPTED.  Two diagnostics are kept: QW_GEMM_CHECK_ALL for the all-linears GPU comparison, since the CPU reference is too slow to sweep them, and QW_GEMM_CHECK_OUTLIER for injecting channel outliers.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "all 497 linears pass GPU-vs-GPU at worst 9.662e-4 (uniform), 9.718e-4 (10x outliers), 9.416e-4 (30x)",
+        "G2": "defect identified as accumulation-order divergence of about 1e-3 per linear, compounding to ~17 logits over 64 layers",
+        "G3": "new accept.sh gate: chunk 4 vs chunk 32 must agree - FAILS with the GEMM (14 passed, 1 failed) and PASSES without it (15 passed, 0 failed)",
+        "G4": "GEMM not shipped; full suite ACCEPTED at 15 passed, 0 failed"
+      },
+      "evidence": {
+        "kernel_is_clean": "497 of 497 linears pass the GPU-vs-GPU comparison against the GEMV tile kernel; worst relative error 9.662e-4 uniform, 9.718e-4 at 10x outliers, 9.416e-4 at 30x.",
+        "outlier_hypothesis_refuted": "my own previous-round hypothesis that outliers caused it is refuted by the outlier runs passing.",
+        "real_defect": "the GEMM's simdgroup accumulation order differs from the GEMV's, giving about 1e-3 per linear where the GEMV is bit-identical, and that compounds through 64 layers plus the GDN recurrence to roughly 17 logits.",
+        "observed_symptom": "on a long prompt the GEMM misread the question (evaporator) while the GEMV answered correctly (how a refrigerator works).",
+        "decision": "not shipped - 19 per cent is not worth breaking bit-identity and degrading the answer.",
+        "oracle_blind_spot": "all six oracle prompts are 5-20 tokens, far below the 26-row switch, so verify never reaches the GEMM; batch-check's independent runs use the single-row kernel.",
+        "gate_added": "accept.sh now runs the same long prompt under QW_PREFILL_CHUNK=4 and =32 and requires the same answer.",
+        "gate_proven": "with the GEMM wired the gate fails (chunk 4 and chunk 32 disagree, 14 passed 1 failed, NOT ACCEPTED); after the revert it passes (15 passed 0 failed, ACCEPTED).",
+        "diagnostics_kept": "QW_GEMM_CHECK_ALL for the all-linears GPU comparison and QW_GEMM_CHECK_OUTLIER for channel outliers."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

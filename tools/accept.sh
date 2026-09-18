@@ -217,6 +217,37 @@ else
   no "cache hit differs from the cold start ($A vs $D)"
 fi
 
+# ------------------------------------------------- prefill width must not change the answer
+head1 "prefill width determinism"
+# The gate the GEMM class of bug needed and did not have.  The six-case oracle is
+# blind to it: every oracle prompt is five to twenty tokens, so its prefill pass is
+# far below the width at which a pass switches kernels, and `batch-check`'s
+# independent runs go through the single-row kernel.  Wiring the simdgroup GEMM in
+# therefore passed verify 6/6, batch-check and the whole suite while producing a
+# different answer for a long prompt.  A four-token chunk and a thirty-two-token
+# chunk run different kernels on the same tokens; they must still agree.
+WIDE_PROMPT="A team of engineers is designing a water tank for a small village. The tank must hold at least twenty thousand litres, sit on a concrete pad, and survive freezing winters. Describe the main design decisions they should make and why each one matters."
+ask_wide() {
+  curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'content-type: application/json'     -d "{\"model\":\"qwen3.8-27b-fp4\",\"temperature\":0,\"max_tokens\":40,\"messages\":[{\"role\":\"user\",\"content\":\"$WIDE_PROMPT\"}]}"     | python3 -c 'import json,sys
+try: print(json.load(sys.stdin)["choices"][0]["message"]["content"])
+except Exception: print("")'
+}
+W4=""
+W32=""
+for W in 4 32; do
+  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  QW_PREFILL_CHUNK=$W QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_w$W.log" 2>&1 &
+  serve_up
+  R=$(ask_wide)
+  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  if [ "$W" = 4 ]; then W4="$R"; else W32="$R"; fi
+done
+if [ -n "$W4" ] && [ "$W4" = "$W32" ]; then
+  ok "chunk 4 and chunk 32 give the same answer"
+else
+  no "chunk 4 and chunk 32 disagree (${W4:0:40} vs ${W32:0:40})"
+fi
+
 # ---------------------------------------------------------------- verdict
 head1 "verdict"
 printf '  %d passed, %d failed\n' "$pass" "$fail"

@@ -468,7 +468,8 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
     // end-to-end failure was tracked down - the four shapes here all passed while the
     // engine still produced the wrong answer.
     let mut picked: Vec<String> = Vec::new();
-    if std::env::var("QW_GEMM_CHECK_ALL").is_ok() {
+    let gpu_only = std::env::var("QW_GEMM_CHECK_ALL").is_ok();
+    if gpu_only {
         picked = names.clone();
     }
     for want in if picked.is_empty() { vec![5120usize, 17408, 18432, 48, 96] } else { Vec::new() } {
@@ -502,10 +503,21 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
         // Deterministic pseudo-random activations.
         let mut state = 0x243f_6a88_85a3_08d3u64;
         let mut xv = vec![f16::from_f32(0.0); tokens * l.in_f];
-        for v in xv.iter_mut() {
+        // Real activations are not uniform: a small fraction of channels carry values
+        // one to two orders of magnitude above the rest.  Those outliers are what the
+        // per-64-value scale has to cover, and they are what a uniform distribution
+        // cannot reproduce.  `QW_GEMM_CHECK_OUTLIER=<mult>` marks one channel in
+        // sixty-four as an outlier, the same channel for every token, and scales it.
+        let outlier: f32 = std::env::var("QW_GEMM_CHECK_OUTLIER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1.0);
+        for i in 0..xv.len() {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let u = ((state >> 33) as f32) / ((1u64 << 31) as f32);
-            *v = f16::from_f32(u * 2.0 - 1.0);
+            let c = i % l.in_f;
+            let scale = if outlier != 1.0 && c % 64 == 7 { outlier } else { 1.0 };
+            xv[i] = f16::from_f32((u * 2.0 - 1.0) * scale);
         }
         let xbuf = dev.buffer_from_bytes(&xv);
         let ybuf = dev.buffer_from_bytes(&vec![f16::from_f32(0.0); tokens * l.out_f]);
@@ -536,16 +548,50 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
 
         let got: Vec<f16> = ybuf.to_vec(0, tokens * l.out_f);
 
+        // The CPU reference is far too slow to sweep 497 linears with, so in ALL mode
+        // the reference is the GEMV tile kernel the engine actually uses - the same
+        // four-row kernel `encode_rows` runs in a loop.  That is the equivalence that
+        // matters for the engine: if the GEMM disagrees with this, the engine's answer
+        // changes, which is exactly what the end-to-end test showed.
         let mut max_abs = 0.0f64;
         let mut max_ref = 0.0f64;
-        for t in 0..tokens {
-            let xr: Vec<f16> = xv[t * l.in_f..(t + 1) * l.in_f].to_vec();
-            let want = l.cpu_reference(&xr)?;
-            for r in 0..l.out_f {
-                let a = got[t * l.out_f + r].to_f32() as f64;
-                let b = want[r] as f64;
+        if gpu_only {
+            let refbuf = dev.buffer_from_bytes(&vec![f16::from_f32(0.0); tokens * l.out_f]);
+            let mut rb = qw_metal::CommandBatch::new(&mut dev);
+            let tk = rb.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K4_U4HX)?;
+            let mut off = 0usize;
+            while off < tokens {
+                rb.encode(
+                    qw_metal::Dispatch::new(&tk, (l.out_f * 32, 1, 1), (32, 1, 1))
+                        .buf_offset(0, l.weight.buf, l.weight.offset)
+                        .buf_offset(1, l.scales.buf, l.scales.offset)
+                        .buf_offset(2, l.biases.buf, l.biases.offset)
+                        .buf_offset(3, &xbuf, off * l.in_f * 2)
+                        .buf_offset(4, &refbuf, off * l.out_f * 2)
+                        .scalar(5, l.in_f as i32)
+                        .scalar(6, 4i32)
+                        .scalar(7, l.out_f as i32),
+                );
+                off += 4;
+            }
+            rb.finish(true);
+            let want: Vec<f16> = refbuf.to_vec(0, tokens * l.out_f);
+            for i in 0..tokens * l.out_f {
+                let a = got[i].to_f32() as f64;
+                let b = want[i].to_f32() as f64;
                 max_abs = max_abs.max((a - b).abs());
                 max_ref = max_ref.max(b.abs());
+            }
+        } else {
+            for t in 0..tokens {
+                let xr: Vec<f16> = xv[t * l.in_f..(t + 1) * l.in_f].to_vec();
+                let want = l.cpu_reference(&xr)?;
+                for r in 0..l.out_f {
+                    let a = got[t * l.out_f + r].to_f32() as f64;
+                    let b = want[r] as f64;
+                    max_abs = max_abs.max((a - b).abs());
+                    max_ref = max_ref.max(b.abs());
+                }
             }
         }
         let rel = if max_ref > 0.0 { max_abs / max_ref } else { max_abs };
