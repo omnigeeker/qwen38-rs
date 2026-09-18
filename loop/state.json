@@ -2244,6 +2244,28 @@
         "not_shipped": "encode_rows still routes rows above four to the GEMV b16 path.",
         "next": "occupancy given the shared-memory footprint, larger BN for more weight reuse, or double-buffering to hide dequantisation."
       }
+    },
+    {
+      "round": 103,
+      "title": "Attributed the GEMM properly and found the time is in neither the dequantisation nor the MACs but in the loads, then tried double buffering, which broke correctness and was slower, and reverted it.  Instead of guessing further I added a diagnostic scalar to the kernel: mode 0 is the full kernel, mode 1 replaces the dequantised value with a constant, mode 2 skips the MAC loop.  At k=32 the full kernel is 14.124 ms a token, skipping the dequantisation is 14.168 - identical, so the dequantisation ALU cost is nothing - and skipping the MACs is 12.589, only 11 per cent faster.  So 89 per cent of the time is the staging: the weight loads and the barriers, reading 14.4 GB at 33.6 GB/s against the 477 GB/s the hardware reaches on a plain sweep.  I also closed off two cheaper explanations.  Bank conflicts looked promising because the weight tile's unpadded stride of 64 halfs is exactly 128 bytes, the 32-bank period, so eight rows of a simdgroup_load would land on the same bank; padding to 72 halfs, which is 36 words and 36 mod 32 is 4, made no difference at 13.4 against 13.0, so it is not the cause.  BK tuning went the wrong way too: 128 is worse at 19.6 ms a token and 256 exceeds the 32 KB threadgroup memory limit.  The textbook fix for a load-bound GEMM is double buffering, so I implemented it - staging the next K-step before consuming the current one so the device-memory latency overlaps the MACs.  It failed on both counts.  Correctness broke, relative error 1.27e-1, because a single barrier per step cannot protect the buffer being read from being overwritten by the next staging; protecting it needs a second barrier, which puts the barrier count back where it started.  And it was slower, 17.7 against 14.1 ms a token, because doubling the shared footprint halves occupancy, which more than cancels the prefetch benefit.  I reverted to the single-buffered kernel and re-ran gemm-check, which passes again with a worst relative error of 3.347e-4.  The conclusion is that the bottleneck is memory-level parallelism at this tile size - each thread issues only two loads per K-step and the barriers serialise them - and not ALU work, bank conflicts, or the barrier count itself.  The direction is therefore higher occupancy through a smaller tile and smaller shared footprint, not more buffering.  The mode scalar stays in the bench as QW_GEMM_MODE for future attribution.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "attribution by diagnostic scalar: dequant costs nothing (14.124 vs 14.168), MACs 11 per cent, staging 89 per cent",
+        "G2": "bank-conflict padding refuted: 13.4 vs 13.0 ms/token",
+        "G3": "double buffering rejected: incorrect with one barrier and slower (17.7 vs 14.1) from halved occupancy",
+        "G4": "reverted to the verified-correct kernel: gemm-check passes again at worst relative error 3.347e-4"
+      },
+      "evidence": {
+        "attribution": "mode 0 full 14.124, mode 1 skip dequant 14.168, mode 2 skip MAC 12.589 ms/token at k=32.",
+        "loads": "14.4 GB read at 33.6 GB/s against 477 GB/s achievable - 14 times short.",
+        "bank_conflicts_refuted": "stride 64 halfs is exactly the 128-byte, 32-bank period; padding to 72 halfs gave 13.4 against 13.0, no change.",
+        "bk_tuning": "BK=128 worse at 19.6; BK=256 exceeds the 32 KB threadgroup memory limit at 36864 bytes.",
+        "double_buffer_failed": "relative error 1.27e-1 from a single barrier not protecting the buffer being read, and 17.7 against 14.1 ms/token from halved occupancy.",
+        "reverted": "gemm-check passes again with worst relative error 3.347e-4.",
+        "conclusion": "bottleneck is memory-level parallelism at this tile size; the direction is higher occupancy via a smaller tile, not more buffering.",
+        "tool": "QW_GEMM_MODE=0/1/2 kept in the bench for future attribution."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

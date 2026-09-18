@@ -688,6 +688,13 @@ Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
 #define Q4_GEMM_BM 32
 #define Q4_GEMM_BN 32
 #define Q4_GEMM_BK 64
+// Shared-memory leading dimensions, padded away from a multiple of the 32-bank
+// (128-byte) period.  With an unpadded stride of 64 halfs, every one of the eight
+// rows a simdgroup_load touches starts on the same bank and the load serialises
+// eight ways; 72 halfs is 144 bytes, 36 words, and 36 mod 32 is 4, so the eight
+// rows land on banks 0, 4, 8, ... 28.  Same idea for the activation tile.
+#define Q4_GEMM_WLD (Q4_GEMM_BK + 8)
+#define Q4_GEMM_XLD (Q4_GEMM_BN + 8)
 
 kernel void q4_gemm_tile(
     device const uint*   w      [[buffer(0)]],
@@ -698,6 +705,7 @@ kernel void q4_gemm_tile(
     constant int&        K      [[buffer(5)]],
     constant int&        k      [[buffer(6)]],
     constant int&        out_f  [[buffer(7)]],
+    constant int&        mode   [[buffer(8)]],   // diagnostic: 0 full, 1 skip dequant, 2 skip MACs
     uint2 tg   [[threadgroup_position_in_grid]],
     uint  tid  [[thread_index_in_threadgroup]],
     uint  sg   [[simdgroup_index_in_threadgroup]])
@@ -706,8 +714,8 @@ kernel void q4_gemm_tile(
     const int tok0 = (int)tg.y * Q4_GEMM_BN;
     const int n_groups = K / GROUP_SIZE;
 
-    threadgroup half wsh[Q4_GEMM_BM * Q4_GEMM_BK];
-    threadgroup half xsh[Q4_GEMM_BK * Q4_GEMM_BN];
+    threadgroup half wsh[Q4_GEMM_BM * Q4_GEMM_WLD];
+    threadgroup half xsh[Q4_GEMM_BK * Q4_GEMM_XLD];
     threadgroup float osh[Q4_GEMM_BM * Q4_GEMM_BN];
 
     const int r_off = (int)(sg >> 1) * 16;
@@ -732,23 +740,26 @@ kernel void q4_gemm_tile(
                 const float bb = as_type<float>((uint)biases[(size_t)row * (size_t)n_groups + (size_t)(g / GROUP_SIZE)] << 16);
                 v = (half)((float)nib * s + bb);
             }
-            wsh[idx] = v;
+            // mode 1 replaces the dequantised value with a constant so the timing
+            // separates the dequantisation from the staging and the MACs.
+            wsh[r * Q4_GEMM_WLD + kk] = (mode == 1) ? (half)0.01 : v;
         }
         for (int idx = (int)tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += 128) {
             const int kk  = idx / Q4_GEMM_BN;
             const int t   = idx - kk * Q4_GEMM_BN;
             const int g   = k0 + kk;
             const int tok = tok0 + t;
-            xsh[idx] = (g < K && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
+            xsh[kk * Q4_GEMM_XLD + t] = (g < K && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        if (mode == 2) { threadgroup_barrier(mem_flags::mem_threadgroup); continue; }
         for (int kk = 0; kk < Q4_GEMM_BK; kk += 8) {
             simdgroup_matrix<half, 8, 8> w0, w1, x0, x1;
-            simdgroup_load(w0, wsh + (r_off + 0) * Q4_GEMM_BK + kk, Q4_GEMM_BK);
-            simdgroup_load(w1, wsh + (r_off + 8) * Q4_GEMM_BK + kk, Q4_GEMM_BK);
-            simdgroup_load(x0, xsh + kk * Q4_GEMM_BN + t_off,     Q4_GEMM_BN);
-            simdgroup_load(x1, xsh + kk * Q4_GEMM_BN + t_off + 8, Q4_GEMM_BN);
+            simdgroup_load(w0, wsh + (r_off + 0) * Q4_GEMM_WLD + kk, Q4_GEMM_WLD);
+            simdgroup_load(w1, wsh + (r_off + 8) * Q4_GEMM_WLD + kk, Q4_GEMM_WLD);
+            simdgroup_load(x0, xsh + kk * Q4_GEMM_XLD + t_off,     Q4_GEMM_XLD);
+            simdgroup_load(x1, xsh + kk * Q4_GEMM_XLD + t_off + 8, Q4_GEMM_XLD);
             simdgroup_multiply_accumulate(a00, w0, x0, a00);
             simdgroup_multiply_accumulate(a01, w0, x1, a01);
             simdgroup_multiply_accumulate(a10, w1, x0, a10);

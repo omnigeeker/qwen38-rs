@@ -405,7 +405,8 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                     .buf(4, y)
                     .scalar(5, l.in_f as i32)
                     .scalar(6, k as i32)
-                    .scalar(7, l.out_f as i32);
+                    .scalar(7, l.out_f as i32)
+                    .scalar(8, std::env::var("QW_GEMM_MODE").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0));
                     batch.encode(d);
                 } else if rows >= 1 {
                     // rows selects the *kernel*; the grid blocking is 1 except for the
