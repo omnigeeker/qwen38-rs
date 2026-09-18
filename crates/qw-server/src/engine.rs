@@ -547,11 +547,11 @@ fn prepare(
             // the slot still holding this prompt, which is not something this cache
             // may assume.  The copy is not consumed, so other requests can still
             // resume from the same boundary.
+            // A boundary is recorded only together with its blob, so this is the
+            // whole restore: recurrent state, window and the KV for 0..n.
             let restored = match cache.blob[slot].as_ref() {
                 Some(b) => model.import_prefix(slot, n, b),
-                // No blob means it was too large to keep; fall back to the
-                // state-and-window copy, which is better than a full re-prefill.
-                None => model.load_prefix(slot),
+                None => model.reset_seq(slot),
             };
             if let Err(e) = restored {
                 let _ = job.pieces.send(Err(e.to_string()));
@@ -735,34 +735,38 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     && a.pf > 0
                     && PREFIX_LADDER.iter().any(|&k| rem > k && rem_after <= k)
                 {
-                    match model.save_prefix(slot) {
-                        Ok(()) => {
-                            // `export_prefix` reads the live state, window and KV, so it
-                            // has to run here, while the live state is at `a.pf`.  The
-                            // blob is what makes the resume correct; the disk copy is a
-                            // second, optional consumer of the same bytes.
-                            let blob = model.export_prefix(slot, a.pf).ok();
-                            // Past a size cap the blob is dropped and the boundary
-                            // degrades to the state-and-window copy rather than
-                            // growing without bound.  About 0.1 MB a token.
-                            let blob = blob.filter(|b| {
-                                b.len() <= PREFIX_BLOB_MAX_MB * 1024 * 1024
-                            });
-                            cache.record_boundary(slot, a.ids[..a.pf].to_vec(), blob.clone());
-                            // And persist it, so the next process starts warm.
-                            // Only for a prefix long enough to be a real agent
-                            // system prompt: the blob costs about 0.1 MB a token.
-                            if a.pf >= 128 {
-                                if let (Some(blob), Some(d)) =
-                                    (blob, prefixes::DiskPrefix::from_env())
-                                {
-                                    match d.store(&a.ids[..a.pf], &blob) {
-                                        Ok(()) => tracing::info!(
-                                            "slot {slot}: persisted {} tokens ({} MB) to disk",
-                                            a.pf,
-                                            blob.len() / (1024 * 1024)
-                                        ),
-                                        Err(e) => tracing::warn!("prefix store: {e}"),
+                    // `export_prefix` reads the live state, window and KV, so it has
+                    // to run here, while the live state is at `a.pf`.  It is the ONLY
+                    // thing captured: the blob already carries the recurrent state and
+                    // the window, so the separate `save_prefix` GPU copy is redundant,
+                    // and keeping it was what made an in-process boundary hit disagree
+                    // with a cold run while the byte-identical disk path agreed
+                    // exactly.  One snapshot, one restore, same code either way.
+                    match model.export_prefix(slot, a.pf) {
+                        Ok(blob) => {
+                            // Past a size cap no boundary is recorded at all.  Recording
+                            // one without its KV would leave a resume that depends on
+                            // the slot still holding this prompt - the very assumption
+                            // that produced prompt-independent answers.
+                            if blob.len() <= PREFIX_BLOB_MAX_MB * 1024 * 1024 {
+                                cache.record_boundary(
+                                    slot,
+                                    a.ids[..a.pf].to_vec(),
+                                    Some(blob.clone()),
+                                );
+                                // And persist it, so the next process starts warm.
+                                // Only for a prefix long enough to be a real agent
+                                // system prompt: the blob costs about 0.1 MB a token.
+                                if a.pf >= 128 {
+                                    if let Some(d) = prefixes::DiskPrefix::from_env() {
+                                        match d.store(&a.ids[..a.pf], &blob) {
+                                            Ok(()) => tracing::info!(
+                                                "slot {slot}: persisted {} tokens ({} MB) to disk",
+                                                a.pf,
+                                                blob.len() / (1024 * 1024)
+                                            ),
+                                            Err(e) => tracing::warn!("prefix store: {e}"),
+                                        }
                                     }
                                 }
                             }

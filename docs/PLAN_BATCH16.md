@@ -1758,3 +1758,67 @@ the pangram "The…'`，**明确随 prompt 内容变化**。
 **处置**：修复保留（它修掉了真实缺陷），但**门禁仍为红，`QW_PREFIX_SNAPSHOT` 维持
 opt-in**——`accept.sh` 那条"同一 slot 连发 N 次必须全同且与冷路径一致"的门禁还没过。
 oracle 6/6、batch-check 16/16 不受影响（这条路径不参与）。
+
+
+---
+
+## 35. 更正：磁盘路径的"验证"是无效的，而带 KV 的完整 blob 仍不等价（第 30 轮）
+
+§34 修掉了"命中返回与 prompt 无关的答案"（真缺陷，已保留）。本轮继续查残余差异，
+**过程中我自己制造并发现了一个无效实验，必须记录。**
+
+### 无效实验及其更正
+
+我推断"磁盘路径用的正是 `import_prefix`，而它上一轮验证过逐 token 一致，所以 blob 方案可行"，
+于是用 113-token 的 prompt 跨进程测磁盘命中：结果 `DISK HIT == COLD: True`。
+
+**但这个结论是错的。** 落盘有门槛：
+
+```rust
+if a.pf >= 128 { ... d.store(...) }
+```
+
+**113 token 的 prompt 永远到不了 128**，所以 proc1 和 proc2 **都是冷 miss**。日志里那一行
+`prefix cache: miss - skipped 0 of 113 prompt tokens (0%), 0 reused` 就是证据——
+**两边都是从头算，"相等"什么都没证明。**
+
+### 排除 `save_prefix`
+
+磁盘路径只有 `export_prefix`/`import_prefix`，没有 `save_prefix`，所以我把内存路径里
+那个多余的 GPU 拷贝删掉了（blob 已含 state+window+KV，它确实冗余），让两条路径机制一致。
+**重建后重测，残余差异依旧**：三个长度仍全部 `on[1]==on[2]` 且 `!= on[0]`，而 `on[0]`
+与 `QW_PREFIX_SNAPSHOT=0` 一致。
+
+**⇒ `save_prefix` 不是原因。而带 KV 的完整 blob 恢复本身就不足以复现冷 prefill。**
+
+### 这改变了问题的性质
+
+`export_prefix` 已经导出了一次 forward pass 所需的一切显式状态：
+
+| 量 | 是否在 blob 里 |
+|---|---|
+| GDN recurrent state | ✓ 每个 GDN 层 `state_stride` 字节 |
+| 卷积窗口 | ✓ `win_stride` 字节 |
+| full 层 KV（`0..pos`） | ✓ 每头 `pos*hd*2` 字节 |
+
+**⇒ 显式状态都覆盖了，恢复却仍不等价。** 所以要么导出/导入的**偏移或长度**在某处系统性
+地少覆盖了一段（`state_stride`/`win_stride` 是**所有 GDN 层共用的单一 stride**，若某些层
+实际用到的行数不同就会错位），要么 forward pass 还依赖 blob 未包含的量。
+
+**注意这两个可疑点都是"静默"的**：导出与导入用的是同一套 stride 和偏移，**所以 blob 能
+完美 round-trip 自己，却不必等于真实状态**——这正是它躲过了等价性检查的原因。
+
+### 下一步（需要一次带插桩的对比）
+
+在**同一进程内**、同一位置，把下面三者逐 tensor 对比：
+
+1. 冷 prefill 到位置 `L` 时的 state/window/KV
+2. 边界在 `L` 处导出后立刻导入回来的 state/window/KV
+3. 边界在 `p < L` 处导入再重算 `p..L` 之后的 state/window/KV
+
+**(1) vs (2) 若不等 ⇒ 导出/导入的偏移或长度有问题；(2) vs (3) 若不等 ⇒ 重算路径本身
+引入了差异。** 这个实验是判决性的，且不需要跨进程。
+
+**处置**：修复保留（它修掉了真实缺陷），`QW_PREFIX_SNAPSHOT` **维持 opt-in**——
+`accept.sh` 那条"同一 slot 连发 N 次必须全同且与冷路径一致"的门禁仍未通过。
+oracle 6/6、batch-check 16/16 正常。

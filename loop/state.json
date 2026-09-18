@@ -1928,6 +1928,25 @@
         "remaining": "restored+recomputed tail still differs from a cold prefill at all three lengths; deterministic, so a fidelity not a corruption problem.",
         "suspects": "layers skipped by stride == 0 in export_prefix; win_stride not covering the whole conv window; import_prefix not clearing KV left past pos."
       }
+    },
+    {
+      "round": 88,
+      "title": "Corrected an invalid experiment of my own and established that a full blob restore is still not equivalent to a cold prefill.  Having fixed the prompt-independence bug last round, I reasoned that the disk path uses import_prefix, that it had been verified token-for-token, and therefore that the blob approach must be sound; a cross-process test then appeared to confirm it with DISK HIT == COLD: True.  That conclusion was wrong.  Persisting to disk is gated on a.pf >= 128 and the prompt was 113 tokens, so neither process could ever store anything and both were cold misses - the log line 'prefix cache: miss - skipped 0 of 113 prompt tokens (0%), 0 reused' is the proof, and comparing two cold runs proves nothing.  I then ruled out save_prefix: the disk path uses only export_prefix and import_prefix with no save_prefix, so I deleted that redundant GPU copy from the memory path to make the two mechanisms identical, rebuilt, and the residual difference was unchanged - all three lengths still have runs 2 and 3 agreeing with each other and differing from run 1, while run 1 matches QW_PREFIX_SNAPSHOT=0.  So save_prefix is not the cause, and restoring the complete blob including the KV is by itself not enough to reproduce a cold prefill.  That changes the character of the problem.  export_prefix already carries everything a forward pass needs explicitly - the GDN recurrent state at state_stride bytes per GDN layer, the convolution window at win_stride bytes, and the KV for 0..pos at pos*hd*2 per head - yet the restore still is not equivalent.  So either the offsets or lengths in export and import systematically under-cover somewhere, with state_stride and win_stride being a single stride shared by every GDN layer so layers that actually use different row counts would be misplaced, or a forward pass depends on something the blob does not hold.  Both suspects are silent, because export and import use the same strides and offsets, so the blob round-trips itself perfectly without being equal to the real state - which is precisely why it slipped past the equivalence check.  The decisive next experiment needs instrumentation but no second process: at one position L inside one process, compare tensor by tensor the cold-prefilled state, window and KV against the same quantities exported at L and immediately imported back, and against those produced by importing at p < L and recomputing p..L; a mismatch in the first pair means the offsets or lengths are wrong, one in the second means the recomputation introduces the difference.  Kept the fix, since it repairs a real defect, and left QW_PREFIX_SNAPSHOT opt-in because the accept.sh gate requiring N identical responses on one slot to match the cold path still fails.  Oracle 6/6 and batch-check 16/16 pass.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "batch-check 16/16 PASS",
+        "G3": "residual cold-vs-hit difference is deterministic; still fails the determinism gate",
+        "G4": "cache remains opt-in; my own disk-path test this round was invalid and is retracted"
+      },
+      "evidence": {
+        "invalid_experiment": "the 113-token prompt is below the 128-token disk threshold, so both processes were cold misses; DISK HIT == COLD proved nothing.",
+        "save_prefix_ruled_out": "deleting the redundant GPU copy made no difference to the residual.",
+        "explicit_state_covered": "state_stride per GDN layer, win_stride window, pos*hd*2 KV per head - all in the blob, restore still not equivalent.",
+        "why_it_hides": "export and import share strides and offsets, so the blob round-trips itself perfectly without equalling the real state.",
+        "next_experiment": "in one process at one position L, compare cold state/window/KV against exported-then-imported, and against import-at-p-then-recompute-p..L."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
