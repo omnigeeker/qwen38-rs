@@ -2333,6 +2333,29 @@
         "gemm_ab": "interleaved three times: GEMV eight sweeps 275-276 ms against GEMM one sweep 240-253 ms, 1.09-1.15x for the GEMM.",
         "cold_prefill": "11.6-11.8 s at chunk 32 against 12.1-13.2 s at chunk 4, and 12.57 s previously - a modest real gain, still about five times behind llama.cpp's 2.23 s."
       }
+    },
+    {
+      "round": 107,
+      "title": "Tried wiring the GEMM into the wide-row path and got apparently catastrophic numbers, then found the measurement environment was contaminated - this Web GUI is itself consuming 45-55 per cent of the GPU, leaving idle utilisation at 61-70 per cent and inflating every timing by roughly 25-35 per cent.  The conclusion is therefore void rather than negative, and I reverted to the committed chunk=32 version.  The structural finding that motivated the attempt stands: standard GEMM weight traffic is out_f times K times half a byte times k over BN, so at BN=32 a 512-token prompt costs 230 GB of weight traffic and sixteen sweeps, while BN=128 would cost 57.6 GB and four - llama.cpp's prefill is fast because its BN approaches the whole batch, and ours is pinned by the GDN recurrence step.  I wired the GEMM into encode_rows for rows above TILE, replacing the tile-kernel loop, and got 21.5 and 18.3 seconds against the loop's 11.6 and 11.8.  I guessed the cause was small out_f values, where the GEMM's 32-row tiling leaves out_f=48 with two threadgroups against the tile kernel's forty-eight, so I gated it on out_f at least 2048 - and it got worse, 22.7 and 25.9.  Reverting gave 23.8 and 26.3, which is when the real explanation appeared: the code was not the variable.  WindowServer and this GUI's renderer are together burning the GPU, idle utilisation reads 61 to 70 per cent, and the timing tracks it, 14.7 seconds at 61 per cent against 16.3 at 70.  Re-measuring the reverted build in that state gives 14.4 to 16.3 seconds, so the GEMM's 18.3 to 25.9 and the loop's 23.8 to 26.3 overlap and the apparent two-fold regression was a load artefact.  I reverted to the committed chunk=32 version, whose correctness is unaffected - all gates had passed with the GEMM wired, verify at parity 6 of 6 and accept.sh at 14 of 14, so it was correct, merely unmeasurable.  The lesson is that qwen38 bench weights linears by bytes, where the huge ones dominate, while in the engine every linear sits on the serial critical path, so the two cannot be inferred from each other; and that every A/B must record idle GPU utilisation first, or the GUI's load will be read as a code regression.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "GEMM wiring was correct: verify parity 6/6 and accept.sh 14 passed / 0 failed while wired",
+        "G2": "reverted to the committed chunk=32 version, correctness unaffected",
+        "G3": "measurement environment diagnosed: idle GPU utilisation 61-70 per cent from WindowServer and the GUI renderer",
+        "G4": "performance comparison declared void rather than negative, because both configurations overlap once the load is accounted for"
+      },
+      "evidence": {
+        "structural": "GEMM weight traffic is out_f * K * 0.5 * (k/BN): at BN=32 a 512-token prompt costs 230 GB and sixteen sweeps; at BN=128 it costs 57.6 GB and four.",
+        "why_llamacpp_fast": "its BN approaches the whole batch, while ours is pinned by the GDN recurrence step.",
+        "gemm_wired": "21.502 and 18.319 s against the tile-kernel loop's 11.630 and 11.822 s.",
+        "small_out_f_hypothesis_refuted": "gating on out_f >= 2048 made it worse, 22.669 and 25.856 s.",
+        "revert_control": "reverting gave 23.779 and 26.344 s, so the code was not the variable.",
+        "real_cause": "WindowServer at 45.5 per cent and the DSH Desktop renderer at 55.5 per cent leave idle GPU utilisation at 61-70 per cent; timing tracks it, 14.671 s at 61 against 16.317 at 70.",
+        "conclusion": "the GEMM's 18.3-25.9 and the loop's 23.8-26.3 overlap, so the apparent two-fold regression was a load artefact and the comparison is void, not negative.",
+        "correctness_unaffected": "with the GEMM wired, verify passed at parity 6 of 6 and accept.sh at 14 of 14, so it was correct but unmeasurable.",
+        "lesson": "bench weights linears by bytes while the engine pays every linear's latency on the critical path; and every A/B must record idle GPU utilisation first."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
