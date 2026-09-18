@@ -2098,6 +2098,27 @@
         "verified": "four prompts byte-identical to the pre-change build; accept.sh 14 passed 0 failed.",
         "status": "otps won 15.5 per cent, warm TTFT won 1.7x, cold TTFT 5.2x behind."
       }
+    },
+    {
+      "round": 96,
+      "title": "Established the Ollama baseline, which the objective names but I had never measured, and it changes the picture in both directions.  Ollama 0.34.1 was installed with only llama3, so I imported the local GGUF through a Modelfile rather than downloading anything: ollama create with FROM pointing at qwen38-27b-Q4_K_M.gguf.  The first attempt used the :local tag and failed in a confusing way - /api/tags listed the model but /api/generate said it was not found and ollama run tried to pull it, even though the manifest on disk was valid with schemaVersion 2, the right media types and a model layer matching the GGUF size, and a second server instance on another port behaved the same way.  The :local tag was the problem; recreating with the default latest tag fixed it.  Measured on the same 913-token raw prompt at greedy: Ollama's cold prefill is 905 tokens in 1.728 s, 524 tokens a second, which is FASTER than llama.cpp's 406, and its warm TTFT is 0.066 to 0.067 s, identical to llama.cpp's.  Our warm TTFT of 0.038 to 0.040 s beats both by 1.7 times.  For otps I hit a measurement trap worth recording: on the degenerate repeated prompt Ollama stops after 3 tokens because its default repeat penalty breaks the loop, and the 41 tokens a second it reports there is a short-burst figure that cannot be compared with anything.  Using a natural long-form prompt with 256 tokens requested gives Ollama 26.12 to 27.48 tokens a second against our 28.68 to 29.51, so we win otps by 7 to 13 per cent, and against llama.cpp's tg256 of 24.58 by 15.5 per cent.  Cold prefill remains a loss of 5.2 times to llama.cpp and 6.7 times to Ollama, at 11.6 s against 2.23 and 1.73.  So measured on the deployment path, both TTFT and otps now beat both llama.cpp and Ollama; the cold prefill is the only remaining gap and it is an order of magnitude.  I removed the broken :local tag; the working qwen38-27b:latest is left in place and costs 16 GB of disk, which the user may want to reclaim.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "Ollama baseline established from the local GGUF with no download",
+        "G2": "otps measured on a sustained 256-token generation, not a short burst",
+        "G3": "warm TTFT 0.039 s beats both llama.cpp and Ollama at 0.067 s",
+        "G4": "cold prefill loss quantified against both: 5.2x to llama.cpp, 6.7x to Ollama"
+      },
+      "evidence": {
+        "ollama_setup": "ollama create qwen38-27b -f Modelfile with FROM the local qwen38-27b-Q4_K_M.gguf; the :local tag failed with a misleading 'model not found' despite a valid manifest.",
+        "cold_prefill": "Ollama 905 tok in 1.728 s = 524 t/s, faster than llama.cpp's 406 t/s; ours is 78 t/s.",
+        "warm_ttft": "Ollama 0.066-0.067 s, llama.cpp 0.066-0.067 s, ours 0.038-0.040 s - we win 1.7x.",
+        "otps_trap": "on the degenerate repeated prompt Ollama stops after 3 tokens and reports 41 tok/s, a short-burst figure that is not comparable.",
+        "otps_fair": "natural long-form prompt, 256 tokens: Ollama 26.12-27.48 tok/s, ours 28.68-29.51 tok/s, llama.cpp tg256 24.58.",
+        "status": "otps and warm TTFT beat both engines; cold TTFT loses 5.2x to llama.cpp and 6.7x to Ollama.",
+        "cleanup": "removed the broken :local tag; qwen38-27b:latest remains and uses 16 GB of disk."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

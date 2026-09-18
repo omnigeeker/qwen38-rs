@@ -2311,3 +2311,46 @@ code  prompt:  old ' fibonacci fibonacci ...'          （16 token）
 | 冷 TTFT（913 tok） | 11.6 s | 2.23 s | 输 5.2× |
 
 **⇒ 按部署场景（暖路径）衡量，TTFT 与 otps 两项都已超过 llama.cpp。冷 prefill 仍是 5.2 倍的差距。**
+
+
+---
+
+## 43. Ollama 基线（第 38 轮）——目标里提到它，此前从未测过
+
+用户的目标同时点名 llama.cpp **和 Ollama**，而在此之前我只测过 llama.cpp。本轮补上。
+
+### 建立基线：从本地 GGUF 导入，不下载
+
+```
+OLLAMA 0.34.1，ollama create qwen38-27b -f <Modelfile with FROM .../qwen38-27b-Q4_K_M.gguf>
+```
+
+**踩到的坑**：第一次用 `:local` 这个 tag 创建，`/api/tags` 能列出它、但 `/api/generate`
+报 `model not found`，`ollama run` 甚至去尝试 pull。manifest 本身完全有效
+（schemaVersion 2、媒体类型正确、model layer 大小与 GGUF 一致），另起一个实例也一样，
+**⇒ 是 `:local` 这个 tag 的问题**。改用默认 `latest` tag 后正常。
+
+### 测到的（同一 913-token prompt，raw prompt，greedy）
+
+| | Ollama | llama.cpp | 我方 |
+|---|---|---|---|
+| 冷 prefill | 905 tok / **1.728 s = 524 t/s** | 905 tok / 2.230 s = 406 t/s | 913 tok / 11.6 s = **78 t/s** |
+| 暖 TTFT | **0.066–0.067 s** | 0.066–0.067 s | **0.038–0.040 s** |
+| otps（256 tok） | 26.12–27.48 | 24.58（tg256） | **28.68–29.51** |
+
+**⇒ Ollama 的冷 prefill 比 llama.cpp 还快（524 vs 406 t/s），暖 TTFT 与 llama.cpp 相同（67 ms）。**
+
+⚠️ 一个测量陷阱：在退化重复 prompt 上 Ollama 只生成 3 个 token 就停（默认 repeat_penalty
+打断了循环），此时报出的 41 tok/s 是短突发值、**不可比**。otps 必须用能持续生成的自然长文本
+prompt 测（上表用的是 256 token 的说明文请求）。
+
+### 目标现状（三方对照）
+
+| 指标 | 我方 | llama.cpp | Ollama | 结论 |
+|---|---|---|---|---|
+| otps | 28.7 | 24.58 | 26.1–27.5 | **两者都赢（+15.5% / +7~13%）** |
+| 暖 TTFT | **0.039 s** | 0.067 s | 0.067 s | **两者都赢 1.7×** |
+| 冷 TTFT | 11.6 s | 2.23 s | 1.73 s | **输 5.2× / 6.7×** |
+
+**⇒ 按部署场景（暖路径）衡量，TTFT 与 otps 两项对 llama.cpp 和 Ollama 都已超过。
+冷 prefill 仍是唯一的、且是数量级级别的差距。**
