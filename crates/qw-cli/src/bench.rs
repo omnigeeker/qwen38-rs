@@ -346,6 +346,13 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K3_R2)?
             } else if rows == 4 {
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K3_R4)?
+            } else if rows == 5 {
+                // Exactly what the engine's prefill uses: `encode_rows` ->
+                // `encode_tile` -> `encode_k(K_Q4_GEMV_K4_U4HX, k)`.  Until now no
+                // `--rows` value could reach it, so the sweep numbers on record for
+                // "the engine's kernel" were actually `K_Q4_GEMV_K` from the
+                // `rows == 0` branch, which is a different kernel entirely.
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K4_U4HX)?
             } else {
                 QLinear::kernel_k(&mut batch)?
             };

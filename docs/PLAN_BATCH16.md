@@ -1517,3 +1517,80 @@ device const half* gx = xt + (g*GROUP_SIZE + (wi*4+c)*8) * NK_PAD;   // 没有 t
 
 **冷 prefill 是唯一剩下的缺口，而它需要的是一个量级更大的内核工程**（转置 activation 的
 tile GEMM），不是调参。
+
+
+---
+
+## 31. 完整时间模型：瓶颈不是内核，是非 GEMV 的逐 token 工作（第 26 轮）
+
+用户选择继续攻冷 TTFT，让我实现转置 activation 的 GEMM。**但在动手前先测了内核本身，
+结果把 GEMM 的必要性推翻了——而这是本轮最有价值的产出。**
+
+### 先清掉一个长期误读
+
+`bench --rows` 过去**没有任何取值能到达引擎 prefill 实际用的内核**
+（`encode_rows` → `encode_tile` → `encode_k(K_Q4_GEMV_K4_U4HX, k)`）。
+`--rows 0` 走的是 `K_Q4_GEMV_K`——**完全不同的内核**。§20/§21 里所有标着"引擎的核"的
+扫描数字其实都来自它。已给 `bench` 加上 `--rows 5` 指向真身。
+
+### 三个内核在隔离测试里的排名（k=4，每线性独立 x）
+
+| 内核 | ms | 有效带宽 |
+|---|---|---|
+| **`K4_U4HX`（引擎实际用的）** | **35.68** | **404 GB/s** |
+| `K_Q4_GEMV_K4` | 39.68 | 363 GB/s |
+| `K_Q4_GEMV_K` | 76.02 | 190 GB/s |
+
+**⇒ 引擎用的内核是三者的最优，达到硬件上限 477 GB/s 的 85%。§21 的结论正确，
+"内核慢"这个怀疑（包括我自己前面两轮提的）被再次否定。**
+
+其余扫描（每线性独立 x）：k=1 → 477、k=2 → 482、k=3（`K3`）→ 437、k=4 → 404。
+**行分块更慢**（k=3 时 R=2 → 385、R=4 → 362）。**大 K 更慢**（`K_Q4_GEMV_K` k=16 → 35 GB/s）。
+
+### 完整时间模型（现在可预测、可核对）
+
+```
+引擎真实 prefill：2016 token / 30 s = 67 tok/s
+  ⇒ 每个 4-token pass 59.5 ms
+  其中权重扫读（404 GB/s）        35.68 ms
+  非 GEMV 工作                   23.8 ms  ⇒ 每 token 约 5.95 ms
+
+decode：33 ms/token
+  其中权重扫读（27.64 ms 实测）   27.6 ms
+  非 GEMV 工作                    5.4 ms  ✓ 与上面一致
+```
+
+**⇒ 非 GEMV 工作约 5.4–6 ms/token，且完全不随 chunk 摊薄——它按 token 线性增长。**
+chunk=4 时它占 prefill 的 40%、decode 的 16%。
+
+dispatch 直方图给出它的成分（单 token 一趟 1186 个 dispatch，其中 497 是 GEMV）：
+
+| 算子 | 次数 |
+|---|---|
+| `rmsnorm` | 129 |
+| `rmsnorm_s` | 128 |
+| `ewise_add` | 128 |
+| `silu_mul` | 64 |
+| `gdn_step` | 48 |
+| `rmsnorm_gated` | 48 |
+| `rope_partial` | 32 |
+| 其余 | 112 |
+| **非 GEMV 合计** | **689** |
+
+**⇒ 689 个 × 约 6 µs ≈ 4.1 ms，即 5.4 ms 里的大部分是 dispatch 开销，不是计算。**
+
+### 这如何改变计划
+
+用户批准的方向是"转置 activation 的 GEMM"。**测量说明它不是当前瓶颈**：
+内核已在 404 GB/s，而真实引擎只跑到 240 GB/s——**缺的 1.7 倍不在内核里，在权重扫读之外。**
+
+GEMM 仍然有价值，但**价值来自它能启用更大的 chunk 实现真正摊薄**：
+若 chunk=16 真能摊薄，权重部分从 8.9 降到 2.2 ms/token，但非 GEMV 的 5.4 ms 仍在
+⇒ 合计 7.6 ms/token = 131 tok/s（现在 67）。**⇒ 上限由非 GEMV 工作决定。**
+
+**所以正确的顺序是先砍掉那 689 个 dispatch**（融合残差加进后面的 rmsnorm、把 `silu_mul`
+并进 gate GEMV 的 epilogue、把 rope 并进 q/k norm），**它同时改善 decode 和 prefill**：
+- 去掉 128 个 `ewise_add` ⇒ 约 0.8 ms/token
+- 再去掉 64 个 `silu_mul` + 32 个 `rope_partial` ⇒ 约 1.35 ms/token
+
+**⇒ decode 33 → 31.7 ms（30.3 tok/s），prefill 70 → 76 tok/s。**

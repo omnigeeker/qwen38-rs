@@ -1848,6 +1848,27 @@
         "fix": "store activations feature-major so one 16-byte load serves 8 rows, cutting NK=16 from 16 x loads to 2.",
         "scope": "transpose once per layer plus a transposed tile-macro branch plus the BATCH_MAX ring; asked the user whether to build it."
       }
+    },
+    {
+      "round": 84,
+      "title": "Built the full time model and it overturns the GEMM premise.  Before writing the transposed-activation GEMM the user asked for, I measured the kernel itself, and the kernel is not the bottleneck.  First I cleared a long-standing misreading: no --rows value could reach the kernel the engine's prefill actually uses, because encode_rows goes to encode_tile and then encode_k(K_Q4_GEMV_K4_U4HX, k), while --rows 0 takes K_Q4_GEMV_K, a different kernel entirely - so every sweep figure on record labelled the engine's kernel came from the wrong one.  Added --rows 5 to point at the real one.  Ranked in isolation at k=4 with per-linear x: K4_U4HX 35.68 ms and 404 GB/s, which is what the engine uses and is the FASTEST of the three, against K_Q4_GEMV_K4 at 39.68 and 363, and K_Q4_GEMV_K at 76.02 and 190.  That is 85 per cent of the 477 GB/s hardware limit, confirming section 21 and refuting the slow-kernel suspicion I had raised myself.  The rest of the sweep: k=1 477, k=2 482, k=3 with K3 437, k=4 404; row blocking is slower (385 at R=2 and 362 at R=4 for k=3), and large K collapses (K_Q4_GEMV_K at k=16 gives 35 GB/s).  The model that falls out: a real prefill pass of 2016 tokens at chunk=4 takes 59.5 ms per pass, of which 35.68 ms is the weight sweep and 23.8 ms is non-GEMV work, about 5.95 ms per token; and decode is 33 ms per token, of which 27.6 ms is the sweep and 5.4 ms is the same non-GEMV work.  So the non-GEMV work is about 5.4 to 6 ms per token and does NOT amortise across the chunk - it grows linearly with tokens - which makes it 40 per cent of prefill at chunk 4 and 16 per cent of decode.  The dispatch histogram says where it comes from: 689 non-GEMV dispatches per single-token pass, dominated by rmsnorm 129, rmsnorm_s 128 and ewise_add 128, then silu_mul 64, gdn_step 48, rmsnorm_gated 48 and rope_partial 32.  At roughly 6 microseconds each that is about 4.1 ms, so most of the 5.4 ms is dispatch overhead rather than arithmetic.  This changes the plan: the GEMM is not the current bottleneck, since the kernel already runs at 404 GB/s while the real engine reaches only 240, and the missing 1.7x sits outside the weight sweep.  A GEMM would still pay, but its value is enabling chunk 16 to amortise properly, which would take the weight part from 8.9 to 2.2 ms per token while the 5.4 ms of non-GEMV work remains, giving 7.6 ms per token and 131 tok/s against 67 today - so the ceiling is set by the non-GEMV work either way.  The right first step is therefore to cut those 689 dispatches, which helps decode and prefill together: fusing the residual add into the following rmsnorm removes 128 dispatches, about 0.8 ms per token, and folding silu_mul and rope_partial into their neighbours would take another 1.35 ms, for decode 33 to 31.7 ms and prefill 70 to 76 tok/s.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "n/a (bench.rs instrument only)",
+        "G3": "engine unchanged",
+        "G4": "kernel cleared at 404 GB/s; non-GEMV work identified as the bottleneck"
+      },
+      "evidence": {
+        "misreading_cleared": "no --rows value reached the engine's prefill kernel; --rows 0 is K_Q4_GEMV_K, a different kernel. Added --rows 5.",
+        "kernel_ranking_k4": "K4_U4HX 35.68 ms/404 GB/s (the engine's, fastest); K_Q4_GEMV_K4 39.68/363; K_Q4_GEMV_K 76.02/190.",
+        "sweep_curve": "k=1 477, k=2 482, k=3 437, k=4 404 GB/s; row blocking slower; K_Q4_GEMV_K at k=16 only 35 GB/s.",
+        "time_model": "prefill pass 59.5 ms = 35.68 sweep + 23.8 other, 5.95 ms/token; decode 33 ms = 27.6 + 5.4 ms/token.",
+        "key_insight": "the ~5.4-6 ms/token of non-GEMV work does not amortise across the chunk, so it is 40% of prefill and 16% of decode.",
+        "dispatches": "689 non-GEMV dispatches per token: rmsnorm 129, rmsnorm_s 128, ewise_add 128, silu_mul 64, gdn_step 48, rmsnorm_gated 48, rope_partial 32, others 112; about 4.1 ms of it is pure dispatch overhead.",
+        "plan_change": "kernel is at 404 GB/s while the engine reaches 240, so the 1.7x is outside the sweep; cut dispatches first, since it helps decode and prefill together."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
