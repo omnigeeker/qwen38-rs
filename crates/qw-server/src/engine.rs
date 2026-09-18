@@ -343,6 +343,11 @@ struct Active {
     /// nothing.  Only used by the QW_PREFIX_DUMP instrument, which compares the
     /// state a resume reaches against the state a cold prefill reaches.
     restored: bool,
+    /// The position a hit restored the slot to, if any.  At that exact position
+    /// the blob in the cache already IS the live state, so re-exporting it is
+    /// pure waste - measured, 17.8 ms and a 208 MB clone on every hit, against
+    /// the 3.5 ms the restore itself costs.
+    restored_at: Option<usize>,
     /// The client went away, so this slot is nobody's work any more.
     dead: bool,
     all: Vec<u32>,
@@ -514,6 +519,7 @@ fn prepare(
         },
         other => other,
     };
+    let mut restored_at: Option<usize> = None;
     let skip = match reuse {
         Reuse::None => 0,
         Reuse::Live(n) | Reuse::Boundary(n) | Reuse::Disk(n, _) => n,
@@ -536,9 +542,14 @@ fn prepare(
             // Write the stored state straight into this slot's slice.  Only
             // positions 0..n are touched; the prefill that follows overwrites
             // anything past n, so no clearing is needed.
+            restored_at = Some(n);
+            let _t = std::time::Instant::now();
             if let Err(e) = model.import_prefix(slot, n, blob) {
                 let _ = job.pieces.send(Err(e.to_string()));
                 return None;
+            }
+            if std::env::var_os("QW_PREFIX_TIME").is_some() {
+                eprintln!("prefix time: disk import {} tok {} MB {:?}", n, blob.len() / 1048576, _t.elapsed());
             }
             cache.hits += 1;
             " (disk prefix)"
@@ -553,8 +564,16 @@ fn prepare(
             // resume from the same boundary.
             // A boundary is recorded only together with its blob, so this is the
             // whole restore: recurrent state, window and the KV for 0..n.
+            restored_at = Some(n);
             let restored = match cache.blob[slot].as_ref() {
-                Some(b) => model.import_prefix(slot, n, b),
+                Some(b) => {
+                    let _t = std::time::Instant::now();
+                    let r = model.import_prefix(slot, n, b);
+                    if std::env::var_os("QW_PREFIX_TIME").is_some() {
+                        eprintln!("prefix time: boundary import {} tok {} MB {:?}", n, b.len() / 1048576, _t.elapsed());
+                    }
+                    r
+                }
                 None => model.reset_seq(slot),
             };
             if let Err(e) = restored {
@@ -629,6 +648,7 @@ fn prepare(
         feed: 0,
         ready: false,
         restored: did_restore,
+        restored_at,
         dead: false,
         all: Vec::new(),
         sent_len: 0,
@@ -810,9 +830,16 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // offsets, so each fires exactly once per prefill.  Re-persisting
                 // the same prefix is free: store() keys on content and returns
                 // early if the file is already there.
+                // A hit restored the slot to exactly `a.pf`, so the blob already
+                // held is bit-for-bit the state standing here.  Exporting it again
+                // costs 17.8 ms and a 208 MB clone and stores nothing new, so it is
+                // skipped; the boundary and its blob recorded by the earlier request
+                // are still in place, and the prefix bookkeeping is unchanged because
+                // this request's `ids[..a.pf]` is the very prefix it restored from.
                 if boundary
                     && snapshot
                     && a.pf > 0
+                    && a.restored_at != Some(a.pf)
                     && PREFIX_LADDER.iter().any(|&k| rem > k && rem_after <= k)
                 {
                     // `export_prefix` reads the live state, window and KV, so it has
@@ -822,8 +849,12 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     // and keeping it was what made an in-process boundary hit disagree
                     // with a cold run while the byte-identical disk path agreed
                     // exactly.  One snapshot, one restore, same code either way.
+                    let _t = std::time::Instant::now();
                     match model.export_prefix(slot, a.pf) {
                         Ok(blob) => {
+                            if std::env::var_os("QW_PREFIX_TIME").is_some() {
+                                eprintln!("prefix time: export {} tok {} MB {:?}", a.pf, blob.len() / 1048576, _t.elapsed());
+                            }
                             // Past a size cap no boundary is recorded at all.  Recording
                             // one without its KV would leave a resume that depends on
                             // the slot still holding this prompt - the very assumption
@@ -978,6 +1009,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     if a.pf != want {
                         continue;
                     }
+                    let _t = std::time::Instant::now();
                     match model.export_prefix(slot, a.pf) {
                         Ok(blob) => {
                             let tag = if a.restored { "resumed" } else { "cold" };

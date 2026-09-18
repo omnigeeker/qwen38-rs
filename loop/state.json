@@ -2031,6 +2031,31 @@
         "why_boundary_needed": "hist is prompt+generated, so on a repeat hist is longer than the prompt and no live hit is possible; measured three misses.",
         "measured": "913-token prompt: 19.86 s cold, then 0.88 s and 1.03 s, outputs identical, 23x, skipped 912 of 913."
       }
+    },
+    {
+      "round": 93,
+      "title": "Fair warm-versus-warm TTFT against llama.cpp, which retired my 23x claim and then cut warm TTFT from 95 ms to 71 ms by deleting a redundant export.  I had flagged that our 0.88 s was being compared against llama.cpp's cold number, so I measured llama-server, which enables prompt caching by default: cold it processed 905 tokens in 2230 ms at 406 tokens a second, and warm it processed 4 tokens in 98 ms for a 0.19 s wall.  Two errors of mine came out of this.  The 0.88 s was the whole request rather than TTFT - 16 tokens of generation alone account for about 0.57 s - and the comparison was against a cold run.  Measuring TTFT properly over a stream needed care: counting the first data chunk gives a false 5 ms because the server emits a role or empty chunk first, so only chunks carrying actual content count, and our /v1/completions streams delta.content rather than text.  Done correctly, our warm TTFT was 0.095 s against llama.cpp's 0.068 s, a 40 per cent loss.  I instrumented the cache with QW_PREFIX_TIME and found the restore is not the problem at all: importing a 208 MB blob at position 904 costs 3.5 ms, while the export costs 17.8 ms and ran on EVERY request including warm hits, re-exporting precisely the state it had just imported, with record_boundary cloning another 208 MB on top.  The save point sits at a.pf, before the next chunk is computed, so the state is identical to the one just restored - pure duplicated work.  The fix tracks restored_at and skips the export when the save position equals it, which is safe because the boundary and its blob were recorded by the earlier request and are still cached, and this request's ids[..a.pf] is exactly the prefix it restored from, so the prefix bookkeeping is unchanged.  Warm TTFT went from 0.095 s to 0.071-0.077 s against llama.cpp's 0.066-0.068 s, turning a 40 per cent loss into a 5 to 15 per cent one - essentially parity - and the warm export disappeared entirely, with accept.sh at 14 passed and 0 failed ACCEPTED.  Two incidental findings: the blob is dominated by a length-independent part, 160 MB at 136 tokens against 208 MB at 904, which is the GDN recurrent state at a fixed size per layer while the KV is only about 62 KB a token; and a cold prefill performs five exports, one per ladder boundary, about 85 ms in total, which is under one per cent of cold prefill and not worth optimising.  Corrected objective status: otps won by 15.5 per cent, warm TTFT 6 per cent behind, cold TTFT 5.4 times behind at 11.9 s against 2.23 s.  The TTFT objective is not met; the warm path is close and the cold path is still the gap.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "oracle parity 6/6 PASS",
+        "G2": "accept.sh 14 passed, 0 failed ACCEPTED",
+        "G3": "redundant warm-path export removed; warm TTFT 0.095 s -> 0.071-0.077 s",
+        "G4": "fair warm-vs-warm measured against llama-server with its default prompt cache"
+      },
+      "evidence": {
+        "retraction": "the 23x compared our warm against llama.cpp's cold; the 0.88 s was also a whole request, not TTFT.",
+        "llama_warm": "llama-server, prompt cache on by default: cold 905 tok in 2230 ms (406 t/s), warm 4 tok in 98 ms, 0.19 s wall.",
+        "artifact": "counting the first data chunk yields a false 5 ms TTFT; our stream uses delta.content, not text.",
+        "before": "warm TTFT ours 0.095 s vs llama.cpp 0.068 s, a 40 per cent loss.",
+        "instrumented": "QW_PREFIX_TIME: boundary import 904 tok 208 MB 3.5 ms, export 904 tok 208 MB 17.8 ms.",
+        "root": "the save point is at a.pf before the next chunk, so it re-exported the state just imported, plus a 208 MB clone.",
+        "fix": "skip the export when a.restored_at == Some(a.pf); safe because the boundary and blob from the earlier request remain cached.",
+        "after": "warm TTFT 0.071-0.077 s vs llama.cpp 0.066-0.068 s - a 5 to 15 per cent loss, essentially parity.",
+        "blob_shape": "160 MB at 136 tokens, 208 MB at 904: dominated by the fixed-size GDN recurrent state; KV is about 62 KB a token.",
+        "cold_exports": "five per cold prefill, about 85 ms, under 1 per cent - not worth optimising.",
+        "status": "otps won 15.5 per cent, warm TTFT 6 per cent behind, cold TTFT 5.4x behind."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
