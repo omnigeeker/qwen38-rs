@@ -3111,3 +3111,58 @@ K-major 布局能让一行贡献 **128 连续字节**。加 mode 5 直接按 K-m
 这样完全绕开 `simdgroup_load` 的转置语义。**
 
 **门禁：gemm-check 在每次实验后均复测，回退后 PASSED（worst rel 3.347e-4）。**
+
+
+---
+
+## 59. GEMM 接线后批次门禁失败；门禁盲区被揭开（第 53 轮）
+
+### 先修正一个自己踩的坑
+
+`--rows 6`（k=8）的内核在**编译期展开 NK=8**，只处理 8 个 token。我按 32 计时得到
+「98 ms / 146.8 GB/s、比 GEMM 快 2.6 倍」——**那是假的**。按正确 token 数重测：
+
+| 内核 | ms/tok | 每次扫描 | GB/s |
+|---|---|---|---|
+| **k=4（引擎当前）** | **9.951** | 39.6 ms | **362.1** |
+| k=6 | 10.811 | 64.6 ms | 222.2 |
+| k=8 | 12.169 | 98.7 ms | 148.0 |
+
+**⇒ 引擎选 k=4 是正确的。**（bench 里已有的 `ensure!` 守住了 rows=5/7，但 rows=6 的守卫缺失，
+是这次误测的入口。）
+
+### 盈亏平衡点
+
+GEMV 每 4 行扫一遍权重（39.6 ms），GEMM 每 32 行扫一遍（257 ms）。
+**⇒ 32 行时 GEMM 257 ms vs GEMV 317 ms（快 19%）；约 26 行以下 GEMV 更优。**
+
+### 接线（`encode_rows` 里 GEMM 参数原本完全未使用）
+
+`batch_k` 之前是 `let _ = batch_k;`。接上并加 `GEMM_MIN_ROWS = 26` 阈值后：
+
+- `gemm-check`：**PASSED**（worst rel 3.347e-4）
+- `verify`：**6/6 PASS**
+- `accept.sh`：**14 passed / 0 failed, ACCEPTED**
+- **`batch-check --slots 16`：FAILED —— 16/16 槽不一致，worst |logit difference| 17.02**
+
+### 隔离
+
+| `QW_GEMM_MIN_ROWS` | 16 行 pass 走 | 结果 |
+|---|---|---|
+| 17 | GEMV | **PASSED，0.0000** |
+| 16 | GEMM | **FAILED，17.0195** |
+
+**⇒ 是 GEMM。它在隔离测试（单 linear、40 token）中正确到 3.3e-4，在引擎的 32 行批处理 pass 上端到端失败。**
+
+### 更重要的发现：门禁盲区
+
+**默认配置下，没有任何门禁覆盖 GEMM 路径：**
+- `verify` 的 prompt 很短（16–24 token）⇒ 单 pass 行数 < 26 ⇒ 走 GEMV
+- `batch-check --slots 16` 的「独立运行」用的是**单行内核**（直方图显示 `q4_gemv_hx` 497 次）
+- 直方图在 `QW_GEMM_MIN_ROWS=2` 下仍显示 `q4_gemv_hx`，因为那些是单行基线运行
+
+**⇒ 只有把阈值强行降到 16 以下，GEMM 才第一次真正被端到端检验，随即暴露失败。**
+**⇒ 此前「accept 14/14 with the GEMM wired」不能作为 GEMM 正确的证据。**
+
+**已回退（`linear.rs`、`runner.rs` 恢复 HEAD）；verify 6/6、batch gate 0.0000 复测通过。**
+**⇒ GEMM 那 19% 的优势在端到端缺陷查清前不可用。**

@@ -2446,6 +2446,29 @@
         "transpose_unresolved": "simdgroup_load with transpose gave a relative error of 1.7 from device memory and from a transposed shared tile, with numerically identical errors, so the semantics are not pinned down.",
         "fallback": "stage weights as [k][row] and activations as [token][k], load both without transpose, and store the [token][out] accumulator with simdgroup_store's transpose flag."
       }
+    },
+    {
+      "round": 112,
+      "title": "Wired the simdgroup GEMM into encode_rows, where its kernel argument had been sitting unused behind a let underscore, and the batch gate caught it: 16 of 16 slots disagreed with their independent runs, worst logit difference 17.02.  Isolated cleanly by moving the threshold - 17, which sends the sixteen-row pass through the GEMV, passes at 0.0000, while 16, which sends it through the GEMM, fails at 17.0195.  So the GEMM is correct in isolation, where gemm-check puts it at 3.347e-4 on a single linear with forty tokens, and correct for the single-sequence passes that verify exercises at 6 of 6, but wrong on the engine's thirty-two-row batched pass.  The more useful discovery is why this stayed hidden: no gate covers the GEMM by default.  verify's prompts are sixteen to twenty-four tokens, so their single pass is below the threshold and takes the GEMV; and batch-check's independent runs use the single-row kernel, which the dispatch histogram confirms by showing 497 q4_gemv_hx even when the threshold is forced down.  Only forcing the threshold to 16 or below made the GEMM meet an end-to-end gate for the first time, and it failed immediately - which also means the earlier accept 14 of 14 with the GEMM wired was never evidence that the GEMM was correct.  Before that I corrected a measurement trap of my own making: the k=8 kernel is unrolled over a compile-time NK of 8 and processes eight tokens whatever --tokens says, so timing it at thirty-two tokens reported 98 ms and 146.8 GB/s, a fictitious 2.6 times better than the GEMM.  Measured at the token count it actually does, k=4 is 9.951 ms a token at 362 GB/s, k=6 is 10.811 and k=8 is 12.169, so the engine's choice of k=4 is right and the earlier refutation of the wider GEMV kernels stands.  The bench guards rows 5 and 7 with an ensure but not rows 6, which is the hole the bad number came through.  What the round does establish is the break-even: the GEMV sweeps the weights once per four rows at 39.6 ms and the GEMM once per thirty-two at 257 ms, so at thirty-two rows the GEMM is 257 against 317 and would be 19 per cent better, and below about 26 rows the GEMV wins.  Reverted, since shipping an unverified path is not an option; verify is back to 6 of 6 and the batch gate to 0.0000.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "GEMM wired into encode_rows behind a GEMM_MIN_ROWS=26 threshold; gemm-check PASSED at 3.347e-4",
+        "G2": "batch gate FAILED with the GEMM: 16 of 16 slots disagree, worst |logit difference| 17.02",
+        "G3": "isolated by threshold: 17 (GEMV) PASSED at 0.0000, 16 (GEMM) FAILED at 17.0195",
+        "G4": "reverted; verify 6/6 and batch gate 0.0000 reconfirmed"
+      },
+      "evidence": {
+        "unused_kernel_arg": "encode_rows took the GEMM kernel and discarded it with `let _ = batch_k;`.",
+        "gemm_correct_in_isolation": "gemm-check PASSED at 3.347e-4 on a single linear with 40 tokens; verify 6/6 on short single-sequence passes.",
+        "gemm_wrong_end_to_end": "batch-check --slots 16 FAILED with 16 of 16 slots disagreeing, worst |logit difference| 17.0195.",
+        "isolation": "QW_GEMM_MIN_ROWS=17 sends the 16-row pass through the GEMV and passes at 0.0000; 16 sends it through the GEMM and fails at 17.0195.",
+        "gate_blind_spot": "verify's prompts are 16-24 tokens so their pass is below the threshold; batch-check's independent runs use the single-row kernel, confirmed by 497 q4_gemv_hx in the histogram.",
+        "prior_evidence_invalid": "accept 14/14 with the GEMM wired never exercised the GEMM, so it was not evidence of correctness.",
+        "measurement_trap": "the k=8 kernel is unrolled over NK=8 and ignores --tokens, so timing it at 32 tokens gave a fictitious 98 ms and 146.8 GB/s; bench guards rows 5 and 7 but not rows 6.",
+        "correct_k_comparison": "k=4 9.951 ms/token at 362 GB/s, k=6 10.811, k=8 12.169 - the engine's k=4 is optimal.",
+        "break_even": "GEMV sweeps once per four rows at 39.6 ms, GEMM once per thirty-two at 257 ms; the GEMM is 19 per cent better at 32 rows and the GEMV wins below about 26."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
