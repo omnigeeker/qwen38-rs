@@ -2356,6 +2356,29 @@
         "correctness_unaffected": "with the GEMM wired, verify passed at parity 6 of 6 and accept.sh at 14 of 14, so it was correct but unmeasurable.",
         "lesson": "bench weights linears by bytes while the engine pays every linear's latency on the critical path; and every A/B must record idle GPU utilisation first."
       }
+    },
+    {
+      "round": 108,
+      "title": "Produced a valid same-load head-to-head - Ollama 1.76-1.86 s against our 14.6 s on a 905-token cold prefill - and found a sharp diagnostic in the process: Ollama is barely affected by the GUI's GPU contention while we are badly affected, which says its prefill is throughput bound and ours is latency bound.  Getting there needed a methodology fix.  I first warmed Ollama with the same prompt I then measured, and it reported 0.102 s for 957 tokens, 9300 tokens a second, which is a prefix-cache hit and not a prefill; with genuinely fresh prompts sent once each, Ollama takes 1.763 and 1.858 s for 957 tokens, about 525 tokens a second, against our 14.575 and 14.697 s for 905 tokens, about 62 - so we are 8.1 times behind on cold time to first token.  Both were measured with idle GPU utilisation between 83 and 98 per cent, so the load is the same on both sides.  The diagnostic is in comparing that with the clean-state numbers: Ollama went from 1.73 to 1.76-1.86 s, essentially unmoved, while we went from 11.6 to 14.6, up 26 per cent.  A kernel that saturates the arithmetic units does not care that something else is using the GPU; one whose effective bandwidth is 33 to 60 GB/s against the 477 the hardware reaches is latency bound and collapses under contention.  That is direct evidence for what the attribution has been saying, and it sets the goal for the kernel work: make it throughput bound.  On environment, minimising the GUI window did not help - idle utilisation held at 63 to 71 per cent across three minutes, from WindowServer and this app's renderer - so every comparison has to be collected in pairs under the same load, and mixing numbers from different load states systematically understates us.  I also found Ollama's qwen38-27b:local manifest is invisible to the running server, the same stale-manifest problem as before, and created qwen38-27b:bench from the same GGUF rather than restarting the user's service.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "valid same-load cold-prefill comparison with genuinely fresh prompts on both sides",
+        "G2": "methodology corrected: warming with the measured prompt gives a prefix-cache hit, not a prefill",
+        "G3": "diagnostic: Ollama is contention-insensitive, we are contention-sensitive, so ours is latency bound",
+        "G4": "Ollama tag created additively from the same GGUF; the user's service was not restarted"
+      },
+      "evidence": {
+        "ollama_cold": "1.763 and 1.858 s for 957 prompt tokens, about 525 tokens a second.",
+        "ours_cold": "14.575 and 14.697 s for 905 prompt tokens, about 62 tokens a second.",
+        "gap": "8.1 times behind on cold time to first token, both measured at idle GPU utilisation of 83-98 per cent.",
+        "prefix_cache_trap": "warming with the measured prompt gave 0.102 s for 957 tokens, 9300 tokens a second, which is a cache hit.",
+        "diagnostic": "Ollama moved 1.73 to 1.76-1.86 s under contention while we moved 11.6 to 14.6, so its prefill is throughput bound and ours is latency bound.",
+        "kernel_goal": "make the kernel throughput bound rather than latency bound.",
+        "environment": "minimising the GUI did not help; idle utilisation held at 63-71 per cent for three minutes from WindowServer and the app renderer.",
+        "methodology": "collect every comparison in pairs under the same load; mixing load states understates us.",
+        "ollama_tag": "qwen38-27b:bench created from the same GGUF because the running server cannot see the :local manifest; the user's service was left running."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
