@@ -1447,3 +1447,73 @@ threadgroup 内存，activation tile 也进 threadgroup 内存，用 `simdgroup_
 > 附带修正：本轮在机器未受热负载影响时测得 chunk=4 冷 prefill 2016 token 为
 > **30–36 s（56–67 tok/s）**。§28 记录的同一 prompt 46.7 s 是在 llama-bench 之后测的，
 > **属于热降频**，不是稳态值。
+
+
+---
+
+## 30. 用项目自带的校准仪器钉死方向：没有任何内核能把权重摊薄过 4 行（第 25 轮）
+
+§29 靠 chunk 实验得到"16 行更慢 1.67 倍"。本轮用代码库里**专门为这个问题造的仪器**
+`bench --rows 18 --tokens 16` 把它量化到机制层面。四臂在一个进程内交错，其中 `b16*`
+是 `b16` 的重复臂，**用来自校准方法本身的偏差**（这台机器的时钟在一次运行内就能飘 4 倍，
+跨进程 A/B 没有意义）。
+
+```
+arm                                     ms/sweep    tok/s    vs b16
+b16  网格共享, 1 次权重读取               367.33      43.6    1.000x
+k16  每线程累加器, 1 次权重读取           742.60      21.5    0.495x
+k1x16 串行, 16 次权重读取                 452.07      35.4    0.813x
+b16  重复臂（校准）                       431.22      37.1    0.852x
+
+b16 对串行: 原始 1.231x，校准后 1.048x
+```
+
+**⇒ 校准后 `b16`（网格共享、号称"1 次权重读取喂 16 个 token"）只比 16 次独立扫读快 4.8%。**
+**⇒ 所谓"1 次权重读取"没有发生。** 而 `k16`（每线程累加器）是串行的 2 倍慢。
+
+### 机制（宏自己的注释已经写清楚了）
+
+`Q4_GEMV_KS_U4HX` 的内层：
+
+```c
+for (int t = 0; t < NK; ++t) {
+    device const half* gx = x + t*K + g*GROUP_SIZE + (wi*4+c)*8;
+    const uint4 xv = *(device const uint4*)(gx);      // 每行一次 x 载入
+    acc[t] += dot(w0,x0) + dot(w1,x1);
+}
+```
+
+**每个 (group, word) 只读 1 次权重，却要读 NK 次 x。** 注释原文的账："per (group, word)
+the row loop issues two 8-byte half4 loads per row, while the weights need only one 16-byte
+load for the whole pass - 28.8 G loads against 3.6 G"。
+
+**⇒ K 一大，瓶颈就从"读权重"变成"读 activation"。** 而 activation 对同一层的**所有输出行
+是共享的**——本该一次载入喂多行。
+
+### 真正的修法（下一步的唯一路径）
+
+**把 activation 转置存放**：`x + t*K + offset` 里不同行 t 的值相隔 K，所以一次载入只能服务一行。
+若按 `[feature][row]` 布局，**一次 16 字节载入（8 个 half）就能拿到 8 行的同一特征值**：
+
+```c
+device const half* gx = xt + (g*GROUP_SIZE + (wi*4+c)*8) * NK_PAD;   // 没有 t 项
+```
+
+**⇒ NK=16 时 x 载入从 16 次降到 2 次，少 8 倍。**
+
+配套改动：
+1. 每层把残差流转置一次（`h[5120][NK]` → `h_t[NK][5120]`），**64 层各一次，不是 497 个线性各一次**
+2. tile 宏加一个转置 x 的分支
+3. 环按 `BATCH_MAX` 定尺寸（§29 已实现并验证正确，当时因无收益而回退；**有了转置 x 它才有意义**）
+4. 验证数值一致 + 交错配对 A/B
+
+### 现状
+
+| | 我们 | llama.cpp | |
+|---|---|---|---|
+| **otps** | 28.4 tok/s | 24.58 | ✅ 赢 15.5% |
+| **TTFT（命中前缀缓存）** | 0.2 s | 19.5 s | ✅ 赢 |
+| **TTFT（冷启动）** | ~200 s | ~19.5 s | ❌ 输约 9 倍 |
+
+**冷 prefill 是唯一剩下的缺口，而它需要的是一个量级更大的内核工程**（转置 activation 的
+tile GEMM），不是调参。

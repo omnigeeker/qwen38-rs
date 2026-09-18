@@ -1828,6 +1828,26 @@
         "remaining": "a real simdgroup GEMM with threadgroup-memory activation tiling is the only path to cold-prefill parity.",
         "thermal_correction": "chunk=4 cold prefill of 2016 tokens is 30-36 s steady state; the 46.7 s in section 28 was heat-soaked."
       }
+    },
+    {
+      "round": 83,
+      "title": "Pinned the prefill question down with the project's own calibrated instrument.  bench --rows 18 --tokens 16 runs four arms interleaved inside one process, of which b16-star is a duplicate of b16 and exists to calibrate the method itself, because this box's clock drifts by up to 4x within a single run and a cross-process A/B means nothing.  Results: b16 grid-shared 367.33 ms and 43.6 tokens per second; k16 per-thread 742.60 ms and 21.5; k1x16 serial 452.07 ms and 35.4; the b16 duplicate 431.22 ms.  So b16 over serial is 1.231x raw but only 1.048x calibrated, which means the advertised one-weight-read-feeds-sixteen-tokens does not actually happen, and k16 is twice as slow as serial.  That is the quantitative explanation for section 29's measured 1.67x slowdown at chunk 16, and it closes the direction.  The mechanism is in the macro's own comment: per group and word the inner loop issues NK x loads against ONE weight load, its own accounting being 28.8 G loads against 3.6 G, so once K is large the bottleneck moves from reading weights to reading activations.  Activations are shared across every output row of a layer and should be loaded once for many rows.  The fix is to store the activations transposed: today rows t sit K apart so one load serves one row, whereas with a feature-major layout a single 16-byte load carries eight rows' worth of one feature, taking NK=16 from sixteen x loads down to two, an eight-fold cut.  That needs a transpose of the residual stream once per layer rather than once per linear, a transposed branch in the tile macro, and the BATCH_MAX-sized ring that section 29 implemented and proved correct and then reverted for lack of benefit - it only becomes meaningful once the transposed x exists.  Status: otps won at 28.4 against 24.58, warm TTFT won at 0.2 s against 19.5 s, cold TTFT still lost by about 9x, and that gap needs a transposed-activation tile GEMM rather than tuning.  Asked the user to scope it, since in the actual agent workflow the prefix cache means the cold path never runs.",
+      "tok_s": null,
+      "end_to_end": false,
+      "gates": {
+        "G1": "no source change this round",
+        "G2": "n/a",
+        "G3": "n/a",
+        "G4": "bench --rows 18: b16 is only 1.048x serial calibrated; k16 0.495x"
+      },
+      "evidence": {
+        "instrument": "bench --rows 18 --tokens 16, four arms interleaved in one process with a duplicate arm for calibration.",
+        "result": "b16 367.33 ms/43.6 tok/s; k16 742.60/21.5; serial 452.07/35.4; duplicate 431.22.",
+        "verdict": "b16 over serial is 1.231x raw but 1.048x calibrated, so no weight-read amortisation happens beyond 4 rows; k16 is 2x slower than serial.",
+        "mechanism": "per group and word the macro issues NK x loads against one weight load (28.8 G vs 3.6 G), so large K moves the bottleneck to activation reads.",
+        "fix": "store activations feature-major so one 16-byte load serves 8 rows, cutting NK=16 from 16 x loads to 2.",
+        "scope": "transpose once per layer plus a transposed tile-macro branch plus the BATCH_MAX ring; asked the user whether to build it."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
