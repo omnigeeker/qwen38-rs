@@ -2404,3 +2404,67 @@ llama.cpp 只需读 14.4 GB 权重一次。**
 **⇒ 这也给出了明确的目标与量级**：即便只做到 64 行/pass，权重流量也从 3.25 TB 降到
 约 202 GB（14 次扫描），约 0.42 s ⇒ 总时间有望进入 2–3 s 区间，与对手同量级。
 **这是目前唯一能填平冷 prefill 差距的路径，代价是一个真正的 4-bit affine simdgroup GEMM。**
+
+
+---
+
+## 45. 差点把假象当成 2 倍加速：k=8 实测更慢，便宜的路已封死（第 39 轮）
+
+§44 把冷 prefill 定位为「带宽受限地重读权重 226 次」。本轮先去找便宜的路——**结果差点
+把一个测量假象当成 2 倍加速，查证后自己推翻了。**
+
+### 陷阱：`--rows 5 --tokens N` 会报出虚假加速
+
+我先用现成的 bench 扫 k：
+
+```
+k=4: 8.677 ms/token    k=6: 5.759 ms/token    k=8: 4.319 ms/token
+```
+
+看起来 k=8 是 2 倍加速。**但数字过于完美**：8.677 × 4/6 = 5.785（实测 5.759）、
+8.677 / 2 = 4.339（实测 4.319）。于是去读宏定义：
+
+```c
+#define Q4_GEMV_KS_U4(NAME, NK)
+    float acc[NK];
+    _Pragma("unroll") for (int t = 0; t < NK; ++t) acc[t] = 0.0f;
+```
+
+**⇒ 累加循环的上界是编译期的 `NK`，不是运行时传入的 `k` 标量。**
+`K_Q4_GEMV_K4_U4HX` 的 NK=4，**所以无论 `--tokens` 说多少，它只处理 4 个 token**——
+而 bench 用 8 去除时间，于是报出虚假的 2 倍。
+
+**已在 bench 里封死这个陷阱**：`--rows 5` 现在要求 `--tokens` 必须为 4，否则明确报错：
+
+```
+Error: --rows 5 is K_Q4_GEMV_K4_U4HX, whose accumulator loop is unrolled over a
+compile-time NK of 4, so it processes four tokens no matter what --tokens says.
+Asking for k=8 would report a speedup that is only the kernel doing less work than
+the timing assumes.  Use --rows 6 for k=8.
+```
+
+### 真正的实验：实例化 k=8 内核
+
+宏以 NK 为参数，所以加了 `Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)` 与 `--rows 6`，
+然后交错 A/B（同一热状态）：
+
+| | ms/token | tok/s | 有效带宽 |
+|---|---|---|---|
+| k=4 | **8.649** | 115.63 | **416.6 GB/s** |
+| k=8 | 11.000 | 90.91 | **163.8 GB/s** |
+| k=4 | **10.045** | 99.55 | **358.7 GB/s** |
+| k=8 | 11.766 | 84.99 | **153.1 GB/s** |
+
+**⇒ k=8 慢 17–27%，且有效带宽从约 417 GB/s 崩到约 154–164 GB/s——寄存器溢出的典型特征。**
+
+**⇒ §20 的否定结论成立，而且现在理由是对的**：不只是 `q4_gemv_b16` 用 GRID 映射不摊销，
+**weight-stationary 家族本身在 k>4 时就因寄存器压力而失效**（k=16 慢 22% 是同一原因）。
+
+### 结论
+
+**在当前 GEMV 形式下，每次权重扫描 4 个 token 就是上限。**
+§44 提出的「按行摊销的 simdgroup GEMM」不是可选的优化，而是唯一剩下的路径——
+因为 4-bit affine 权重必须先在 shared memory 里反量化再喂给 tensor core，
+这样一份权重才能真正服务几十行。
+
+**本轮没有带来加速**，但把一个便宜的可能性彻底关闭了，并封掉了工具里一个会误导后续实验的陷阱。

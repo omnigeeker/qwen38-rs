@@ -656,6 +656,14 @@ kernel void NAME(                                                               
 }
 Q4_GEMV_KS_U4HX(q4_gemv_k3_u4hx, 3)
 Q4_GEMV_KS_U4HX(q4_gemv_k4_u4hx, 4)
+
+// The same weight-stationary kernel with eight accumulators instead of four.  The
+// macro takes the token count as a compile-time parameter and the accumulator loop
+// is unrolled over NK, NOT over the runtime `k` scalar - so K4_U4HX processes
+// exactly four tokens whatever `k` says.  Benchmarking it with a larger `k` reports
+// a speedup that is only the kernel doing less work than the timing assumes, which
+// is a trap worth naming.  This instantiation makes the k=8 question answerable.
+Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
 // 16 independent activations per weight read: the whole point of batch-16
 // serving.  Each threadgroup still computes ONE output row, but consumes 16
 // input rows, so the 14.4 GB weight stream is amortised over 16 tokens instead
@@ -932,6 +940,7 @@ pub const K_Q4_GEMV_K3_U4HH: &str = "q4_gemv_k3_u4hh";
 pub const K_Q4_GEMV_K4_U4HH: &str = "q4_gemv_k4_u4hh";
 pub const K_Q4_GEMV_K3_U4HX: &str = "q4_gemv_k3_u4hx";
 pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
+pub const K_Q4_GEMV_K8_U4HX: &str = "q4_gemv_k8_u4hx";
 pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";
 pub const K_Q4_GEMV_B16: &str = "q4_gemv_b16";
 pub const K_Q4_GEMV_K3_U4H4: &str = "q4_gemv_k3_u4h4";

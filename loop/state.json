@@ -2139,6 +2139,26 @@
         "explains_round20": "q4_gemv_b16 uses grid mapping so each row re-reads the weights, which is why 4 to 16 rows costs 4.96x for 4x the work.",
         "target": "a row-amortising simdgroup GEMM; 64 rows a pass would cut weight traffic to about 202 GB, ~0.42 s, putting the total in the 2-3 s range."
       }
+    },
+    {
+      "round": 98,
+      "title": "Nearly mistook a measurement artefact for a 2x speedup, caught it by reading the macro, and then proved with a purpose-built kernel that k=8 is genuinely slower - closing the cheap path to cold prefill.  I swept k with the existing bench and saw k=4 8.677, k=6 5.759, k=8 4.319 ms a token, which looks like a doubling.  The numbers were suspiciously exact - 8.677 times 4/6 is 5.785 against 5.759 measured, and 8.677 over 2 is 4.339 against 4.319 - so I read the macro: the accumulator loop is unrolled over a compile-time NK, not over the runtime k scalar.  K_Q4_GEMV_K4_U4HX has NK=4, so it processes exactly four tokens whatever --tokens says, while the bench divides by the number asked for.  That is a trap in the tool rather than a property of the kernel, so I closed it: --rows 5 now requires --tokens 4 and otherwise fails with a message naming the reason and pointing at --rows 6.  Because the macro does take NK as a parameter, the real question was answerable, so I instantiated Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8) and wired --rows 6 to it.  Interleaved A/B on the same thermal state gives k=4 8.649 and 10.045 ms a token against k=8 11.000 and 11.766, so k=8 is 17 to 27 per cent slower, and the effective bandwidth collapses from about 417 GB/s to about 154-164, the signature of register spilling.  Round 20's refutation therefore stands, and now for the right reason: it is not only that q4_gemv_b16 uses grid mapping, the weight-stationary family itself fails beyond k=4 under register pressure, which is also why the k=16 variant was 22 per cent slower.  So four tokens per weight sweep is the ceiling in this GEMV formulation, and the row-amortising simdgroup GEMM of round 44 is not an optional optimisation but the only remaining path - 4-bit affine weights have to be dequantised into shared memory before the tensor cores can use them, and only then does one copy of the weights serve dozens of rows.  No speedup this round, but a cheap possibility is closed off for good and a tool trap that would have misled later experiments is sealed.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "bench trap closed: --rows 5 now requires --tokens 4 and fails loudly otherwise",
+        "G2": "real k=8 kernel instantiated (q4_gemv_k8_u4hx) and wired to --rows 6",
+        "G3": "k=8 measured 17-27 per cent slower with bandwidth collapsing to ~154 GB/s - register spilling",
+        "G4": "round-20 refutation upheld and the GEMV path to cold prefill closed"
+      },
+      "evidence": {
+        "artefact": "k=6 and k=8 appeared to speed up because K4_U4HX unrolls over a compile-time NK of 4, so it did less work than the timing assumed; 8.677 x 4/6 = 5.785 vs 5.759 measured gave it away.",
+        "macro": "float acc[NK] with _Pragma unroll for (int t = 0; t < NK; ++t) - the bound is NK, not the runtime k.",
+        "guard": "bench --rows 5 now ensures k == 4 and otherwise errors with the explanation and a pointer to --rows 6.",
+        "real_k8": "Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8) instantiated and reachable via --rows 6.",
+        "measured": "k=4 8.649 and 10.045 ms/token vs k=8 11.000 and 11.766; effective bandwidth 417 GB/s down to 154-164 GB/s.",
+        "conclusion": "four tokens per sweep is the ceiling for GEMV; the row-amortising simdgroup GEMM is the only remaining path."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",
