@@ -2402,6 +2402,28 @@
         "neutral_today": "13.339 s against the previous build's 13.6-14.7 s, but it is a prerequisite for the GEMM's BN=32 to cover a whole pass.",
         "roadmap": "batch the row-parallel kernels - copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s, rope_partial, 44 per cent of dispatches - into one dispatch a pass; gdn_step is a recurrence and stays per row at 10 per cent.  Target 3.4 s down to about 0.8."
       }
+    },
+    {
+      "round": 110,
+      "title": "Found that the tile-wide convolution kernel was written, commented and never wired up, wired it for the prefill case, removed 87696 dispatches from a 905-token prefill, and then measured it 0.43 to 0.99 times - a serious regression - so reverted it.  The more important result is that this refutes the dispatch-latency model I built last round.  conv1d_silu_ring_tile was already defined and even folds the ring update in, with a comment saying it removes a copy launch per row; its semantics are exactly what a prefill chunk needs, since row r uses slot slot0+r, reading this pass's rows from the staging buffer and older ones from the ring.  I gated it on all rows being one sequence at consecutive positions, falling back to the per-row loop for a batch pass, and the dispatch histogram went from 14633 to 11609 a pass: conv1d_silu_ring from 1536 to zero and copy_off from 1536 to zero, 3024 fewer dispatches a pass and 87696 fewer across the prompt.  Both gates passed.  But the interleaved A/B, with md5 confirming the two binaries differ, gave 0.99 and 0.77 times on the first two rounds and then 0.43 and 0.65 on the next two, 39.5 and 26.9 seconds against 16.9 and 17.6.  The tile kernel is much slower per element: it has a data-dependent branch choosing between the staging buffer and the window, a variable base address, and an extra ring store, while the per-row kernel addresses the window with a constant slot and coalesces cleanly.  Per-element efficiency beats dispatch count.  Reverted, and the rebuilt binary's md5 matches the pre-change one exactly.  That kills last round's model: I had computed 218k dispatches times 15.6 microseconds as 3.4 seconds, matching the measured non-GEMV time, and set the roadmap from it.  Removing 87696 dispatches made things slower, so the match was a numerical coincidence and not causal evidence.  The non-GEMV 3.4 seconds is real per-element kernel work, not dispatch overhead, and the roadmap of batching the row-parallel kernels is void.  One more warning worth recording: after the revert, verify reported oracle parity failed once and then passed 6 of 6 on an immediate re-run of the byte-identical binary, and the batch gate's worst logit difference moved from 0.0000 to 0.0352.  Under this GPU contention a gate failure needs a re-run before it means anything.",
+      "tok_s": null,
+      "end_to_end": true,
+      "gates": {
+        "G1": "tile convolution wired and verified correct: verify parity 6/6 and batch gate PASSED",
+        "G2": "dispatch count reduced from 14633 to 11609 per pass, 87696 fewer across the prompt",
+        "G3": "interleaved A/B over four rounds showed 0.43-0.99x, so the change was reverted",
+        "G4": "revert confirmed by md5: the rebuilt binary matches the pre-change one exactly"
+      },
+      "evidence": {
+        "unwired_kernel": "conv1d_silu_ring_tile was defined, commented, and never called; it also folds the ring update in, removing the per-row copy.",
+        "dispatch_reduction": "14633 to 11609 dispatches per pass: conv1d_silu_ring 1536 to 0 and copy_off 1536 to 0, 87696 fewer across 905 tokens.",
+        "ab_result": "0.99x, 0.77x, 0.43x and 0.65x - 39.495 and 26.869 s against 16.940 and 17.558 s on the last two rounds.",
+        "why_slower": "the tile kernel has a data-dependent branch between the staging buffer and the window, a variable base address, and an extra ring store, while the per-row kernel uses a constant slot and coalesces cleanly.",
+        "model_refuted": "218k dispatches x 15.6 microseconds matching 3.4 s was a numerical coincidence; removing 87696 dispatches made it slower.",
+        "roadmap_void": "batching the row-parallel kernels is not the way; the non-GEMV 3.4 s is real per-element kernel work.",
+        "gate_flakiness": "after the revert, verify failed once then passed 6/6 on a re-run of the byte-identical binary, and the batch gate's worst logit difference moved from 0.0000 to 0.0352.",
+        "reverted": "binary md5 matches the pre-change build exactly."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

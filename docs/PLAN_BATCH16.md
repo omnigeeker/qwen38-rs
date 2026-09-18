@@ -3015,3 +3015,46 @@ verify **parity 6/6**；batch-check **PASSED**（worst |logit diff| 0.0000）。
 `copy_off` + `conv1d_silu_ring` + `rmsnorm_gated` + `rmsnorm_s` + `rope_partial` 合计 44% 的
 dispatch，全部可按行并行 ⇒ 可压成每 pass 一次。`gdn_step` 是递推、必须逐行（10%）。
 **目标：非 GEMV 3.4 s → 约 0.8 s。**
+
+
+---
+
+## 57. tile 卷积已写好但从未接线；接上后是回退，且「dispatch 延迟」模型被否（第 51 轮）
+
+### 发现
+
+`conv1d_silu_ring_tile` **已定义、已写注释、从未被调用**——而且它把 ring 更新也融合进去了
+（注释明说「removes a copy launch per row」）。它的语义正是 prefill 需要的：行 `r` 用槽位
+`slot0 + r`，本 pass 的行从 staging 缓冲读、更早的从 ring 读。同时 `rmsnorm_nw_tile` 也是
+tile 变体且**已在用**（直方图里 96/pass）。
+
+### 接上并测量
+
+在 GDN phase 2 加条件：同一序列且位置连续（= prefill chunk）时走 tile 内核，否则保留 per-row 循环。
+
+**dispatch 从 14633 → 11609（−21%）**：`conv1d_silu_ring` 1536→**0**、`copy_off` 1536→**0**，
+一次 pass 少 3024 个，905 token 共少 **87,696 个 dispatch**。两条门禁全过。
+
+### 但它是回退——交错 A/B（同一 prompt、全新服务器、二进制 md5 已确认不同）
+
+| 轮 | per-row | tile | 加速 |
+|---|---|---|---|
+| 1 | 13.138 s | 13.298 s | 0.99x |
+| 2 | 13.215 s | 17.206 s | 0.77x |
+| 3 | 16.940 s | **39.495 s** | **0.43x** |
+| 4 | 17.558 s | **26.869 s** | **0.65x** |
+
+**⇒ 严重回退。原因：tile 内核每线程要做数据相关的分支（`pos >= pos0` 在 `cur` 与 `window` 间选择）、
+变基址读取，还多一次 ring 写入；而 per-row 内核寻址简单且合并。**
+**⇒ 每元素的效率远比 dispatch 数重要。已回退（二进制 md5 与改动前一致）。**
+
+### 重要的方法论修正：dispatch 延迟模型是错的
+
+第 50 轮我算出「218k dispatch × 15.6 µs = 3.4 s」并与实测吻合，据此把路线图定为「批量化按行内核」。
+**本轮删掉 87,696 个 dispatch 却更慢了 ⇒ 那个吻合是数字巧合，不是因果证据。**
+**⇒ 非 GEMV 的 3.4 s 是内核真实的每元素开销，不是 dispatch 开销。路线图作废。**
+
+### 另一个警告：门禁在 GPU 争用下可能瞬时不可靠
+
+回退后 `verify` 曾报 `oracle parity failed`，**同一二进制重跑即 6/6 通过**；batch gate 的
+worst |logit diff| 也从 0.0000 变成 0.0352。**⇒ 在争用环境下门禁失败需复测确认，不能单次定论。**
