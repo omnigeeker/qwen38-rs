@@ -1242,3 +1242,64 @@ llama-bench -m ~/.cache/huggingface/hub/models--ggml-org--Qwen3.8-27B-GGUF/\
    注意 §21 的教训：**换核已被配对 A/B 否决**，需要真正重做核，且必须用交错配对 A/B 判定。
 2. **decode 的 28%**：23.9 对 33.1 tok/s 的差距在权重扫读之外。
    `forward_rows` 里注意力有 5 个逐行 dispatch 循环（§20），单 token 时这些固定开销占比很高。
+
+
+---
+
+## 27. llama.cpp 基线拿到了：decode 打平，prefill 落后 11–15 倍（第 22 轮）
+
+### 不要下载——完整 bf16 权重本地就有
+
+之前我只按 `*.gguf` 扩展名搜，**漏掉了没有该后缀的权重目录**。完整的 18 分片
+bf16 权重（52 GB）原来在 **`/Users/waynewong/Claude/QWen3.8_27B/models/Qwen3.8-27B-BF16/`**
+（同一目录下还有 `bench/endpoint_otps.py`，说明那个项目在做同一类测量）。
+本项目的 `models/Qwen3.8-27B-bf16-mtp/` 只有第 18 片，所以看起来"不全"，其实是找错了地方。
+
+**⇒ 不需要任何网络下载。**
+
+### 用本地权重造出 GGUF
+
+转换器在 **`/Users/waynewong/dsh/Loop-Study/inference-engine/llama.cpp/`**——
+一个完整的近期检出（commit `ece963f`），带 `conversion/` 包、`gguf-py/` 和**已编译的
+`build/bin/llama-quantize`**；`conversion/qwen.py` 里明确有
+`model_arch = gguf.MODEL_ARCH.QWEN35` 与 `QWEN35MOE`。brew 装的 llama.cpp 0.4.0
+只带二进制、不带 Python 转换脚本，所以要借用这个检出。
+
+```
+HF bf16  ->  GGUF f16    52115.19 MiB (16.00 BPW)
+         ->  Q4_K_M      16021.46 MiB ( 4.92 BPW)   = 16.81 GB
+```
+
+产物：`models/gguf/qwen38-27b-Q4_K_M.gguf`。Metal 后端正常
+（`simdgroup matrix mul. = true`、`has tensor = true`、`Apple M5 Max`）。
+
+### 基线（`llama-bench`，Q4_K_M，全部层在 GPU）
+
+| 测试 | t/s |
+|---|---|
+| pp128 | 526.29 ± 5.80 |
+| **pp512** | **720.95 ± 16.94** |
+| pp2048 | 561.08 ± 13.89 |
+| **tg128** | **24.10 ± 1.09** |
+
+### 对拍
+
+| 指标 | 我们 | llama.cpp | 结果 |
+|---|---|---|---|
+| **decode（tg）** | 23.9 t/s | **24.10 t/s** | **基本打平**（在噪声内） |
+| **prefill（pp）** | 47.9 t/s（bench k=4）<br>35.4 t/s（真实服务端 6894 token） | **526–721 t/s** | **落后 11–15 倍** |
+
+### 为什么，以及唯一的出路
+
+**llama.cpp 的 prefill 用的是 simdgroup 矩阵乘（真正的 GEMM）；我们的多行路径仍然是 GEMV。**
+`bench --tokens k` 那组数据（k=1 477 GB/s → k=4 172 GB/s）说明的是**同一件事的另一面**：
+把 k 行塞进一个按输出行划分的 GEMV，"每多一行就多一遍算术"，从带宽受限滑向发射受限。
+**在 GEMV 框架里调参救不了 15 倍的差距**——llama.cpp 是在做 512×K 乘 K×N 的 GEMM，
+算术强度完全不同。§21 那次换核被配对 A/B 否决，也正是因为换的还是 GEMV。
+
+**⇒ 要赢 prefill，必须为批量 token 实现真正的 GEMM**：把权重 tile 反量化到 threadgroup
+内存，用 `simdgroup_multiply_accumulate`（`has tensor = true` 说明可用）做矩阵乘。
+这是一个量级更大的内核工程，但方向是明确的、可量化的。
+
+**decode 侧差距很小（23.9 对 24.10），值得单独打磨**：真实 decode 23.9 对纯 GEMV
+权重扫读的 33.1，中间约 28% 花在权重流之外，这是可以拿回来的。

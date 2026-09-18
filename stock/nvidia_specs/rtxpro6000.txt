@@ -1,0 +1,253 @@
+RTX PRO 6000 Blackwell Series | NVIDIA
+NVIDIA Home
+NVIDIA Home
+Menu
+Menu icon
+Menu
+Menu icon
+Close
+Close icon
+Close
+Close icon
+Close
+Close icon
+Caret down icon
+Accordion is closed, click to open.
+Caret down icon
+Accordion is closed, click to open.
+Caret up icon
+Accordion is open, click to close.
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Shopping Cart
+Click to see cart items
+Search icon
+Click to search
+Visit your regional NVIDIA website for local content, pricing, and where to buy partners specific to your country.
+Argentina
+Australia
+België (Belgium)
+Belgique (Belgium)
+Brasil (Brazil)
+Canada
+Česká Republika (Czech Republic)
+Chile
+Colombia
+Danmark (Denmark)
+Deutschland (Germany)
+España (Spain)
+France
+India
+Italia (Italy)
+México (Mexico)
+Middle East
+Nederland (Netherlands)
+Norge (Norway)
+Österreich (Austria)
+Peru
+Polska (Poland)
+Rest of Europe
+România (Romania)
+Singapore
+Suomi (Finland)
+Sverige (Sweden)
+Türkiye (Turkey)
+United Kingdom
+United States
+대한민국 (South Korea)
+中国大陆 (Mainland China)
+台灣 (Taiwan)
+日本 (Japan)
+Continue
+Skip to main content
+Artificial Intelligence Computing Leadership from NVIDIA
+Workstation
+Products
+Products
+Overview
+AI-optimized workstation platform for pro graphics, rendering, and compute
+RTX PRO Desktop GPUs
+Powerful AI, graphics, rendering, and compute workloads
+RTX PRO Laptop GPUs
+Accelerate professional AI and visual computing from anywhere
+DGX Spark
+A Grace Blackwell AI Supercomputer on your desk
+DGX Station
+Desktop AI supercomputer for scalable model training and development
+DGX Station for Windows
+The world's most powerful deskside AI supercomputer for Windows
+Tools and Resources
+Tools and Resources
+Accelerated Apps
+Accelerate creative workflows with tuned GPUs and optimized studio apps
+NVIDIA RTX Enterprise Software
+Enhance enterprise workflows with robust drivers, tools, and GPU control
+NVIDIA RTX PRO Product Literature
+Access technical briefs, guides, and data sheets for NVIDIA workstations
+NVIDIA RTX Technology
+Explore advanced AI, ray tracing, and neural graphics for pros
+Advanced Rendering Solutions
+Accelerate 3D design with advanced real-time ray tracing and AI rendering
+US
+Sign In
+NVIDIA Account
+NVIDIA Marketplace
+NVIDIA Account
+NVIDIA Marketplace
+Logout
+Log In
+LogOut
+Skip to main content
+Artificial Intelligence Computing Leadership from NVIDIA
+US
+Sign In
+NVIDIA Account
+NVIDIA Marketplace
+NVIDIA Account
+NVIDIA Marketplace
+Logout
+NVIDIA
+NVIDIA logo
+Workstation
+Products
+Overview
+AI-optimized workstation platform for pro graphics, rendering, and compute
+RTX PRO Desktop GPUs
+Powerful AI, graphics, rendering, and compute workloads
+RTX PRO Laptop GPUs
+Accelerate professional AI and visual computing from anywhere
+DGX Spark
+A Grace Blackwell AI Supercomputer on your desk
+DGX Station
+Desktop AI supercomputer for scalable model training and development
+DGX Station for Windows
+The world's most powerful deskside AI supercomputer for Windows
+Tools and Resources
+Accelerated Apps
+Accelerate creative workflows with tuned GPUs and optimized studio apps
+NVIDIA RTX Enterprise Software
+Enhance enterprise workflows with robust drivers, tools, and GPU control
+NVIDIA RTX PRO Product Literature
+Access technical briefs, guides, and data sheets for NVIDIA workstations
+NVIDIA RTX Technology
+Explore advanced AI, ray tracing, and neural graphics for pros
+Advanced Rendering Solutions
+Accelerate 3D design with advanced real-time ray tracing and AI rendering
+NVIDIA RTX PRO 6000 Blackwell Series
+Breakthrough AI and visual computing, from desktop to data center.
+Overview
+Accelerate AI, Science, and Design at Any Scale, From Desktop to Data Center
+Powered by the NVIDIA Blackwell architecture, the NVIDIA RTX PRO™ 6000 Blackwell Series GPUs merge unmatched AI compute with cutting-edge visual performance to redefine what’s possible for professionals. Equipped with 96GB of ultra-fast GDDR7 memory, fifth-gen Tensor Cores, and fourth-gen RT Cores, the RTX PRO 6000 Series accelerates the full spectrum of AI and creative workloads—from agentic AI, physical AI, and scientific computing to photorealistic rendering, 3D graphics, and real-time video processing. From desktop to data center, the NVIDIA Blackwell architecture delivers unmatched flexibility, scalability, and precision for IT leaders, researchers, engineers, and creators redefining the future of AI, science, and design.
+NVIDIA Blackwell RTX PRO Comes to Workstations and Servers for Designers, Developers, Data Scientists, and Creatives to Build and Collaborate With Agentic AI
+Groundbreaking AI and graphics performance redefine visualization, simulation, and scientific computing from desktop to data center for millions of professionals worldwide.
+Read Press Release
+NVIDIA RTX PRO Servers Speed Trillion-Dollar Enterprise IT Industry Transition to AI Factories
+New NVIDIA RTX PRO servers from leading global system partners leverage the breakthrough performance and energy efficiency of the NVIDIA Blackwell architecture to build AI factories and accelerate every enterprise workload.
+Read Press Release
+Explore the NVIDIA RTX PRO 6000 Blackwell Series
+NVIDIA RTX PRO 6000 Blackwell Server Edition
+Designed for multi-GPU server deployments requiring passive cooling, the NVIDIA RTX PRO 6000 Server Edition balances performance and energy efficiency to power enterprise data center workloads— including inference, fine-tuning, distributed rendering, HPC, and virtual workstations.
+Learn More
+NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+Engineered for maximum performance in single-GPU workstations, this GPU delivers unmatched power for data-intensive tasks like 3D rendering, AI development, and real-time simulation. Ideal for professionals prioritizing single-GPU throughput on desktops.
+Learn More
+NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition
+Optimized for dense workstation configurations (up to four GPUs), the Max-Q variant balances performance and power efficiency for scalable workflows. Perfect for multi-GPU workloads like large-scale data modeling, distributed rendering, or multi-instance AI training and inference.
+Learn More
+Specifications
+NVIDIA RTX PRO 6000 Blackwell Series
+NVIDIA RTX PRO 6000 Blackwell
+Server Edition |
+NVIDIA RTX PRO 6000 Blackwell
+Workstation Edition |
+NVIDIA RTX PRO 6000 Blackwell Max-Q
+Workstation Edition |
+GPU Memory |
+96 GB GDDR7 with error-correcting code (ECC) |
+96 GB GDDR7 with error-correcting code (ECC) |
+96 GB GDDR7 with error-correcting code (ECC) |
+Display Ports |
+4x DisplayPort 2.1 |
+4x DisplayPort 2.1 |
+4x DisplayPort 2.1 |
+Power Consumption |
+400-600 W |
+600 W |
+300 W |
+Graphics Bus |
+PCIe Gen 5 x16 |
+PCIe Gen 5 x16 |
+PCIe Gen 5 x16 |
+Form Factor |
+4.4” (H) x 10.5” (L) dual slot |
+5.4” (H) x 12” (L) dual slot |
+4.4” (H) x 10.5” (L) dual slot |
+Thermal |
+Passive |
+Double flow-through |
+Active |
+Learn More
+Learn More
+Learn More
+Get Started
+Ready to Get Started?
+Talk with an NVIDIA RTX PRO partner or shop the NVIDIA Marketplace.
+Find a Partner
+Shop Now
+Get in Touch
+Talk to an NVIDIA product expert to discover how NVIDIA RTX PRO solutions can transform your AI and graphics workflows.
+Contact Us
+Get the Latest on NVIDIA RTX PRO
+Sign up for the latest news, updates, and more from NVIDIA.
+Stay Informed
+Products
+NVIDIA RTX PRO Platform
+NVIDIA RTX PRO Desktop GPUs
+NVIDIA RTX PRO Laptop GPUs
+Cloud & Data Center
+Virtual Workstation
+Embedded
+NVIDIA RTX Enterprise Software
+Resources
+Blogs
+Developer Blogs
+Customer Stories
+NVIDIA RTX PRO Product Literature
+Virtual GPU Product Literature
+Documentation
+NVIDIA On-Demand Sessions
+Community
+Developer Forum
+Omniverse Community
+Company Info
+About NVIDIA
+Corporate Overview
+Careers
+NVIDIA Foundation
+Investors
+NVIDIA Research
+Social Responsibility
+Technologies
+Follow NVIDIA
+' title=' '>
+' title=' '>
+NVIDIA
+United States
+Privacy Policy
+Your Privacy Choices
+Terms of Service
+Accessibility
+Corporate Policies
+Product Security
+Contact
+Copyright © 2026 NVIDIA Corporation

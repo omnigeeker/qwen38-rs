@@ -1,0 +1,412 @@
+专为先进 AI 推理而构建的数据中心 | NVIDIA
+NVIDIA Home
+NVIDIA Home
+Menu
+Menu icon
+Menu
+Menu icon
+Close
+Close icon
+Close
+Close icon
+Close
+Close icon
+Caret down icon
+Accordion is closed, click to open.
+Caret down icon
+Accordion is closed, click to open.
+Caret up icon
+Accordion is open, click to close.
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Shopping Cart
+Click to see cart items
+Search icon
+Click to search
+Visit your regional NVIDIA website for local content, pricing, and where to buy partners specific to your country.
+Argentina
+Australia
+België (Belgium)
+Belgique (Belgium)
+Brasil (Brazil)
+Canada
+Česká Republika (Czech Republic)
+Chile
+Colombia
+Danmark (Denmark)
+Deutschland (Germany)
+España (Spain)
+France
+India
+Italia (Italy)
+México (Mexico)
+Middle East
+Nederland (Netherlands)
+Norge (Norway)
+Österreich (Austria)
+Peru
+Polska (Poland)
+Rest of Europe
+România (Romania)
+Singapore
+Suomi (Finland)
+Sverige (Sweden)
+Türkiye (Turkey)
+United Kingdom
+United States
+대한민국 (South Korea)
+中国大陆 (Mainland China)
+台灣 (Taiwan)
+日本 (Japan)
+Continue
+Skip to main content
+NVIDIA 引领人工智能计算
+数据中心和云计算
+解决方案
+解决方案
+加速计算
+借助数据中心解决方案加速企业 IT 和 AI 工作负载
+面向企业的 AI 数据平台
+利用全栈数据平台统一并加速企业 AI 工作负载
+AI 工厂
+借助全栈工厂解决方案加速和部署大规模 AI
+云计算
+借助可扩展的加速云解决方案，释放企业 AI 和 HPC 潜力
+边缘计算
+利用可扩展的边缘计算，加速 AI、机器人和物联网
+高性能计算
+通过高能效的高性能计算推进发现
+MLOps
+通过企业 MLOps 工具、自动化和软件扩展 AI 解决方案
+网络
+面向高性能、可扩展且安全的 AI 数据中心网络
+产品
+产品
+概览
+通过先进的数据中心平台加速 AI、机器学习和 HPC
+CPU
+用于将数据转化为智能的数据中心架构
+DSX 平台
+构建以每兆瓦 Token 产出成本最低为目标优化的 AI 工厂
+软件
+软件
+AI Enterprise 套件
+用于数据中心部署的企业级 AI 软件套件
+Base Command Manager
+用于管理和监控数据中心 AI 工作负载的集中式平台
+CUDA-X
+面向 AI、HPC 和数据处理的 GPU 加速库和工具
+虚拟化
+用于加速和管理虚拟化环境的 GPU 虚拟化软件
+加速应用目录
+浏览 DPU 和 GPU 加速的应用、工具和服务
+Mission Control
+为从开发者工作负载到基础设施的 AI 工厂运营提供支持
+NVIDIA Run:ai
+AI 工作负载和 GPU 编排
+架构
+架构
+Vera Rubin 平台
+用于可扩展 AI 推理的基础设施
+Blackwell 架构
+为 AI 推理时代的 AI 工厂提供支持的 GPU 架构
+Hopper 架构
+为每个数据中心增强 AI 和 HPC 工作负载
+Ada Lovelace 架构
+面向高级设计和可视化的实时光线追踪和 AI
+MGX 参考架构
+用于构建加速数据中心服务器的模块化参考架构
+技术
+技术
+NVLink 和 NVLink 交换机
+适用于多 GPU 通信和大型 AI 模型的高速互连
+NVLink Fusion
+具备业界验证的 AI 扩展性能的半定制 AI 基础设施
+Tensor Core
+用于加速 AI 和 HPC 数学工作负载的专用 GPU 核心
+多实例 GPU
+安全地在多个工作负载之间共享一个 GPU 的 GPU 分区技术
+机密计算
+保护使用中的数据和 AI 模型
+资源
+资源
+资源中心
+构建和优化 AI 就绪的数据中心和工厂的资源
+数据中心 GPU 系列产品
+AI 工作负载的数据中心 GPU 和网络选择指南
+数据中心 GPU 资源中心
+NVIDIA 数据中心 GPU 产品的文档和指南
+MLPerf 基准测试
+NVIDIA AI 平台的 MLPerf 训练和推理结果
+NVIDIA 认证系统
+加速合作伙伴系统，提供经过认证的性能和规模
+认证系统目录
+使用 NVIDIA 数据中心 GPU 构建的认证服务器目录
+登录
+LogOut
+Skip to main content
+NVIDIA 引领人工智能计算
+0
+Login
+LogOut
+NVIDIA
+NVIDIA logo
+数据中心和云计算
+解决方案
+加速计算
+借助数据中心解决方案加速企业 IT 和 AI 工作负载
+面向企业的 AI 数据平台
+利用全栈数据平台统一并加速企业 AI 工作负载
+AI 工厂
+借助全栈工厂解决方案加速和部署大规模 AI
+云计算
+借助可扩展的加速云解决方案，释放企业 AI 和 HPC 潜力
+边缘计算
+利用可扩展的边缘计算，加速 AI、机器人和物联网
+高性能计算
+通过高能效的高性能计算推进发现
+MLOps
+通过企业 MLOps 工具、自动化和软件扩展 AI 解决方案
+网络
+面向高性能、可扩展且安全的 AI 数据中心网络
+产品
+概览
+通过先进的数据中心平台加速 AI、机器学习和 HPC
+CPU
+用于将数据转化为智能的数据中心架构
+DSX 平台
+构建以每兆瓦 Token 产出成本最低为目标优化的 AI 工厂
+软件
+AI Enterprise 套件
+用于数据中心部署的企业级 AI 软件套件
+Base Command Manager
+用于管理和监控数据中心 AI 工作负载的集中式平台
+CUDA-X
+面向 AI、HPC 和数据处理的 GPU 加速库和工具
+虚拟化
+用于加速和管理虚拟化环境的 GPU 虚拟化软件
+加速应用目录
+浏览 DPU 和 GPU 加速的应用、工具和服务
+Mission Control
+为从开发者工作负载到基础设施的 AI 工厂运营提供支持
+NVIDIA Run:ai
+AI 工作负载和 GPU 编排
+架构
+Vera Rubin 平台
+用于可扩展 AI 推理的基础设施
+Blackwell 架构
+为 AI 推理时代的 AI 工厂提供支持的 GPU 架构
+Hopper 架构
+为每个数据中心增强 AI 和 HPC 工作负载
+Ada Lovelace 架构
+面向高级设计和可视化的实时光线追踪和 AI
+MGX 参考架构
+用于构建加速数据中心服务器的模块化参考架构
+技术
+NVLink 和 NVLink 交换机
+适用于多 GPU 通信和大型 AI 模型的高速互连
+NVLink Fusion
+具备业界验证的 AI 扩展性能的半定制 AI 基础设施
+Tensor Core
+用于加速 AI 和 HPC 数学工作负载的专用 GPU 核心
+多实例 GPU
+安全地在多个工作负载之间共享一个 GPU 的 GPU 分区技术
+机密计算
+保护使用中的数据和 AI 模型
+资源
+资源中心
+构建和优化 AI 就绪的数据中心和工厂的资源
+数据中心 GPU 系列产品
+AI 工作负载的数据中心 GPU 和网络选择指南
+数据中心 GPU 资源中心
+NVIDIA 数据中心 GPU 产品的文档和指南
+MLPerf 基准测试
+NVIDIA AI 平台的 MLPerf 训练和推理结果
+NVIDIA 认证系统
+加速合作伙伴系统，提供经过认证的性能和规模
+认证系统目录
+使用 NVIDIA 数据中心 GPU 构建的认证服务器目录
+数据中心解决方案
+AI 推理时代的数据中心
+加速并部署专为高性能数据中心构建的全栈基础设施。
+购买渠道
+产品
+|
+资源
+|
+NVIDIA 数据平台
+概览
+解决方案
+工作负载
+用例
+资源
+后续步骤
+概览
+解决方案
+工作负载
+用例
+资源
+后续步骤
+概览
+解决方案
+工作负载
+用例
+资源
+后续步骤
+购买渠道
+概览
+NVIDIA 统一平台
+从 AI 到数据分析、高性能计算 (HPC)，再到渲染，数据中心是攻克世界上一些重要挑战的关键所在。端到端的
+NVIDIA 加速计算
+平台将软件与硬件无缝集成，为企业构建安全而稳健的基础设施提供了蓝图，确保企业能够利用所有现代工作负载顺利实施从开发到部署的整个过程。
+NVIDIA 推出太空计算，将 AI 送入太空轨道
+NVIDIA Vera Rubin、IGX™ Thor 和 Jetson Orin™ 计算模组专为大小、重量和功耗受限的环境而设计，可为轨道数据中心、地理空间智能和自主宇宙飞船提供数据中心级性能和边缘 AI 推理。AetherFlux、Kepler Communications、Planet Labs、Sophia Space 和 Starcloud 等公司正在使用 NVIDIA 加速计算平台为跨轨道和地面环境的新一代太空任务提供支持。
+阅读公告
+NVIDIA 数据中心，精心编排，至臻至美
+了解由 NVIDIA 加速计算平台精心编排并在 NVIDIA Omniverse™ 中栩栩如生地呈现的现代数据中心。
+观看视频
+适用于各种数据中心的解决方案
+全栈数据中心基础设施
+借助基于全栈式下一代 GPU、CPU 和网络架构构建的 NVIDIA 加速计算平台，重塑 AI 时代的数据中心。这些架构涵盖性能、安全、运维等多个领域的尖端技术，能够从容应对现代数据中心面临的每一项挑战。
+详细了解 NVIDIA 加速计算解决方案
+NVIDIA Blackwell GPU 架构
+NVIDIA Blackwell 架构以无与伦比的性能、效率和规模，为生成式人工智能和加速计算开启了新篇章。NVIDIA Blackwell 具备六项变革性技术，将有助于实现数据处理、电子设计自动化、计算机辅助工程和量子计算方面的突破。
+了解详情
+NVIDIA Grace CPU 架构
+NVIDIA Grace™ CPU 架构专为新兴数据中心——处理和提炼海量数据以生成智能的
+AI 工厂
+而设计。NVIDIA Grace CPU 是一款高性能、低能耗的处理器，拥有快速的内存带宽和 NVIDIA NVLink™-C2C 技术，可为加速应用提供 CPU-GPU 统一内存模型。
+了解详情
+NVIDIA BlueField DPU 架构
+NVIDIA® BlueField® 网络平台为数据中心和超级计算基础设施带来了前所未有的创新。通过卸载、加速和隔离一系列先进的网络、存储和安全服务，BlueField DPU 和 SuperNIC 为任何工作负载、任何环境 (从云端到数据中心再到边缘) 提供了安全且加速的基础设施。
+了解详情
+NVIDIA Spectrum-X 网络架构
+NVIDIA Spectrum-X™ 网络平台将 Spectrum-4 以太网交换机和 Spectrum-X SuperNIC™ 相结合，为 AI 训练和推理以及各种行业应用提供无与伦比的性能。Spectrum-X 的 AI 网络性能比传统以太网快 1.6 倍，可无缝调配和管理功能强大的 AI 应用。
+了解详情
+工作负载
+加速企业的数据中心工作负载
+数据科学
+加速工作流程，实现卓越性能
+企业每天都会收集海量数据。对于那些不使用 GPU 加速分析的企业来说，这些海量信息无疑是错失的良机。
+数据越多，可挖掘的信息就越多。借助 NVIDIA 数据中心平台，企业可以比以往更快地获得可行见解。
+了解详情
+AI 推理
+更快、更准确的全栈 AI 推理
+全球规模最大的
+AI 推理
+平台可实现突破性的 AI 性能，其中
+开源混合专家 (MoE) 模型
+的性能提升最高可达 10 倍。借助该平台，企业可以在应用程序、AI 框架、模型架构和平台之间标准化模型部署。
+了解详情
+生成式 AI
+定制和部署预训练基础模型
+生成式 AI 功能功能席卷全球，能够总结文本、创作图像、编写代码等。借助预训练基础模型，企业可以构建专注于自身领域、熟悉自身业务且具备完成高价值任务所需技能的定制 AI 应用。这些模型可以跨业务功能扩展，并随着业务的发展和演变不断学习。
+了解详情
+高性能计算
+推动数据中心的科学发展
+HPC 是推动数据中心科学发展的重要工具之一。NVIDIA GPU 是现代 HPC 数据中心的引擎，可实现数千款跨领域应用程序的优化加速。NVIDIA 数据中心平台通过更少的服务器提供突破性性能，从而加快洞察速度并显著降低成本，为科学发现铺平了道路。
+了解详情
+渲染
+以无与伦比的速度实现逼真的设计和仿真
+各行各业的设计师和艺术家需要更快地创作出更优质的内容，但基于 CPU 的低效渲染解决方案限制了工作效率。NVIDIA RTX™ 服务器打破了昂贵 CPU 渲染方案的局限性。作为一种高度灵活的参考设计，可通过 NVIDIA 软件和领先的第三方软件进行配置，能加速处理最复杂的渲染工作负载。
+了解详情
+虚拟化
+简化虚拟化数据中心的管理
+NVIDIA 虚拟 GPU (vGPU) 软件解决方案支持现代虚拟化数据中心，提供可扩展的图形密集型虚拟桌面和工作站。这些解决方案能够在虚拟机上运行计算密集型服务器工作负载，包括 AI、深度学习、数据科学和高性能计算，同时还能提升管理性和安全性。
+了解详情
+用例
+从开发到部署
+从云端……
+借助基于云的 GPU 解决方案，企业可以随时随地访问高密度计算资源和强大的虚拟工作站，而无需构建物理数据中心。
+了解详情
+到办公室……
+从虚拟桌面、应用程序和工作站到云端的优化容器，数据科学家、研究人员和开发者可在桌面端为 GPU 加速的 AI 和数据分析提供支持。
+了解详情
+到数据中心……
+通过 GPU 加速的数据中心在使用更少的服务器的同时，即可为任意规模的计算和图形任务提供突破性性能，更快地获得见解并显著降低成本。敏感数据可以在保持操作安全性的同时进行存储、处理和分析。
+了解详情
+到边缘
+边缘 AI 需要一个可扩展、加速的平台，该平台能够实时驱动决策，助力零售、制造业、医院和智慧城市等行业能够将自动化智能应用落地。
+了解详情
+资源
+数据中心的最新动态
+最新动态
+用例
+客户案例
+会议
+查看更多新闻
+查看更多用例
+查看更多客户案例
+查看更多会议
+后续步骤
+准备好开始了吗？
+您现可通过 NVIDIA 合作伙伴网络 (NPN) 优选合作伙伴购买 NVIDIA 数据中心解决方案。通过我们的合作伙伴，探索灵活、实惠的方案，获取最新的 NVIDIA 数据中心技术。
+购买渠道
+获取最新的数据中心新闻
+注册以接收 NVIDIA 发布的企业新闻、公告及其他信息。
+随时了解最新情况
+产品
+数据中心 GPU
+NVIDIA HGX 平台
+网络产品
+虚拟 GPU
+技术
+NVIDIA Blackwell 架构
+NVIDIA Hopper 架构
+MGX
+机密计算
+多实例 GPU
+NVLink-C2C
+NVLink/NVSwitch
+Tensor Core
+资源
+加速应用目录
+Blackwell 资源中心
+数据中心 GPU
+数据中心 GPU 系列显卡
+数据中心 GPU 资源中心
+数据中心产品性能
+NVIDIA 深度学习培训中心 (DLI)
+能效计算器
+GPU 云计算
+MLPerf 基准测试
+NGC 目录
+NVIDIA 认证系统
+NVIDIA 数据中心博客
+NVIDIA 数据中心技术博客
+认证系统目录
+购买渠道
+公司信息
+关于 NVIDIA
+公司概览
+投资者
+Venture Capital (NVentures)
+NVIDIA 基金会
+NVIDIA 研究
+企业可持续发展
+技术
+职业生涯
+关注数据中心
+扫描二维码关注
+NVIDIA 英伟达微信公众号
+NVIDIA
+CHN - 中国
+隐私声明
+您的隐私选择
+服务条款
+无障碍访问
+公司政策
+产品安全性
+联系我们
+英文网站
+Copyright © 2026 NVIDIA Corporation
