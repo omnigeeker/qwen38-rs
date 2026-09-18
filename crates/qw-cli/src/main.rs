@@ -43,6 +43,11 @@ enum Cmd {
         #[arg(long, default_value_t = 8192)]
         max_ctx: usize,
     },
+    /// Verify the row-amortising GEMM against the CPU reference.
+    GemmCheck {
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
+    },
     /// Benchmark decode throughput (tok/s).
     Bench {
         #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
@@ -154,6 +159,7 @@ fn main() -> Result<()> {
             model_id,
             max_ctx,
         } => cmd_serve(model_dir, port, model_id, max_ctx),
+        Cmd::GemmCheck { model_dir } => bench::gemm_check(&model_dir),
         Cmd::Bench {
             model_dir,
             iters,

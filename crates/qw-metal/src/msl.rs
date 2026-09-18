@@ -664,6 +664,115 @@ Q4_GEMV_KS_U4HX(q4_gemv_k4_u4hx, 4)
 // a speedup that is only the kernel doing less work than the timing assumes, which
 // is a trap worth naming.  This instantiation makes the k=8 question answerable.
 Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
+
+// ---------------------------------------------------------------------------
+// Row-amortising GEMM for prefill.
+//
+// The GEMV family above is weight-stationary over at most four tokens: each
+// thread keeps one accumulator per token, and registers run out at k=8 (measured
+// 17-27 per cent slower than k=4, with effective bandwidth collapsing from 417 to
+// 154 GB/s).  A prefill of n tokens therefore sweeps the whole 14.4 GB of weights
+// n/4 times - 226 sweeps and 3.25 TB for a 905-token prompt.
+//
+// Tensor cores break that wall through register economy: an 8x8 simdgroup_matrix
+// fragment is 64 halfs spread over 32 lanes, one register each, rather than one
+// accumulator per output element per thread.  The weights are 4-bit affine, so
+// they are dequantised into threadgroup memory once per tile and then reused by
+// every token in the tile.
+//
+// Geometry: BM=32 output rows, BN=32 tokens, BK=64 K values per step, 128 threads
+// in 4 simdgroups, each simdgroup owning a 16x16 quarter of the tile as four 8x8
+// fragments.  Shared memory: 32*64*2 = 4 KB of dequantised weights, 64*32*2 = 4 KB
+// of activations, 32*32*4 = 4 KB of output staging.
+// ---------------------------------------------------------------------------
+#define Q4_GEMM_BM 32
+#define Q4_GEMM_BN 32
+#define Q4_GEMM_BK 64
+
+kernel void q4_gemm_tile(
+    device const uint*   w      [[buffer(0)]],
+    device const ushort* scales [[buffer(1)]],
+    device const ushort* biases [[buffer(2)]],
+    device const half*   x      [[buffer(3)]],   // [k][K]
+    device half*         y      [[buffer(4)]],   // [k][out_f]
+    constant int&        K      [[buffer(5)]],
+    constant int&        k      [[buffer(6)]],
+    constant int&        out_f  [[buffer(7)]],
+    uint2 tg   [[threadgroup_position_in_grid]],
+    uint  tid  [[thread_index_in_threadgroup]],
+    uint  sg   [[simdgroup_index_in_threadgroup]])
+{
+    const int row0 = (int)tg.x * Q4_GEMM_BM;
+    const int tok0 = (int)tg.y * Q4_GEMM_BN;
+    const int n_groups = K / GROUP_SIZE;
+
+    threadgroup half wsh[Q4_GEMM_BM * Q4_GEMM_BK];
+    threadgroup half xsh[Q4_GEMM_BK * Q4_GEMM_BN];
+    threadgroup float osh[Q4_GEMM_BM * Q4_GEMM_BN];
+
+    const int r_off = (int)(sg >> 1) * 16;
+    const int t_off = (int)(sg & 1u) * 16;
+
+    simdgroup_matrix<float, 8, 8> a00 = simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_matrix<float, 8, 8> a01 = simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_matrix<float, 8, 8> a10 = simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_matrix<float, 8, 8> a11 = simdgroup_matrix<float, 8, 8>(0.0f);
+
+    for (int k0 = 0; k0 < K; k0 += Q4_GEMM_BK) {
+        for (int idx = (int)tid; idx < Q4_GEMM_BM * Q4_GEMM_BK; idx += 128) {
+            const int r  = idx / Q4_GEMM_BK;
+            const int kk = idx - r * Q4_GEMM_BK;
+            const int g   = k0 + kk;
+            const int row = row0 + r;
+            half v = (half)0;
+            if (row < out_f && g < K) {
+                const uint word = w[(size_t)row * (size_t)(K / 8) + (size_t)(g >> 3)];
+                const int  nib  = (int)((word >> (4 * (g & 7))) & 0xFu);
+                const float s  = as_type<float>((uint)scales[(size_t)row * (size_t)n_groups + (size_t)(g / GROUP_SIZE)] << 16);
+                const float bb = as_type<float>((uint)biases[(size_t)row * (size_t)n_groups + (size_t)(g / GROUP_SIZE)] << 16);
+                v = (half)((float)nib * s + bb);
+            }
+            wsh[idx] = v;
+        }
+        for (int idx = (int)tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += 128) {
+            const int kk  = idx / Q4_GEMM_BN;
+            const int t   = idx - kk * Q4_GEMM_BN;
+            const int g   = k0 + kk;
+            const int tok = tok0 + t;
+            xsh[idx] = (g < K && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (int kk = 0; kk < Q4_GEMM_BK; kk += 8) {
+            simdgroup_matrix<half, 8, 8> w0, w1, x0, x1;
+            simdgroup_load(w0, wsh + (r_off + 0) * Q4_GEMM_BK + kk, Q4_GEMM_BK);
+            simdgroup_load(w1, wsh + (r_off + 8) * Q4_GEMM_BK + kk, Q4_GEMM_BK);
+            simdgroup_load(x0, xsh + kk * Q4_GEMM_BN + t_off,     Q4_GEMM_BN);
+            simdgroup_load(x1, xsh + kk * Q4_GEMM_BN + t_off + 8, Q4_GEMM_BN);
+            simdgroup_multiply_accumulate(a00, w0, x0, a00);
+            simdgroup_multiply_accumulate(a01, w0, x1, a01);
+            simdgroup_multiply_accumulate(a10, w1, x0, a10);
+            simdgroup_multiply_accumulate(a11, w1, x1, a11);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    simdgroup_store(a00, osh + (r_off + 0) * Q4_GEMM_BN + t_off,     Q4_GEMM_BN);
+    simdgroup_store(a01, osh + (r_off + 0) * Q4_GEMM_BN + t_off + 8, Q4_GEMM_BN);
+    simdgroup_store(a10, osh + (r_off + 8) * Q4_GEMM_BN + t_off,     Q4_GEMM_BN);
+    simdgroup_store(a11, osh + (r_off + 8) * Q4_GEMM_BN + t_off + 8, Q4_GEMM_BN);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (int idx = (int)tid; idx < Q4_GEMM_BM * Q4_GEMM_BN; idx += 128) {
+        const int r   = idx / Q4_GEMM_BN;
+        const int t   = idx - r * Q4_GEMM_BN;
+        const int row = row0 + r;
+        const int tok = tok0 + t;
+        if (row < out_f && tok < k) {
+            y[(size_t)tok * (size_t)out_f + (size_t)row] = (half)osh[idx];
+        }
+    }
+}
+
 // 16 independent activations per weight read: the whole point of batch-16
 // serving.  Each threadgroup still computes ONE output row, but consumes 16
 // input rows, so the 14.4 GB weight stream is amortised over 16 tokens instead
@@ -941,6 +1050,7 @@ pub const K_Q4_GEMV_K4_U4HH: &str = "q4_gemv_k4_u4hh";
 pub const K_Q4_GEMV_K3_U4HX: &str = "q4_gemv_k3_u4hx";
 pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
 pub const K_Q4_GEMV_K8_U4HX: &str = "q4_gemv_k8_u4hx";
+pub const K_Q4_GEMM_TILE: &str = "q4_gemm_tile";
 pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";
 pub const K_Q4_GEMV_B16: &str = "q4_gemv_b16";
 pub const K_Q4_GEMV_K3_U4H4: &str = "q4_gemv_k3_u4h4";

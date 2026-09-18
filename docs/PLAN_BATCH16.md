@@ -2615,3 +2615,54 @@ skip_silu 18.34 | skip_conv 21.79   ← 比 base 还慢
 （每 token 约 304 个），而 llama.cpp 用少量大融合核做同样的工作。**
 
 **⇒ 结论：填平冷 prefill 差距需要 GEMM **加上** 内核融合两项大改，不是单一优化。**
+
+
+---
+
+## 49. simdgroup GEMM 写出并验证正确——但性能尚不达标，未接入（第 43 轮）
+
+用户选择继续完整重写（GEMM + 内核融合）。本轮交付第一个里程碑：**一个正确性已被验证的
+按行摊销 GEMM 内核**。
+
+### 内核：`q4_gemm_tile`
+
+几何：`BM=32` 输出行 × `BN=32` token × `BK=64` 个 K 值/步，128 线程 = 4 个 simdgroup，
+每个 simdgroup 负责 16×16 的四分之一（四个 8×8 片段）。4-bit affine 权重**每个 tile 只反量化
+一次进 threadgroup memory**，然后被该 tile 内全部 32 个 token 复用。
+
+### 验证：`qwen38 gemm-check`
+
+与 `cpu_reference`（CPU 反量化并乘）逐元素比对，**故意覆盖难缠的形状**——`out_f` 不是 32 的
+倍数（GDN 的 a/b 投影是 48 行）、token 数不是 32 的倍数（用 40）：
+
+```
+PASS linear_attn.out_proj  out_f   5120 in_f 6144  rel 2.715e-4
+PASS mlp.gate_proj         out_f  17408 in_f 5120  rel 3.347e-4
+PASS linear_attn.in_proj_a out_f     48 in_f 5120  rel 2.856e-4
+PASS lm_head               out_f 248320 in_f 5120  rel 2.818e-4
+worst relative error 3.347e-4 -> PASSED
+```
+
+### 踩到的坑：`dispatch_threads` 的 grid 单位是线程
+
+第一次跑出来输出**全零**（rel 恰好 1.0）。原因：`dispatch_threads` 的 grid 是**线程数**而非
+线程组数，我传了 tile 数 `(160, 2, 1)`，实际只启动了 2 个线程组，绝大多数 tile 从未计算。
+现有 `encode_k` 用 `(out_f * 32, 1, 1)` + tg 32 就是这个道理。**这个坑值得记住。**
+
+### 性能：目前比 GEMV 慢，所以没有接入
+
+| 内核 | ms/token | 有效带宽 |
+|---|---|---|
+| GEMV k=4（现状） | **8.709 / 9.088 / 9.098** | 396–414 GB/s |
+| GEMM k=32 | 13.009 / 13.052 | **34.5 GB/s** |
+| GEMM k=64 | 14.932 / 10.791 | 15–21 GB/s |
+
+**⇒ GEMM 读 14.4 GB 花了约 416 ms = 34.6 GB/s，比内存带宽慢 12 倍 ⇒ compute/同步受限。**
+
+调参诊断：
+- `BK=128`：**更差**（19.6 ms/token）⇒ 屏障数不是主因
+- `BK=256`：**超出 32 KB threadgroup memory 上限**（36864 > 32768）⇒ 这是硬约束
+
+**⇒ 未接入：`encode_rows` 对 rows>4 仍走 GEMV 的 b16 路径，绝不让未达标的内核上线。**
+下一步方向：提高 occupancy（当前 BM=32/BN=32 的 shared 占用偏大）、加大 BN 以提高每个
+权重的复用倍数、或改双缓冲隐藏反量化开销。

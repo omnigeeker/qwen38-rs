@@ -373,6 +373,11 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                      doing less work than the timing assumes.  Use --rows 6 for k=8."
                 );
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K4_U4HX)?
+            } else if rows == 8 {
+                // The row-amortising GEMM.  Unlike the GEMV variants its token count
+                // is a runtime argument, so any `--tokens` is meaningful - this is the
+                // measurement that says whether amortising the weight read pays.
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMM_TILE)?
             } else {
                 QLinear::kernel_k(&mut batch)?
             };
@@ -385,6 +390,23 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 let y = &ys.iter().find(|(n, _)| *n == l.out_f).unwrap().1;
                 if k == 1 {
                     l.encode(&mut batch, &kernel, x, y);
+                } else if rows == 8 {
+                    let bm = 32usize;
+                    let bn = 32usize;
+                    let d = qw_metal::Dispatch::new(
+                        &kernel,
+                        (((l.out_f + bm - 1) / bm) * 128, (k + bn - 1) / bn, 1),
+                        (128, 1, 1),
+                    )
+                    .buf_offset(0, l.weight.buf, l.weight.offset)
+                    .buf_offset(1, l.scales.buf, l.scales.offset)
+                    .buf_offset(2, l.biases.buf, l.biases.offset)
+                    .buf(3, x)
+                    .buf(4, y)
+                    .scalar(5, l.in_f as i32)
+                    .scalar(6, k as i32)
+                    .scalar(7, l.out_f as i32);
+                    batch.encode(d);
                 } else if rows >= 1 {
                     // rows selects the *kernel*; the grid blocking is 1 except for the
                     // row-blocked variants, which need out_f/R threadgroups.
@@ -417,5 +439,131 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         "{{\"tok_per_s\": {:.2}, \"ms_per_token\": {:.3}, \"effective_gbps\": {:.1}, \"weight_bytes\": {}, \"end_to_end\": false, \"mode\": \"linear_sweep\", \"k\": {}}}",
         tok_s, best_ms / k as f64, gbps, total_bytes, k
     );
+    Ok(())
+}
+
+/// Correctness check for the row-amortising GEMM: run `q4_gemm_tile` over real
+/// weights and compare against the CPU dequantise-and-multiply reference.
+///
+/// The kernel must be verified before anything routes prefill through it, so this
+/// deliberately exercises the awkward shapes: `out_f` values that are not a
+/// multiple of the 32-row tile (the GDN a/b projections are 48 rows) and a token
+/// count that is not a multiple of the 32-token tile.
+pub fn gemm_check(model_dir: &Path) -> Result<()> {
+    let mut dev = GpuDevice::new()?;
+    let store = WeightStore::load_dir(&dev, model_dir)?;
+
+    let mut names: Vec<String> = store
+        .names()
+        .filter(|n| n.ends_with(".weight"))
+        .filter(|n| !n.contains("embed_tokens"))
+        .filter(|n| store.has(&n.replace(".weight", ".scales")))
+        .cloned()
+        .collect();
+    names.sort();
+
+    // A spread of shapes: the big ones, and small/odd out_f that hit the tile tails.
+    let mut picked: Vec<String> = Vec::new();
+    for want in [5120usize, 17408, 18432, 48, 96] {
+        if let Some(n) = names
+            .iter()
+            .find(|n| QLinear::from_store(&store, n).map(|l| l.out_f == want).unwrap_or(false))
+        {
+            picked.push(n.clone());
+        }
+    }
+    for n in names.iter().take(2) {
+        if !picked.contains(n) {
+            picked.push(n.clone());
+        }
+    }
+
+    let tokens = 40usize; // deliberately not a multiple of the 32-token tile
+    println!("gemm-check: {} linears, {tokens} tokens per case", picked.len());
+
+    let mut worst = 0.0f64;
+    let mut worst_at = String::new();
+    let mut all_ok = true;
+
+    for name in &picked {
+        let l = QLinear::from_store(&store, name)?;
+        if l.in_f % 64 != 0 {
+            println!("  SKIP {name}: in_f {} is not a multiple of GROUP_SIZE", l.in_f);
+            continue;
+        }
+
+        // Deterministic pseudo-random activations.
+        let mut state = 0x243f_6a88_85a3_08d3u64;
+        let mut xv = vec![f16::from_f32(0.0); tokens * l.in_f];
+        for v in xv.iter_mut() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let u = ((state >> 33) as f32) / ((1u64 << 31) as f32);
+            *v = f16::from_f32(u * 2.0 - 1.0);
+        }
+        let xbuf = dev.buffer_from_bytes(&xv);
+        let ybuf = dev.buffer_from_bytes(&vec![f16::from_f32(0.0); tokens * l.out_f]);
+
+        let mut batch = qw_metal::CommandBatch::new(&mut dev);
+        let kernel = batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMM_TILE)?;
+        let bm = 32usize;
+        let bn = 32usize;
+        // `dispatch_threads` takes the grid in THREADS, not threadgroups, so the
+        // x extent has to be multiplied by the threadgroup size.  Passing the tile
+        // count directly launches a couple of threadgroups and silently leaves the
+        // rest of the output untouched.
+        let d = qw_metal::Dispatch::new(
+            &kernel,
+            (((l.out_f + bm - 1) / bm) * 128, (tokens + bn - 1) / bn, 1),
+            (128, 1, 1),
+        )
+        .buf_offset(0, l.weight.buf, l.weight.offset)
+        .buf_offset(1, l.scales.buf, l.scales.offset)
+        .buf_offset(2, l.biases.buf, l.biases.offset)
+        .buf(3, &xbuf)
+        .buf(4, &ybuf)
+        .scalar(5, l.in_f as i32)
+        .scalar(6, tokens as i32)
+        .scalar(7, l.out_f as i32);
+        batch.encode(d);
+        batch.finish(true);
+
+        let got: Vec<f16> = ybuf.to_vec(0, tokens * l.out_f);
+
+        let mut max_abs = 0.0f64;
+        let mut max_ref = 0.0f64;
+        for t in 0..tokens {
+            let xr: Vec<f16> = xv[t * l.in_f..(t + 1) * l.in_f].to_vec();
+            let want = l.cpu_reference(&xr)?;
+            for r in 0..l.out_f {
+                let a = got[t * l.out_f + r].to_f32() as f64;
+                let b = want[r] as f64;
+                max_abs = max_abs.max((a - b).abs());
+                max_ref = max_ref.max(b.abs());
+            }
+        }
+        let rel = if max_ref > 0.0 { max_abs / max_ref } else { max_abs };
+        let ok = rel < 2e-3;
+        all_ok &= ok;
+        if rel > worst {
+            worst = rel;
+            worst_at = format!("{name} (out_f {}, in_f {})", l.out_f, l.in_f);
+        }
+        println!(
+            "  {} {:<58} out_f {:>6} in_f {:>6}  max_abs {:.3e}  rel {:.3e}",
+            if ok { "PASS" } else { "FAIL" },
+            name,
+            l.out_f,
+            l.in_f,
+            max_abs,
+            rel
+        );
+    }
+
+    println!(
+        "gemm-check: worst relative error {:.3e} at {worst_at} -> {}",
+        worst,
+        if all_ok { "PASSED" } else { "FAILED" }
+    );
+    anyhow::ensure!(all_ok, "the GEMM kernel does not match the CPU reference");
     Ok(())
 }
