@@ -1,0 +1,851 @@
+An AI Factory for AI Reasoning NVIDIA DGX B300
+NVIDIA Home
+NVIDIA Home
+Menu
+Menu icon
+Menu
+Menu icon
+Close
+Close icon
+Close
+Close icon
+Close
+Close icon
+Caret down icon
+Accordion is closed, click to open.
+Caret down icon
+Accordion is closed, click to open.
+Caret up icon
+Accordion is open, click to close.
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Shopping Cart
+Click to see cart items
+Search icon
+Click to search
+Visit your regional NVIDIA website for local content, pricing, and where to buy partners specific to your country.
+Argentina
+Australia
+België (Belgium)
+Belgique (Belgium)
+Brasil (Brazil)
+Canada
+Česká Republika (Czech Republic)
+Chile
+Colombia
+Danmark (Denmark)
+Deutschland (Germany)
+España (Spain)
+France
+India
+Italia (Italy)
+México (Mexico)
+Middle East
+Nederland (Netherlands)
+Norge (Norway)
+Österreich (Austria)
+Peru
+Polska (Poland)
+Rest of Europe
+România (Romania)
+Singapore
+Suomi (Finland)
+Sverige (Sweden)
+Türkiye (Turkey)
+United Kingdom
+United States
+대한민국 (South Korea)
+中国大陆 (Mainland China)
+台灣 (Taiwan)
+日本 (Japan)
+Continue
+Skip to main content
+Artificial Intelligence Computing Leadership from NVIDIA
+Cloud and Data Center
+Solutions
+Solutions
+Accelerated Computing
+Accelerate enterprise IT and AI workloads with data center solutions
+AI Data Platform for Enterprise
+Unify and accelerate enterprise AI workloads with a full-stack data platform
+AI Factory
+Accelerate and deploy large-scale AI with full-stack factory solutions
+Cloud Computing
+Unleash enterprise AI and HPC with scalable accelerated cloud solutions
+Edge Computing
+Accelerate AI, robotics, and IoT with scalable edge computing
+High Performance Computing
+Advance discovery with energy‑efficient high‑performance computing
+MLOps
+Scale AI solutions with enterprise MLOps tools, automation, and software
+Networking
+Networking for high-performance, scalable, and secure AI data centers
+DGX Platform
+Build next-generation AI factories for enterprises
+DGX Cloud
+NVIDIA’s AI factory in the cloud
+Products
+Products
+Overview
+Accelerate AI, machine learning, and HPC with advanced data center platforms
+Vera Rubin NVL72
+Rack-Scale Agentic AI Supercomputer
+LPX
+Fast inference with full intelligence at scale
+DGX SuperPOD
+Full-stack blueprint for gigascale AI infrastructure
+GB300 NVL72
+GB300 NVL72 rack-scale system built for the age of AI reasoning
+HGX
+HGX platform specs for multi‑GPU AI, HPC, and simulation workloads
+CPU
+Architecture for data centers that transform data into intelligence
+GB200 NVL72
+GB200 NVL72 for scalable LLM inference and advanced AI data center needs
+RTX PRO Server
+Universal data center platform for enterprise AI and industrial AI
+RTX PRO 6000 Blackwell
+RTX PRO 6000 specs for professional AI, graphics, and visual computing tasks
+DGX BasePOD
+Reference architecture for building and scaling AI infrastructure
+DSX Platform
+Build AI factories optimized for lowest cost tokens per megawatt
+Software
+Software
+AI Enterprise Suite
+Enterprise AI software suite for data center deployments
+Base Command Manager
+Centralized platform to manage and monitor AI workloads in data centers
+CUDA-X
+GPU-accelerated libraries and tools for AI, HPC, and data processing
+Virtualization
+GPU virtualization software to accelerate and manage virtualized environments
+Accelerated Apps Catalog
+Browse DPU- and GPU-accelerated apps, tools, and services
+Mission Control
+Powers AI factory operations from developer workloads to infrastructure
+NVIDIA Run:ai
+AI Workload and GPU Orchestration
+Architectures
+Architectures
+Vera Rubin Platform
+Infrastructure for scalable AI reasoning
+Blackwell Architecture
+The GPU architecture powering AI factories for the age of AI reasoning
+Hopper Architecture
+Supercharging AI and HPC workloads for every data center
+Ada Lovelace Architecture
+Real-time ray tracing and AI for advanced design and visualization
+MGX Reference Architecture
+Modular reference architecture for building accelerated data center servers
+Technologies
+Technologies
+NVLink and NVLink Switch
+High-speed interconnect for multi-GPU communication and large AI models
+NVLink Fusion
+Semi-custom AI infrastructure with industry-proven AI scale-up performance
+Tensor Cores
+Specialized GPU cores that speed up AI and HPC math workloads
+Multi-Instance GPUs
+GPU partitioning to securely share one GPU across workloads
+Confidential Computing
+Secure data and AI models in use
+Resources
+Resources
+Resource Hub
+Resources to build and optimize AI-ready data centers and factories
+Data Center GPU Line Card
+Guide to selecting data center GPUs and networking for AI workloads
+Data Center GPUs Resource Center
+Documentation and guides for NVIDIA data center GPU products
+MLPerf Benchmarks
+MLPerf training and inference results for the NVIDIA AI platform
+NVIDIA-Certified Systems
+Accelerated partner systems delivering certified performance and scale
+Qualified System Catalog
+Catalog of qualified servers built with NVIDIA data center GPUs
+US
+Sign In
+NVIDIA Account
+Logout
+Log In
+LogOut
+Skip to main content
+Artificial Intelligence Computing Leadership from NVIDIA
+US
+Sign In
+NVIDIA Account
+Logout
+Login
+LogOut
+NVIDIA
+NVIDIA logo
+Cloud and Data Center
+Solutions
+Accelerated Computing
+Accelerate enterprise IT and AI workloads with data center solutions
+AI Data Platform for Enterprise
+Unify and accelerate enterprise AI workloads with a full-stack data platform
+AI Factory
+Accelerate and deploy large-scale AI with full-stack factory solutions
+Cloud Computing
+Unleash enterprise AI and HPC with scalable accelerated cloud solutions
+Edge Computing
+Accelerate AI, robotics, and IoT with scalable edge computing
+High Performance Computing
+Advance discovery with energy‑efficient high‑performance computing
+MLOps
+Scale AI solutions with enterprise MLOps tools, automation, and software
+Networking
+Networking for high-performance, scalable, and secure AI data centers
+DGX Platform
+Build next-generation AI factories for enterprises
+DGX Cloud
+NVIDIA’s AI factory in the cloud
+Products
+Overview
+Accelerate AI, machine learning, and HPC with advanced data center platforms
+Vera Rubin NVL72
+Rack-Scale Agentic AI Supercomputer
+LPX
+Fast inference with full intelligence at scale
+DGX SuperPOD
+Full-stack blueprint for gigascale AI infrastructure
+GB300 NVL72
+GB300 NVL72 rack-scale system built for the age of AI reasoning
+HGX
+HGX platform specs for multi‑GPU AI, HPC, and simulation workloads
+CPU
+Architecture for data centers that transform data into intelligence
+GB200 NVL72
+GB200 NVL72 for scalable LLM inference and advanced AI data center needs
+RTX PRO Server
+Universal data center platform for enterprise AI and industrial AI
+RTX PRO 6000 Blackwell
+RTX PRO 6000 specs for professional AI, graphics, and visual computing tasks
+DGX BasePOD
+Reference architecture for building and scaling AI infrastructure
+DSX Platform
+Build AI factories optimized for lowest cost tokens per megawatt
+Software
+AI Enterprise Suite
+Enterprise AI software suite for data center deployments
+Base Command Manager
+Centralized platform to manage and monitor AI workloads in data centers
+CUDA-X
+GPU-accelerated libraries and tools for AI, HPC, and data processing
+Virtualization
+GPU virtualization software to accelerate and manage virtualized environments
+Accelerated Apps Catalog
+Browse DPU- and GPU-accelerated apps, tools, and services
+Mission Control
+Powers AI factory operations from developer workloads to infrastructure
+NVIDIA Run:ai
+AI Workload and GPU Orchestration
+Architectures
+Vera Rubin Platform
+Infrastructure for scalable AI reasoning
+Blackwell Architecture
+The GPU architecture powering AI factories for the age of AI reasoning
+Hopper Architecture
+Supercharging AI and HPC workloads for every data center
+Ada Lovelace Architecture
+Real-time ray tracing and AI for advanced design and visualization
+MGX Reference Architecture
+Modular reference architecture for building accelerated data center servers
+Technologies
+NVLink and NVLink Switch
+High-speed interconnect for multi-GPU communication and large AI models
+NVLink Fusion
+Semi-custom AI infrastructure with industry-proven AI scale-up performance
+Tensor Cores
+Specialized GPU cores that speed up AI and HPC math workloads
+Multi-Instance GPUs
+GPU partitioning to securely share one GPU across workloads
+Confidential Computing
+Secure data and AI models in use
+Resources
+Resource Hub
+Resources to build and optimize AI-ready data centers and factories
+Data Center GPU Line Card
+Guide to selecting data center GPUs and networking for AI workloads
+Data Center GPUs Resource Center
+Documentation and guides for NVIDIA data center GPU products
+MLPerf Benchmarks
+MLPerf training and inference results for the NVIDIA AI platform
+NVIDIA-Certified Systems
+Accelerated partner systems delivering certified performance and scale
+Qualified System Catalog
+Catalog of qualified servers built with NVIDIA data center GPUs
+NVIDIA DGX B300
+The AI factory foundation for AI reasoning.
+Where to Buy
+Get DGX
+Talk to Us
+Datasheet  |  Specifications  |  Documentation
+Overview
+Features
+Specs
+Offers
+Get Started
+Overview
+Features
+Specs
+Offers
+Get Started
+Overview
+Features
+Specs
+Offers
+Get Started
+Talk to Us
+Overview
+Accelerating AI for Every Enterprise
+NVIDIA DGX™ B300 is the powerhouse for AI innovators, delivering the hyperscaler performance needed to build a modern AI factory. Powered by NVIDIA Blackwell Ultra GPUs, DGX B300 boosts dense FP4 performance by 1.5x and attention performance by 2x over DGX B200, all in a new form factor designed to fit seamlessly into the modern data center. Compatible with NVIDIA MGX ™ and traditional enterprise racks and with full-stack software, it simplifies and streamlines AI deployment, enabling any enterprise to run like a hyperscaler.
+Explore NVIDIA DGX B300
+Learn how NVIDIA DGX B300 streamlines AI deployment while delivering the computational power needed to handle generative AI workloads.
+Read the Datasheet
+Lilly Deploys Largest AI Factory For Drug Discovery
+Lilly’s new NVIDIA DGX SuperPOD™ with DGX B300 systems will enable breakthroughs in genomics, medicine, and molecular design.
+Read the Announcement
+Features
+An AI Factory for the Era of Reasoning
+Real-Time Powerhouse for Inference and Training
+Powered by NVIDIA Blackwell Ultra GPUs, DGX B300 provides enterprises with a single platform to accelerate large language model (LLM) inference and training. Delivering 144 petaFLOPS of inference performance, the system enables every business to operate like a hyperscaler.
+Efficient and Sustainable Innovation
+With multiple power options to choose from, NVIDIA DGX B300 is designed to be the most energy-efficient AI supercomputer, delivering unmatched energy efficiency and performance per watt.
+Revolutionary Infrastructure Standard
+NVIDIA DGX B300 has been redesigned for the modern data center, deployable in NVIDIA MGX racks for the first time. This new industry standard is powering a shift in data center engineering, making it easier than ever to obtain breakthrough performance and efficiency.
+NVIDIA DGX B300 Systems Are Shipping Now
+Explore the new features and capabilities, including AC and DC power options, that make DGX B300 easy to integrate into any modern data center, with greater deployment flexibility than ever before.
+Read Technical Brief
+Specifications
+NVIDIA DGX B300 Specifications
+GPUs |
+8x NVIDIA Blackwell Ultra SXM |
+CPU |
+Intel® Xeon® 6776P Processors |
+Total GPU Memory |
+2.1 TB |
+Performance |
+FP4 Tensor Core: 144 PFLOPS | 108 PFLOPS*
+FP8 Tensor Core: 72 PFLOPS** |
+NVIDIA NVLink™ Switch System |
+2x |
+NVIDIA NVLink Bandwidth |
+14.4 TB/s aggregate bandwidth |
+Networking |
+8x OSFP ports serving 8x single-port NVIDIA ConnectX-8 VPI
+Up to 800 Gb/s NVIDIA InfiniBand/Ethernet
+2x dual-port QSFP112 NVIDIA BlueField-3 DPU
+Up to 400 Gb/s NVIDIA InfiniBand/Ethernet
+Management Network |
+1GbE onboard NIC with RJ45
+1GbE RJ45 Host baseboard management controller (BMC) |
+Storage |
+OS: 2x 1.9 TB NVMe M.2
+Internal storage: 8x 3.84 TB NVMe E1.S |
+Power Consumption |
+~14 kW |
+Software |
+NVIDIA AI Enterprise—Optimized AI software
+NVIDIA Mission Control—AI data center operations and orchestration with NVIDIA Run:ai technology
+NVIDIA DGX OS—Operating system
+Supports Red Hat Enterprise Linux/Rocky/Ubuntu |
+Rack Units |
+10U |
+Support |
+Three-year business-standard hardware and software support |
+*Specification shown in sparse | dense
+**Specification in sparse. Dense is ½ sparse spec shown.
+Offers
+Delivering Supercomputing to Every Enterprise
+NVIDIA DGX SuperPOD
+Leadership-class AI infrastructure purpose-built for the unique demands of AI.
+NVIDIA DGX SuperPOD is a turnkey AI data center infrastructure solution that delivers uncompromising performance for every user and workload. Configurable with any NVIDIA DGX system, DGX SuperPOD provides leadership-class accelerated infrastructure with scalable performance for the most demanding AI training and inference workloads, allowing IT to deliver performance without compromise.
+Learn More About NVIDIA DGX SuperPOD
+NVIDIA DGX BasePOD
+The industry standard for AI at scale.
+AI is powering mission-critical use cases in every industry—from healthcare to manufacturing to financial services. NVIDIA DGX BasePOD™ provides the reference architecture on which businesses can build and scale AI infrastructure.
+Learn More About NVIDIA DGX BasePOD
+NVIDIA Mission Control
+Integrated orchestration software for AI factories at scale.
+NVIDIA Mission Control streamlines AI factory operations, delivering instant agility, infrastructure resiliency, and hyperscale efficiency, and accelerates AI experimentation with full-stack software intelligence.
+Run Models, Automate the Essentials
+NVIDIA DGX Enterprise Support
+Maximize the value of your NVIDIA DGX B300.
+NVIDIA Enterprise Services provides support, education, and infrastructure specialists for your NVIDIA DGX infrastructure. With NVIDIA experts available at every step of your AI journey, Enterprise Services can help you get your projects up and running quickly and successfully.
+Learn More About Enterprise Services
+DLI for NVIDIA DGX
+Exclusive training offers for NVIDIA DGX customers.
+NVIDIA DGX customers can learn how to achieve cutting-edge breakthroughs with AI faster with exclusive technical training offered by the AI experts at NVIDIA’s Deep Learning Institute (DLI) .
+Check Out DLI for NVIDIA DGX Training
+NVIDIA Blackwell Ultra FAQs
+What is NVIDIA Blackwell Ultra, and how much does inference cost?
+NVIDIA Blackwell Ultra is the GPU architecture for the most powerful systems for AI inference available today, including NVIDIA DGX B300 and DGX GB300. Blackwell Ultra systems deliver up to 50x higher throughput per megawatt and up to 35x lower cost per token than NVIDIA Hopper™ for low-latency agentic workloads, through hardware–software codesign, according to SemiAnalysis InferenceX benchmarks (Q1 2026).
+Can NVIDIA Blackwell Ultra-powered systems run DeepSeek-R1 and other reasoning models?
+Yes. The large memory spaces available with Blackwell Ultra-powered systems enable DeepSeek-R1 (671B MoE) inference on fewer GPUs with lower tensor parallelism overhead. In MLPerf Inference v6.0 (April 2026) , systems powered by NVIDIA Blackwell Ultra GPUs delivered the highest throughput across the widest range of models and scenarios. On DeepSeek-R1, Blackwell Ultra systems delivered 2.5 million tokens per second—up to 2.7x higher token throughput compared to Blackwell Ultra debut submissions just six months prior, as a result of NVIDIA TensorRT™-LLM software updates.
+What is the NVIDIA Blackwell Ultra token cost for reasoning models like DeepSeek-R1?
+NVIDIA Blackwell Ultra delivers AI Inference at $0.24 per million tokens at 102 TPS/user on DeepSeek-R1 using NVIDIA Dynamo TensorRT-LLM and MTP, according to SemiAnalysis InferenceX benchmarks as of April 2026.
+Get Started
+NVIDIA DGX B300 is Available Now
+Deploy NVIDIA DGX B300 today on premises, in a colocation facility, or in the cloud through one of our partners.
+Get DGX
+Discover the Benefits of the NVIDIA DGX Platform
+The NVIDIA DGX platform is the proven standard on which enterprise AI is built.
+Learn More
+Need Help Selecting the Right Product or Partner?
+Reach out to an NVIDIA product specialist about your professional needs.
+Talk to Us
+-->
+Contact Us To Learn More About DGX
+Welcome back.
+Not you? Log Out
+Welcome
+back. Not you? Clear form
+Section
+Section
+First Name
+Last Name
+Business Email Address
+Business Phone Number
+Organization / University Name
+Industry
+Industry
+Aerospace
+Agriculture
+Architecture / Engineering / Construction
+Automotive / Transportation
+Cloud Services
+Consumer Internet
+Energy
+Financial Services
+Game Development
+Hardware / Semiconductor
+Healthcare & Life Sciences
+Higher Education / Academia
+HPC / Supercomputing
+Manufacturing
+Media & Entertainment
+Public Sector
+Retail
+Telecommunications
+Other
+Job Title
+Job Title
+Location
+Location
+Afghanistan
+Aland Islands
+Albania
+Algeria
+American Samoa
+Andorra
+Angola
+Anguilla
+Antarctica
+Antigua and Barbuda
+Argentina
+Armenia
+Aruba
+Australia
+Austria
+Azerbaijan
+Bahamas
+Bahrain
+Bangladesh
+Barbados
+Belarus
+Belgium
+Belize
+Benin
+Bermuda
+Bhutan
+Bolivia
+Bonaire, Sint Eustatius and Saba
+Bosnia and Herzegovina
+Botswana
+Bouvet Island
+Brazil
+British Indian Ocean Territory
+British Virgin Islands
+Brunei Darussalam
+Bulgaria
+Burkina Faso
+Burundi
+Cambodia
+Cameroon
+Canada
+Cape Verde
+Cayman Islands
+Central African Republic
+Chad
+Chile
+China
+Christmas Island
+Cocos (Keeling) Islands
+Colombia
+Comoros
+Congo
+Congo, Democratic Republic of the
+Cook Islands
+Costa Rica
+Cote D'Ivoire
+Croatia
+Cuba
+Curaçao
+Cyprus
+Czech Republic
+Denmark
+Djibouti
+Dominica
+Dominican Republic
+Ecuador
+Egypt
+El Salvador
+Equatorial Guinea
+Eritrea
+Estonia
+Eswatini
+Ethiopia
+Falkland Islands (Malvinas)
+Faroe Islands
+Fiji
+Finland
+France
+French Guiana
+French Polynesia
+French Southern Territories
+Gabon
+Gambia
+Georgia
+Germany
+Ghana
+Gibraltar
+Greece
+Greenland
+Grenada
+Guadeloupe
+Guam
+Guatemala
+Guernsey
+Guinea
+Guinea-Bissau
+Guyana
+Haiti
+Heard Island and Mcdonald Islands
+Honduras
+Hong Kong
+Hungary
+Iceland
+India
+Indonesia
+Iran
+Iraq
+Ireland
+Isle of Man
+Israel
+Italy
+Jamaica
+Japan
+Jersey
+Jordan
+Kazakhstan
+Kenya
+Kiribati
+Korea Democratic People's Republic of
+Korea Republic of
+Kuwait
+Kyrgyzstan
+Lao People's Democratic Republic
+Latvia
+Lebanon
+Lesotho
+Liberia
+Libya
+Liechtenstein
+Lithuania
+Luxembourg
+Macao
+Madagascar
+Malawi
+Malaysia
+Maldives
+Mali
+Malta
+Marshall Islands
+Martinique
+Mauritania
+Mauritius
+Mayotte
+Mexico
+Micronesia, Federated States of
+Moldova, Republic of
+Monaco
+Mongolia
+Montenegro
+Montserrat
+Morocco
+Mozambique
+Myanmar
+Namibia
+Nauru
+Nepal
+New Caledonia
+New Zealand
+Nicaragua
+Niger
+Nigeria
+Niue
+Norfolk Island
+North Macedonia
+Northern Mariana Islands
+Norway
+Oman
+Pakistan
+Palau
+Palestine, State of
+Panama
+Papua New Guinea
+Paraguay
+Peru
+Philippines
+Pitcairn
+Poland
+Portugal
+Puerto Rico
+Qatar
+Réunion
+Romania
+Russian Federation
+Rwanda
+Saint Helena
+Saint Kitts and Nevis
+Saint Lucia
+Saint Pierre and Miquelon
+Saint Vincent and the Grenadines
+Saint-Barthélemy
+Saint-Martin (French part)
+Samoa
+San Marino
+Sao Tome and Principe
+Saudi Arabia
+Senegal
+Serbia
+Seychelles
+Sierra Leone
+Singapore
+Sint Maarten
+Slovakia
+Slovenia
+Solomon Islands
+Somalia
+South Africa
+South Georgia and the South Sandwich Islands
+South Sudan
+Spain
+Sri Lanka
+Sudan
+Suriname
+Svalbard and Jan Mayen
+Sweden
+Switzerland
+Syria
+Taiwan
+Tajikistan
+Tanzania
+Thailand
+The Netherlands
+Timor-Leste
+Togo
+Tokelau
+Tonga
+Trinidad and Tobago
+Tunisia
+Turkey
+Turkmenistan
+Turks and Caicos Islands
+Tuvalu
+Uganda
+Ukraine
+United Arab Emirates
+United Kingdom
+United States
+United States Minor Outlying Islands
+Uruguay
+Uzbekistan
+Vanuatu
+Vatican City State
+Venezuela
+Viet Nam
+Virgin Islands U.S.
+Wallis and Futuna
+Western Sahara
+Yemen
+Zambia
+Zimbabwe
+Preferred Language
+Preferred Language
+Chinese (Simplified)
+Chinese (Traditional)
+Czech
+Danish
+Dutch
+English (Australia)
+English (GB)
+English (India)
+English (Malaysia)
+English (Philippines)
+English (Singapore)
+English (US)
+Finnish
+French
+French (Belgium)
+German
+German (Austria)
+Indonesian
+Italian
+Japanese
+Korean
+Netherlands (Belgium)
+Norwegian
+Polish
+Portuguese (Brazil)
+Spanish (Latin America)
+Spanish (Spain)
+Swedish
+Thai
+Turkish
+Vietnamese
+What is your question?
+Which Product Are You Interested In?
+Which Product Are You Interested In?
+NVIDIA Base Command
+DGX Station A100
+DGX A100
+DGX H100
+DGX BasePOD
+DGX SuperPOD
+State/Province
+State/Province
+安徽
+北京
+重庆
+福建
+广东
+甘肃
+广西
+贵州
+海南
+湖北
+河北
+河南
+黑龙江
+湖南
+吉林
+江苏
+江西
+辽宁
+内蒙古
+宁夏
+青海
+四川
+山东
+上海
+陕西
+山西
+天津
+新疆
+西藏
+云南
+浙江
+nvid hidden field
+enterpriseOptIns hidden field
+Send me the latest enterprise news, announcements, and more from NVIDIA. I can unsubscribe at any time.
+NVIDIA Privacy Policy
+I agree to the collection and processing of the above information by NVIDIA <span class="corporation-txt hidden">Corporation </span>for the purposes of research and event organization, and I have read and agree to <a href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/?deeplink=visiting-our-website" target="_blank">NVIDIA Privacy Policy</a>.
+I agree that the above information will be transferred to NVIDIA Corporation in the United States and stored in a manner consistent with <a href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/?deeplink=visiting-our-website" target="_blank">NVIDIA Privacy Policy</a> due to necessities for research, event organization and corresponding NVIDIA internal management and system operation need. You may contact us by sending an email to <a href="mailto:privacy@nvidia.com">privacy@nvidia.com</a> to resolve related problems.
+Submit
+DGX B300 Quick Specs
+GPUs |
+8x NVIDIA Blackwell Ultra SXM |
+CPU |
+Intel® Xeon® 6776P Processors |
+Total GPU Memory |
+2.1 TB |
+Performance |
+FP4 Tensor Core: 144 PFLOPS | 108 PFLOPS*
+FP8 Tensor Core: 72 PFLOPS** |
+Networking |
+8x OSFP ports serving 8x single-port NVIDIA® ConnectX®-8 VPI
+> Up to 800 Gb/s NVIDIA InfiniBand/Ethernet
+2x dual-port QSFP112 NVIDIA® BlueField®-3 DPU
+> Up to 400 Gb/s NVIDIA InfiniBand/Ethernet
+*Specification shown in sparse | dense
+**Specification in sparse. Dense is ½ sparse spec shown.
+View NVIDIA DGX B300 Datasheet
+Products
+Data Center GPUs
+NVIDIA DGX Platform
+NVIDIA HGX Platform
+Networking Products
+Virtual GPUs
+Technologies
+NVIDIA Blackwell Architecture
+NVIDIA Hopper Architecture
+MGX
+Confidential Computing
+Multi-Instance GPU
+NVLink-C2C
+NVLink/NVSwitch
+Tensor Cores
+Resources
+Accelerated Apps Catalog
+Blackwell Resources Center
+Data Center GPUs
+Data Center GPU Line Card
+Data Center GPUs Resource Center
+Data Center Product Performance
+Deep Learning Institute
+Energy Efficiency Calculator
+GPU Cloud Computing
+MLPerf Benchmarks
+NGC Catalog
+NVIDIA-Certified Systems
+NVIDIA Data Center Corporate Blogs
+NVIDIA Data Center Technical Blogs
+Qualified System Catalog
+Where to Buy
+Company Info
+About Us
+Company Overview
+Investors
+Venture Capital (NVentures)
+NVIDIA Foundation
+Research
+Social Responsibility
+Technologies
+Careers
+Follow Data Center
+' title=' '>
+' title=' '>
+NVIDIA
+United States
+Privacy Policy
+Your Privacy Choices
+Terms of Service
+Accessibility
+Corporate Policies
+Product Security
+Contact
+Copyright © 2026 NVIDIA Corporation

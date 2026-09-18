@@ -1745,6 +1745,26 @@
         "blob_formula": "165 MB fixed plus 0.0655 MB per token; 6000 tokens is about 560 MB as estimated.",
         "left_to_decide": "whether QW_PREFIX_SNAPSHOT and QW_PREFIX_DISK become defaults, since the cache uses several GB of disk."
       }
+    },
+    {
+      "round": 79,
+      "title": "New objective: beat llama.cpp and Ollama on TTFT and output tok/s for Qwen3.8-27B FP4 on this machine.  Installed llama.cpp 0.4.0 from brew - llama-bench, llama-cli and llama-server are all present and the Metal backend is detected - and confirmed Ollama is not installed.  Identified the exact model from the MLX README's base_model field: Qwen/Qwen3.8-27B, model_type qwen3_5, Qwen3_5ForConditionalGeneration, multimodal, 18 shards and 55.56 GB.  The local bf16 copy cannot produce a GGUF because it holds only shard 18 of 18, the MTP head, while the index references 17 more shards that are not on disk.  Conversion is unnecessary anyway: prebuilt GGUFs exist at ggml-org/Qwen3.8-27B-GGUF (Qwen3.8-27B-Q4_K_M.gguf, the llama.cpp org) and unsloth/Qwen3.8-27B-GGUF (Q4_0 and six other Q4 variants).  Measured our own side properly: TTFT 0.6 s for a 23-token prompt and 0.2 s for a warm OpenCode hello; real server decode 23.9 tok/s for 48 tokens; prefill 47.9 tok/s at 20.89 ms/token.  The gap between the real decode rate of 23.9 and the raw GEMV sweep's 33.1 tok/s is about 28% of the decode path spent outside the weight stream, which is a real target.  BLOCKED on the network: HF downloads measured about 0.5 MB/s, so the 55.6 GB bf16 would take over 30 hours, and after switching to the 16 GB Q4_K_M GGUF the connection does not even establish - 4 KB of metadata in 60 seconds and repeated retries.  git push failed repeatedly the same way earlier in the session, so it is one underlying problem.  Without the GGUF there is no llama.cpp baseline and no same-weights comparison.  What can proceed without the download is improving our own numbers, which the objective needs regardless: the multi-row GEMV prefill gap of 2.8x, and the 28% decode overhead.",
+      "tok_s": 23.9,
+      "end_to_end": true,
+      "gates": {
+        "G1": "no engine change this round",
+        "G2": "n/a",
+        "G3": "n/a",
+        "G4": "our baseline measured: TTFT 0.6 s short / 0.2 s warm, decode 23.9 tok/s, prefill 47.9 tok/s"
+      },
+      "evidence": {
+        "llama_cpp_installed": "brew llama.cpp 0.4.0, llama-bench and llama-server present, Metal backend detected.",
+        "model_identity": "Qwen/Qwen3.8-27B, qwen3_5, multimodal, 18 shards, 55.56 GB.",
+        "local_bf16_incomplete": "only shard 18 of 18 (3.2 GB, the MTP head) is present.",
+        "prebuilt_gguf": "ggml-org/Qwen3.8-27B-GGUF Q4_K_M and unsloth/Qwen3.8-27B-GGUF Q4_0.",
+        "our_numbers": "TTFT 0.6 s, decode 23.9 tok/s real against 33.1 tok/s raw GEMV, prefill 47.9 tok/s.",
+        "blocker": "HF network about 0.5 MB/s and the GGUF download cannot even connect, so no llama.cpp baseline is possible."
+      }
     }
   ],
   "next": "convert the GDN qkv projection to the tile kernel: project into a contiguous qkv_cur[TILE][conv_dim] with one k=3 launch (bit-identical to three k=1 launches - same group walk, same Q4_WORDS_PER_GROUP order, same simd_sum per row, which is why QW_TILE_CHECK reads exactly 0.0), have the tile convolution read its own rows from qkv_cur and older rows from the ring, and at the end of the pass memcpy the k+1 accepted rows into their ring slots. One launch instead of three and ~2 GB less redundant weight traffic per pass (~12% of the pass), far more than the ~2.3% round 036 bought. Needs the ring bookkeeping reworked, so give it a full round. Then re-run: oracle parity, the byte-identical gate with token counts asserted, and the order-alternating A/B",

@@ -1,0 +1,422 @@
+The Engine Behind AI Factories | NVIDIA Blackwell Architecture
+NVIDIA Home
+NVIDIA Home
+Menu
+Menu icon
+Menu
+Menu icon
+Close
+Close icon
+Close
+Close icon
+Close
+Close icon
+Caret down icon
+Accordion is closed, click to open.
+Caret down icon
+Accordion is closed, click to open.
+Caret up icon
+Accordion is open, click to close.
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand
+Caret right icon
+Click to expand menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Caret left icon
+Click to collapse menu.
+Shopping Cart
+Click to see cart items
+Search icon
+Click to search
+Visit your regional NVIDIA website for local content, pricing, and where to buy partners specific to your country.
+Argentina
+Australia
+België (Belgium)
+Belgique (Belgium)
+Brasil (Brazil)
+Canada
+Česká Republika (Czech Republic)
+Chile
+Colombia
+Danmark (Denmark)
+Deutschland (Germany)
+España (Spain)
+France
+India
+Italia (Italy)
+México (Mexico)
+Middle East
+Nederland (Netherlands)
+Norge (Norway)
+Österreich (Austria)
+Peru
+Polska (Poland)
+Rest of Europe
+România (Romania)
+Singapore
+Suomi (Finland)
+Sverige (Sweden)
+Türkiye (Turkey)
+United Kingdom
+United States
+대한민국 (South Korea)
+中国大陆 (Mainland China)
+台灣 (Taiwan)
+日本 (Japan)
+Continue
+Skip to main content
+Artificial Intelligence Computing Leadership from NVIDIA
+Cloud and Data Center
+Solutions
+Solutions
+Accelerated Computing
+Accelerate enterprise IT and AI workloads with data center solutions
+AI Data Platform for Enterprise
+Unify and accelerate enterprise AI workloads with a full-stack data platform
+AI Factory
+Accelerate and deploy large-scale AI with full-stack factory solutions
+Cloud Computing
+Unleash enterprise AI and HPC with scalable accelerated cloud solutions
+Edge Computing
+Accelerate AI, robotics, and IoT with scalable edge computing
+High Performance Computing
+Advance discovery with energy‑efficient high‑performance computing
+MLOps
+Scale AI solutions with enterprise MLOps tools, automation, and software
+Networking
+Networking for high-performance, scalable, and secure AI data centers
+DGX Platform
+Build next-generation AI factories for enterprises
+DGX Cloud
+NVIDIA’s AI factory in the cloud
+Products
+Products
+Overview
+Accelerate AI, machine learning, and HPC with advanced data center platforms
+Vera Rubin NVL72
+Rack-Scale Agentic AI Supercomputer
+LPX
+Fast inference with full intelligence at scale
+DGX SuperPOD
+Full-stack blueprint for gigascale AI infrastructure
+GB300 NVL72
+GB300 NVL72 rack-scale system built for the age of AI reasoning
+HGX
+HGX platform specs for multi‑GPU AI, HPC, and simulation workloads
+CPU
+Architecture for data centers that transform data into intelligence
+GB200 NVL72
+GB200 NVL72 for scalable LLM inference and advanced AI data center needs
+RTX PRO Server
+Universal data center platform for enterprise AI and industrial AI
+RTX PRO 6000 Blackwell
+RTX PRO 6000 specs for professional AI, graphics, and visual computing tasks
+DGX BasePOD
+Reference architecture for building and scaling AI infrastructure
+DSX Platform
+Build AI factories optimized for lowest cost tokens per megawatt
+Software
+Software
+AI Enterprise Suite
+Enterprise AI software suite for data center deployments
+Base Command Manager
+Centralized platform to manage and monitor AI workloads in data centers
+CUDA-X
+GPU-accelerated libraries and tools for AI, HPC, and data processing
+Virtualization
+GPU virtualization software to accelerate and manage virtualized environments
+Accelerated Apps Catalog
+Browse DPU- and GPU-accelerated apps, tools, and services
+Mission Control
+Powers AI factory operations from developer workloads to infrastructure
+NVIDIA Run:ai
+AI Workload and GPU Orchestration
+Architectures
+Architectures
+Vera Rubin Platform
+Infrastructure for scalable AI reasoning
+Blackwell Architecture
+The GPU architecture powering AI factories for the age of AI reasoning
+Hopper Architecture
+Supercharging AI and HPC workloads for every data center
+Ada Lovelace Architecture
+Real-time ray tracing and AI for advanced design and visualization
+MGX Reference Architecture
+Modular reference architecture for building accelerated data center servers
+Technologies
+Technologies
+NVLink and NVLink Switch
+High-speed interconnect for multi-GPU communication and large AI models
+NVLink Fusion
+Semi-custom AI infrastructure with industry-proven AI scale-up performance
+Tensor Cores
+Specialized GPU cores that speed up AI and HPC math workloads
+Multi-Instance GPUs
+GPU partitioning to securely share one GPU across workloads
+Confidential Computing
+Secure data and AI models in use
+Resources
+Resources
+Resource Hub
+Resources to build and optimize AI-ready data centers and factories
+Data Center GPU Line Card
+Guide to selecting data center GPUs and networking for AI workloads
+Data Center GPUs Resource Center
+Documentation and guides for NVIDIA data center GPU products
+MLPerf Benchmarks
+MLPerf training and inference results for the NVIDIA AI platform
+NVIDIA-Certified Systems
+Accelerated partner systems delivering certified performance and scale
+Qualified System Catalog
+Catalog of qualified servers built with NVIDIA data center GPUs
+US
+Sign In
+NVIDIA Account
+Logout
+Log In
+LogOut
+Skip to main content
+Artificial Intelligence Computing Leadership from NVIDIA
+US
+Sign In
+NVIDIA Account
+Logout
+Login
+LogOut
+NVIDIA
+NVIDIA logo
+Cloud and Data Center
+Solutions
+Accelerated Computing
+Accelerate enterprise IT and AI workloads with data center solutions
+AI Data Platform for Enterprise
+Unify and accelerate enterprise AI workloads with a full-stack data platform
+AI Factory
+Accelerate and deploy large-scale AI with full-stack factory solutions
+Cloud Computing
+Unleash enterprise AI and HPC with scalable accelerated cloud solutions
+Edge Computing
+Accelerate AI, robotics, and IoT with scalable edge computing
+High Performance Computing
+Advance discovery with energy‑efficient high‑performance computing
+MLOps
+Scale AI solutions with enterprise MLOps tools, automation, and software
+Networking
+Networking for high-performance, scalable, and secure AI data centers
+DGX Platform
+Build next-generation AI factories for enterprises
+DGX Cloud
+NVIDIA’s AI factory in the cloud
+Products
+Overview
+Accelerate AI, machine learning, and HPC with advanced data center platforms
+Vera Rubin NVL72
+Rack-Scale Agentic AI Supercomputer
+LPX
+Fast inference with full intelligence at scale
+DGX SuperPOD
+Full-stack blueprint for gigascale AI infrastructure
+GB300 NVL72
+GB300 NVL72 rack-scale system built for the age of AI reasoning
+HGX
+HGX platform specs for multi‑GPU AI, HPC, and simulation workloads
+CPU
+Architecture for data centers that transform data into intelligence
+GB200 NVL72
+GB200 NVL72 for scalable LLM inference and advanced AI data center needs
+RTX PRO Server
+Universal data center platform for enterprise AI and industrial AI
+RTX PRO 6000 Blackwell
+RTX PRO 6000 specs for professional AI, graphics, and visual computing tasks
+DGX BasePOD
+Reference architecture for building and scaling AI infrastructure
+DSX Platform
+Build AI factories optimized for lowest cost tokens per megawatt
+Software
+AI Enterprise Suite
+Enterprise AI software suite for data center deployments
+Base Command Manager
+Centralized platform to manage and monitor AI workloads in data centers
+CUDA-X
+GPU-accelerated libraries and tools for AI, HPC, and data processing
+Virtualization
+GPU virtualization software to accelerate and manage virtualized environments
+Accelerated Apps Catalog
+Browse DPU- and GPU-accelerated apps, tools, and services
+Mission Control
+Powers AI factory operations from developer workloads to infrastructure
+NVIDIA Run:ai
+AI Workload and GPU Orchestration
+Architectures
+Vera Rubin Platform
+Infrastructure for scalable AI reasoning
+Blackwell Architecture
+The GPU architecture powering AI factories for the age of AI reasoning
+Hopper Architecture
+Supercharging AI and HPC workloads for every data center
+Ada Lovelace Architecture
+Real-time ray tracing and AI for advanced design and visualization
+MGX Reference Architecture
+Modular reference architecture for building accelerated data center servers
+Technologies
+NVLink and NVLink Switch
+High-speed interconnect for multi-GPU communication and large AI models
+NVLink Fusion
+Semi-custom AI infrastructure with industry-proven AI scale-up performance
+Tensor Cores
+Specialized GPU cores that speed up AI and HPC math workloads
+Multi-Instance GPUs
+GPU partitioning to securely share one GPU across workloads
+Confidential Computing
+Secure data and AI models in use
+Resources
+Resource Hub
+Resources to build and optimize AI-ready data centers and factories
+Data Center GPU Line Card
+Guide to selecting data center GPUs and networking for AI workloads
+Data Center GPUs Resource Center
+Documentation and guides for NVIDIA data center GPU products
+MLPerf Benchmarks
+MLPerf training and inference results for the NVIDIA AI platform
+NVIDIA-Certified Systems
+Accelerated partner systems delivering certified performance and scale
+Qualified System Catalog
+Catalog of qualified servers built with NVIDIA data center GPUs
+NVIDIA Blackwell Architecture
+The engine behind AI factories for the age of AI reasoning—now in full production.
+Read Technical Brief
+Introduction
+Technological Breakthroughs
+Products
+Technical Brief
+Introduction
+Technological Breakthroughs
+Products
+Technical Brief
+Introduction
+Technological Breakthroughs
+Products
+Technical Brief
+Contact Sales
+Breaking Barriers in Accelerated Computing and Generative AI
+Explore the groundbreaking advancements the NVIDIA Blackwell architecture brings to generative AI and accelerated computing. Building upon generations of NVIDIA technologies , NVIDIA Blackwell defines the next chapter in generative AI with unparalleled performance, efficiency, and scale.
+Look Inside the Technological Breakthroughs
+A New Class of AI Superchip
+NVIDIA Blackwell-architecture GPUs pack 208 billion transistors and are manufactured using a custom-built TSMC 4NP process. All NVIDIA Blackwell products feature two reticle-limited dies connected by a 10 terabytes per second (TB/s) chip-to-chip interconnect in a unified single GPU.
+Second-Generation Transformer Engine
+The second-generation Transformer Engine uses custom  NVIDIA Blackwell Tensor Core technology combined with NVIDIA TensorRT™-LLM and NeMo™ Framework innovations to accelerate inference and training for large language models (LLMs) and Mixture-of-Experts (MoE) models . NVIDIA Blackwell Tensor Cores add new precisions, including new community-defined microscaling formats, giving high accuracy and ease of replacement for larger precisions.
+NVIDIA Blackwell Ultra Tensor Cores are supercharged with 2X the attention-layer acceleration and 1.5X more AI compute FLOPS compared to NVIDIA Blackwell GPUs. The NVIDIA Blackwell Transformer Engine utilizes fine-grain scaling techniques called micro-tensor scaling, to optimize performance and accuracy enabling 4-bit floating point (FP4) AI. This doubles the performance and size of next-generation models that memory can support while maintaining high accuracy.
+Secure AI
+NVIDIA Blackwell includes NVIDIA Confidential Computing, which protects sensitive data and AI models from unauthorized access with strong hardware-based security. NVIDIA Blackwell is the first TEE-I/O capable GPU in the industry, while providing the most performant confidential compute solution with TEE-I/O capable hosts and inline protection over  NVIDIA NVLink™. NVIDIA Blackwell Confidential Computing delivers nearly identical throughput performance compared to unencrypted modes. Enterprises can now secure even the largest models in a performant way, in addition to protecting AI intellectual property (IP) and securely enabling confidential AI training, inference, and federated learning.
+Learn More About NVIDIA Confidential Computing
+NVLink and NVLink Switch
+Unlocking the full potential of exascale computing and trillion-parameter AI models hinges on the need for swift, seamless communication among every GPU within a server cluster. The fifth-generation of NVIDIA NVLink interconnect can scale up to 576 GPUs to unleash accelerated performance for trillion- and multi-trillion parameter AI models.
+The NVIDIA NVLink Switch Chip enables 130TB/s of GPU bandwidth in one 72-GPU NVLink domain (NVL72) and delivers 4X bandwidth efficiency with NVIDIA Scalable Hierarchical Aggregation and Reduction Protocol (SHARP)™ FP8 support. The NVIDIA NVLink Switch Chip supports clusters beyond a single server at the same impressive 1.8TB/s interconnect. Multi-server clusters with NVLink scale GPU communications in balance with the increased computing, so NVL72 can support 9X the GPU throughput than a single eight-GPU system.
+Learn More About NVIDIA NVLink and NVLink Switch
+Decompression Engine
+Data analytics and database workflows have traditionally relied on CPUs for compute. Accelerated data science can dramatically boost the performance of end-to-end analytics, speeding up value generation while reducing cost. Databases, including Apache Spark, play critical roles in handling, processing, and analyzing large volumes of data for data analytics.
+NVIDIA Blackwell’s Decompression Engine and ability to access massive amounts of memory in the NVIDIA Grace™ CPU over a high-speed link—900 gigabytes per second (GB/s) of bidirectional bandwidth—accelerate the full pipeline of database queries for the highest performance in data analytics and data science with support for the latest compression formats such as LZ4, Snappy, and Deflate.
+Reliability, Availability, and Serviceability (RAS) Engine
+NVIDIA Blackwell adds intelligent resiliency with a dedicated Reliability, Availability, and Serviceability (RAS) Engine to identify potential faults that may occur early on to minimize downtime.  NVIDIA’s AI-powered predictive-management capabilities continuously monitor thousands of data points across hardware and software for overall health to predict and intercept sources of downtime and inefficiency. This builds intelligent resilience that saves time, energy, and computing costs.
+NVIDIA’s RAS Engine provides in-depth diagnostic information that can identify areas of concern and plan for maintenance. The RAS engine reduces turnaround time by quickly localizing the source of issues and minimizes downtime by facilitating effective remediation.
+NVIDIA Blackwell Ultra Delivers up to 50x Better Performance and 35x Lower Cost for Agentic AI
+Built to accelerate the next generation of agentic AI, NVIDIA Blackwell Ultra delivers breakthrough inference performance with dramatically lower cost. Cloud providers such as Microsoft, CoreWeave, and Oracle Cloud Infrastructure are deploying NVIDIA GB300 NVL72 systems at scale for low-latency and long-context use cases, such as agentic coding and coding assistants.
+This is enabled by deep co-design across NVIDIA Blackwell, NVLink™, and NVLink Switch for scale-out; NVFP4 for low-precision accuracy; and NVIDIA Dynamo and TensorRT™ LLM for speed and flexibility—as well as development with community frameworks SGLang, vLLM, and more.
+Explore Key Results
+NVIDIA Blackwell Products
+NVIDIA GB300 NVL72
+The NVIDIA GB300 NVL72 delivers unparalleled AI reasoning inference performance, featuring 65X more AI compute than Hopper systems.
+Learn More
+NVIDIA DGX SuperPOD
+NVIDIA DGX SuperPOD™ is a turnkey AI data center solution that delivers leadership-class accelerated infrastructure with scalable performance for the most demanding AI training and inference workloads.
+Learn More
+NVIDIA RTX PRO in the Data Center
+Deliver powerful AI and graphics acceleration, essential enterprise features, and the flexibility to handle a wide range of workloads, from agentic and physical AI to visual computing and virtual workstations accelerated by NVIDIA RTX PRO™ data center GPUs.
+Learn More
+NVIDIA RTX PRO Workstations
+Bring the latest breakthroughs in AI, ray tracing, and neural graphics technology to power the most innovative workflows in design, engineering, and beyond with NVIDIA RTX PRO GPUs.
+Learn More
+NVIDIA DGX Station
+Unlike any AI desktop computer before, this system features NVIDIA Blackwell GPUs, the Grace CPU Superchip, and large coherent memory, delivering unparalleled compute performance.
+Learn More
+NVIDIA DGX Spark
+A compact, personal AI supercomputer with the NVIDIA GB10 Grace Blackwell Superchip, delivering high-performance AI capabilities and support for models up to 200 billion parameters.
+Learn More
+NVIDIA HGX B300
+NVIDIA HGX™ B300 is built for the age of AI reasoning with enhanced compute and increased memory.
+Learn More
+NVIDIA GB200 NVL72
+The NVIDIA GB200 NVL72 connects 36 NVIDIA Grace CPUs and 72 NVIDIA Blackwell GPUs in a rack-scale, liquid-cooled design.
+Learn More
+NVIDIA GB200 NVL4
+Purpose-built for scientific computing, the NVIDIA GB200 NVL4 unlocks the future of converged high-performance computing and AI.
+Learn More
+NVIDIA DGX Spark
+DGX Spark brings the power of NVIDIA Grace Blackwell™ to developer desktops. The GB10 Superchip, combined with 128 GB of unified system memory, lets AI researchers, data scientists, and students work with AI models locally with up to 200 billion parameters.
+Learn More
+Unlock Real-Time, Trillion-Parameter Models With the NVIDIA GB200 NVL72
+The NVIDIA GB200 NVL72 connects 36 GB200 Grace Blackwell Superchips with 36 Grace CPUs and 72 Blackwell GPUs in a rack-scale design. The GB200 NVL72 is a liquid-cooled solution with a 72-GPU NVLink domain that acts as a single massive GPU—delivering 30X faster real-time inference for trillion-parameter large language models.
+Learn More About the NVIDIA GB200 NVL72
+NVIDIA NVFP4 Technical Blog
+Learn how NVIDIA’s new 4‑bit NVFP4 quantization for pretraining unlocks huge improvements in training LLMs at scale and overall infrastructure efficiency.
+Explore NVFP4
+Products
+Data Center GPUs
+NVIDIA DGX Platform
+NVIDIA HGX Platform
+Networking Products
+Virtual GPUs
+Technologies
+NVIDIA Blackwell Architecture
+NVIDIA Hopper Architecture
+MGX
+Confidential Computing
+Multi-Instance GPU
+NVLink-C2C
+NVLink/NVSwitch
+Tensor Cores
+Resources
+Accelerated Apps Catalog
+Blackwell Resources Center
+Data Center GPUs
+Data Center GPU Line Card
+Data Center GPUs Resource Center
+Data Center Product Performance
+Deep Learning Institute
+Energy Efficiency Calculator
+GPU Cloud Computing
+MLPerf Benchmarks
+NGC Catalog
+NVIDIA-Certified Systems
+NVIDIA Data Center Corporate Blogs
+NVIDIA Data Center Technical Blogs
+Qualified System Catalog
+Where to Buy
+Company Info
+About Us
+Company Overview
+Investors
+Venture Capital (NVentures)
+NVIDIA Foundation
+Research
+Social Responsibility
+Technologies
+Careers
+Follow Data Center
+' title=' '>
+' title=' '>
+NVIDIA
+United States
+Privacy Policy
+Your Privacy Choices
+Terms of Service
+Accessibility
+Corporate Policies
+Product Security
+Contact
+Copyright © 2026 NVIDIA Corporation

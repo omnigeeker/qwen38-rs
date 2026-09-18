@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <title>芯原股份: 2025年年度报告摘要_股票频道_证券之星</title>
+<meta name="description" content="芯原股份: 2025年年度报告摘要" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=EmulateIE7">
+    <link href="//j.ssajax.cn/css/info/news/base.css" rel="stylesheet" type="text/css" />
+    <link href="//j.ssajax.cn/css/info/news/info-notice.css?v=1.0" rel="stylesheet" type="text/css" />
+    <base target="_blank" />
+    <script type="text/javascript" src="//j.ssajax.cn/js/info/news/jquery.min.js"></script>
+    <script type="text/javascript" src="//j.ssajax.cn/js/info/news/search.js?v=1.6"></script>
+    <script type="text/javascript" src="//j.ssajax.cn/js/info/news/info.js"></script>
+<script type="text/javascript">var globalConfig={Id:"SN,20260331,00004868",Title:"芯原股份: 2025年年度报告摘要",Url:"https:\/\/stock.stockstar.com\/notice\/SN2026033100004868.shtml",Mobile:"https:\/\/wap.stockstar.com\/detail\/SN2026033100004868"};</script>
+</head>
+
+<body>
+
+    <!--头部 start-->
+    <script>
+        isReload();
+</script>
+<div class="header ">
+    <div class="headercontent">
+        <div class="headernav ">
+            <ul class="ul">
+                <li style="font-size: 14px;">
+                    <a href="https://www.stockstar.com/" target="_blank"><img src="https://i.ssimg.cn/images/public/news/stockstar.png" alt="" style="vertical-align: text-bottom;height: 20px;margin-top: 0px;display: inline-block;">&nbsp;&nbsp;首页</a>
+                </li>
+                <li class="c"><a href="https://express.stockstar.com/" target="_blank">快讯</a></li>
+                <li class="b"><a href="https://stock.stockstar.com/" target="_blank">股票</a></li>
+
+                <li class="d"><a href="https://finance.stockstar.com/" target="_blank">财经</a></li>
+                <li class="e"><a href="https://fund.stockstar.com/" target="_blank">基金</a></li>
+                <li class="f"><a href="https://special.stockstar.com/" target="_blank">专题</a></li>
+
+                <li class="h"><a href="https://money.stockstar.com/" target="_blank">理财</a></li>
+                <li class="i"><a href="https://resource.stockstar.com/" target="_blank">数据</a></li>
+                <li class="g"><a href="https://vip.stockstar.com/" target="_blank">专栏</a></li>
+                <li class="k">
+                    <a style="margin-right: 0px;">更多</a>
+                    <div class="dlilog ">
+                        <div class="lianjie">
+                            <div class="dlilognav">
+                                <div class="ulfirst">
+                                    <a href="https://stock.stockstar.com/" style="margin-right:15px;" target="_blank">股票</a>
+                                    |
+                                    <a href="https://stock.stockstar.com/">主板</a>
+                                    <a href="https://stock.stockstar.com/daily/" target="_blank">必读</a>
+                                    <a href="https://stock.stockstar.com/report/" target="_blank">研报</a>
+                                    <a href="https://stock.stockstar.com/ipo/" target="_blank">新股</a>
+                                    <a href="https://stock.stockstar.com/gem/" target="_blank">创业板</a>
+                                    <a href="https://stock.stockstar.com/star/" target="_blank">科创板</a>
+                                    <a href="https://option.stockstar.com/" target="_blank">期权</a>
+                                    <a href="https://stock.stockstar.com/bjs/" target="_blank">北交所</a>
+                                    <a href="https://hk.stockstar.com/" target="_blank">港股</a>
+                                    <a href="https://stock.stockstar.com/cnstock/" target="_blank">中概股</a>
+                                    <a href="https://stock.stockstar.com/global/" target="_blank">全球</a>
+                                </div>
+                                <div class="ulsecond">
+                                    <a href="https://money.stockstar.com/" style="margin-right:15px;" target="_blank">理财</a>
+                                    |
+                                    <a href="https://bank.stockstar.com/" target="_blank">银行</a>
+                                    <a href="https://insurance.stockstar.com/" target="_blank">保险</a>
+                                    <a href="https://gold.stockstar.com/" target="_blank">黄金</a>
+                                    <a href="https://forex.stockstar.com/" target="_blank">外汇</a>
+                                    <a href="https://bond.stockstar.com/" target="_blank">债券</a>
+                                    <a href="https://futures.stockstar.com/" target="_blank">期货</a>
+                                    <a href="https://spif.stockstar.com/" target="_blank">股指期货</a>
+                                </div>
+                                <div class="ulthird">
+                                    <a href="https://jiu.stockstar.com/" target="_blank">酒界</a>
+                                    <a href="https://focus.stockstar.com/" target="_blank">热点</a>
+                                    <a href="https://special.stockstar.com/" target="_blank">专题</a>
+                                    <a href="https://resource.stockstar.com/" target="_blank">数据</a>
+                                    <a href="https://quote.stockstar.com/" target="_blank">行情</a>
+                                    <a href="https://auto.stockstar.com/" target="_blank">汽车</a>
+                                    <a href="https://house.stockstar.com/" target="_blank">地产</a>
+                                    <a href="https://school.stockstar.com/" target="_blank">学堂</a>
+                                    <a href="https://stock.stockstar.com/list/collection.htm" target="_blank">滤镜</a>
+                                    <a href="https://fund.stockstar.com/list/collection.htm" target="_blank">基金荟</a>
+                                    <a href="https://roadshow.stockstar.com/" target="_blank">路演</a>
+				    <a href="https://tech.stockstar.com/" target="_blank">科技</a>
+                                </div>
+                                <div class="ulfour">
+                                    <a href="https://quote.stockstar.com/Comment/" target="_blank">千股千评</a>
+                                    <a href="https://quote.stockstar.com/BlockTrade/" target="_blank">大宗交易</a>
+                                    <a href="https://stock.stockstar.com/list/6143.shtml" target="_blank">资金流向</a>
+                                    <a href="https://quote.stockstar.com/BillBoard/" target="_blank">龙虎榜</a>
+                                    <a href="https://special.stockstar.com/list/talk.htm" target="_blank">人物专访</a>
+                                    <a href="https://bank.stockstar.com/list/4145.shtml" target="_blank">商业资讯</a>
+                                </div>
+
+                            </div>
+                            <div class="dliloger">
+                                <div class="dleft">
+                                    <img src="https://www.stockstar.com/img/static/qr-zqzx-wx.jpg" alt="微信公众号">
+                                    微信公众号
+                                </div>
+                                <div class="dright">
+                                    <img src="https://www.stockstar.com/img/static/qr-zqzx-app.jpg" alt="证券之星APP">
+                                    证券之星APP
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </li>
+            </ul>
+
+        </div>
+        <div class="zhuce"></div>
+    </div>
+</div>
+<!--ad start-->
+    <!--头部 end-->
+
+    <div class="headerimg" id="banner_div" style="margin: 0 auto;">
+        <!--stock 股票类（仅股票文章页） 【停用】 is can't deliver-->
+
+    </div>
+
+    <div id="sta_dh" class="top_nav" style="width: 1000px; margin: 0 auto">
+        <div>
+            <div class="zhong">
+                <div class="dh" style="text-align: left;">
+                    <a href="https://www.stockstar.com/">首页</a> - <a href="https://stock.stockstar.com/">股票</a> - <a href="https://stock.stockstar.com/daily/">每日必读</a> - <a href="">公司公告</a> - <a href="http://stock.stockstar.com/daily_list/4329.shtml">年度报告</a> - <span>正文</span>
+                </div>
+                <div id="ssType_0" class="shou">
+                    <div class="input">
+                        <input style="line-height: 30px" type="text" id="ajaxinput" name="code" autocomplete="off">
+                        <img src="//i.ssimg.cn/images/public/news/sou.gif" alt="" align="absmiddle" id="ajaxinputquery">
+                        <span id="ssTypeRadio"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ts">
+                <div class="tst">
+                    <h1>芯原股份: 2025年年度报告摘要</h1>
+                </div>
+                <div class="source">
+                    <div style="width: 60%;float: left;">
+                        <div class="zbnm">
+                            <span class="ly">来源：<a href="SN2026033100004868.shtml">证券之星</a></span>
+                            <span id="author_baidu" class="blue"></span> 
+                            <span id="pubtime_baidu">2026-03-31 02:03:13</span> 
+                        </div>
+                    </div>
+                    <div style="width: 40%;float: right;" class="news">
+                        <div class="zjng"><a href="http://info.stockstar.com/aboutus/report.htm" style="color: #0e478c;text-decoration: underline;">涉企侵权信息举报专区</a>
+</div>
+                        <div class="ybnm">
+                            <i>
+                                关注证券之星官方微博：
+                            </i>
+                            <a href="http://weibo.com/stock666666">
+                                <img src="//i.ssimg.cn/images/public/news/Snipaste_2020-04-13_13-19-55.png" alt="">
+                            </a>
+                            <!--<a href="http://t.qq.com/stock666666">
+                                  <img src="//i.ssimg.cn/images/public/news/Snipaste_2020-04-13_13-19-51.png" alt="">
+                              </a>-->
+                            <a href="http://user.qzone.qq.com/1651671413">
+                                <img src="//i.ssimg.cn/images/public/news/Snipaste_2020-04-13_13-19-42.png" alt="">
+
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+    <!--top nav end HE--->
+    <!-- ....................main -->
+    <div class="w clearfix" id="Wapper">
+        <div class="content clearfix">
+            <div class="clear"></div>
+            <div id="Detail">
+                <div class="box" id="container-box">
+                    
+                    <div class="article">
+                        <div class="article_content">
+                            
+                            &ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>公司代码：688521&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;公司简称：芯原股份
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;第一节&ensp;重要提示
+<br/>划，投资者应当到&ensp;www.sse.com.cn&ensp;网站仔细阅读年度报告全文。
+<br/>&ensp;&ensp;公司已在报告中详细描述可能存在的相关风险，敬请查阅本报告“第三节&ensp;管理层讨论与分析”
+<br/>中“四、风险因素”部分内容。
+<br/>虚假记载、误导性陈述或重大遗漏，并承担个别和连带的法律责任。
+<br/>□是&ensp;√否
+<br/>&ensp;&ensp;因公司合并报表累计未分配利润为-29.44&ensp;亿元，母公司财务报表累计未分配利润为-10.71&ensp;亿
+<br/>元，且经营性现金流量净额为负，为保证公司的正常经营和持续发展，公司&ensp;2025&ensp;年度拟不派发现
+<br/>金红利，不送红股，也不以资本公积金转增股本。以上利润分配预案已经公司第三届董事会第十
+<br/>次会议暨&ensp;2025&ensp;年年度董事会审议通过，尚需公司&ensp;2025&ensp;年年度股东会审议通过。
+<br/>母公司存在未弥补亏损
+<br/>√适用&ensp;□不适用
+<br/>&ensp;&ensp;截至报告期末，公司母公司财务报表累计未分配利润为-10.71&ensp;亿元。根据《中华人民共和国
+<br/>公司法》及《上市公司监管指引第&ensp;3&ensp;号——上市公司现金分红》等法律法规及《公司章程》的规
+<br/>定，公司不满足实施现金分红的前提条件。
+<br/>□适用&ensp;√不适用
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;第二节&ensp;公司基本情况
+<br/>√适用&ensp;□不适用
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;公司股票简况
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;股票种类&ensp;&ensp;&ensp;&ensp;股票上市交易所&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;股票简称&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;股票代码&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;变更前股票简称
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;及板块
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;上海证券交易所
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;A股&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原股份&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;688521&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;不适用
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;科创板
+<br/>□适用&ensp;√不适用
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;董事会秘书&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;证券事务代表
+<br/>姓名&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;石雯丽&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;石为路、王晓璐
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;中国（上海）自由贸易试验区春晓路&ensp;中国（上海）自由贸易试验区春晓路
+<br/>联系地址
+<br/>电话&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;021-68608521&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;021-68608521
+<br/>传真&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;021-68608889&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;021-68608889
+<br/>电子信箱&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;IR@verisilicon.com&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;IR@verisilicon.com
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;（一）主要业务、主要产品或服务情况
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;芯原是一家依托自主半导体&ensp;IP，为客户提供平台化、全方位、一站式芯片定制服务和半导体
+<br/>IP&ensp;授权服务的企业。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;公司拥有自主可控的图形处理器&ensp;IP（GPU&ensp;IP）、神经网络处理器&ensp;IP（NPU&ensp;IP）、视频处理器
+<br/>IP（VPU&ensp;IP）、数字信号处理器&ensp;IP（DSP&ensp;IP）、图像信号处理器&ensp;IP（ISP&ensp;IP）和显示处理器&ensp;IP（Display
+<br/>Processing&ensp;IP）这六类处理器&ensp;IP，以及&ensp;1,700&ensp;多个数模混合&ensp;IP、射频&ensp;IP&ensp;和接口&ensp;IP。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;基于自有的&ensp;IP，公司已拥有丰富的面向人工智能（AI）应用的软硬件芯片定制平台解决方案，
+<br/>涵盖如智能手表、AR/VR&ensp;眼镜等始终在线（Always&ensp;on）的轻量化空间计算设备，AI&ensp;PC、AI&ensp;手机、
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>智慧汽车、机器人等高效率端侧计算设备，以及数据中心/服务器等高性能云侧计算设备。
+<br/>&ensp;&ensp;&ensp;为顺应大算力需求所推动的&ensp;SoC（系统级芯片）向&ensp;SiP（系统级封装）发展的趋势，芯原正
+<br/>在以“IP&ensp;芯片化（IP&ensp;as&ensp;a&ensp;Chiplet）”、“芯片平台化（Chiplet&ensp;as&ensp;a&ensp;Platform）”和“平台生态化（Platform
+<br/>as&ensp;an&ensp;Ecosystem）”理念为行动指导方针，从接口&ensp;IP、Chiplet&ensp;芯片架构、先进封装技术、面向&ensp;AIGC
+<br/>和智慧出行的解决方案等方面入手，持续推进公司&ensp;Chiplet&ensp;技术、项目的研发和产业化。
+<br/>&ensp;&ensp;&ensp;基于公司独有的芯片设计平台即服务（Silicon&ensp;Platform&ensp;as&ensp;a&ensp;Service,&ensp;SiPaaS）经营模式，目前
+<br/>公司主营业务的应用领域广泛包括消费电子、汽车电子、计算机及周边、工业、数据处理、物联
+<br/>网等，主要客户包括芯片设计公司、IDM、系统厂商、大型互联网公司、云服务提供商等。
+<br/>&ensp;&ensp;&ensp;芯原在传统&ensp;CMOS、先进&ensp;FinFET&ensp;和&ensp;FD-SOI&ensp;等全球主流半导体工艺节点上都具有优秀的设计
+<br/>能&ensp;力&ensp;。&ensp;在&ensp;先&ensp;进&ensp;半&ensp;导&ensp;体&ensp;工&ensp;艺&ensp;节&ensp;点&ensp;方&ensp;面&ensp;，&ensp;公&ensp;司&ensp;已&ensp;拥&ensp;有&ensp;14nm/10nm/7nm/6nm/5nm/4nm&ensp;FinFET&ensp;和
+<br/>年，芯原半导体&ensp;IP&ensp;授权业务市场占有率位列中国大陆第一，全球第八；2024&ensp;年，芯原的知识产
+<br/>权授权使用费收入排名全球第六。根据&ensp;IPnest&ensp;的&ensp;IP&ensp;分类和各企业公开信息，芯原&ensp;IP&ensp;种类在全球
+<br/>排名前十的&ensp;IP&ensp;企业中排名前二。2020&ensp;年，公司在科创板上市时，曾被誉为“中国半导体&ensp;IP&ensp;第一股”；
+<br/>随着公司业务在&ensp;AI&ensp;芯片定制领域获得快速增长，目前公司已被业界誉为“AI&ensp;ASIC&ensp;龙头企业”。
+<br/>&ensp;&ensp;&ensp;公司主要服务为面向消费电子、汽车电子、计算机及周边、工业、数据处理、物联网等广泛
+<br/>应用市场所提供的一站式芯片定制服务和半导体&ensp;IP&ensp;授权服务，具体情况如下：
+<br/>&ensp;&ensp;&ensp;（1）一站式芯片定制服务
+<br/>&ensp;&ensp;&ensp;一站式芯片定制服务是指向客户提供平台化的芯片定制方案，并可以接受委托完成从芯片设
+<br/>计到晶圆制造、封装和测试的全部或部分服务环节，充分利用半导体&ensp;IP&ensp;资源和芯片研发能力，满
+<br/>足不同客户的芯片定制需求，帮助客户降低设计风险，缩短设计周期。其中，半导体&ensp;IP&ensp;除在一站
+<br/>式芯片定制服务中使用外，也可以单独对外授权。
+<br/>&ensp;&ensp;&ensp;一站式芯片定制服务具体可分为两个主要环节，分别为芯片设计业务和芯片量产业务。
+<br/>&ensp;&ensp;&ensp;①芯片设计业务：主要指为客户提供以下过程中的部分或全部服务，即根据客户对芯片在功
+<br/>能、性能、功耗、尺寸及成本等方面的要求进行芯片规格定义和&ensp;IP&ensp;选型，通过设计、实现及验证，
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>逐步转化为能用于芯片制造的版图，并委托晶圆厂根据版图生产工程晶圆，封装厂及测试厂进行
+<br/>工程样片封装测试，从而完成芯片样片生产，最终将经过公司技术人员验证过的样片交付给客户
+<br/>的全部过程。
+<br/>&ensp;&ensp;②芯片量产业务：主要指为客户提供以下过程中的部分或全部服务，即根据客户需求委托晶
+<br/>圆厂进行晶圆制造、委托封装厂及测试厂进行封装和测试，并提供以上过程中的生产管理服务，
+<br/>最终交付给客户晶圆片或者芯片的全部过程。
+<br/>&ensp;&ensp;公司还为客户提供软件开发平台、面向应用的软件解决方案、软件开发包、定制软件、软件
+<br/>维护与升级等服务，可大幅降低客户的研发周期和风险，帮助客户快速响应市场。通过将公司的
+<br/>半导体&ensp;IP、芯片定制服务和软件支持服务等全面有机结合，芯原可为客户提供系统平台解决方案，
+<br/>包括高端应用处理器系统平台解决方案、高性能车规&ensp;ADAS&ensp;系统平台解决方案、视频转码加速系
+<br/>统平台解决方案、智慧可穿戴设备/健康监测系统平台解决方案、AR/VR&ensp;系统平台解决方案等。
+<br/>此外，公司还面向云端&ensp;AIGC&ensp;计算和智慧驾驶应用提供基于&ensp;Chiplet&ensp;架构的芯片设计软、硬件解决
+<br/>方案。
+<br/>&ensp;&ensp;按照客户特征类型区分，芯原主要为芯片设计公司、IDM、系统厂商、大型互联网公司、云
+<br/>服务提供商等客户提供一站式芯片定制业务。
+<br/>&ensp;&ensp;（2）半导体&ensp;IP&ensp;授权服务
+<br/>&ensp;&ensp;除在一站式芯片定制业务中使用自主半导体&ensp;IP&ensp;之外，公司也向客户单独提供处理器&ensp;IP、数模
+<br/>混合&ensp;IP、射频&ensp;IP、接口&ensp;IP、IP&ensp;子系统、IP&ensp;平台和&ensp;IP&ensp;定制等半导体&ensp;IP&ensp;授权服务。
+<br/>&ensp;&ensp;半导体&ensp;IP&ensp;授权服务主要是将集成电路设计时所需用到的经过验证、可重复使用且具备特定功
+<br/>能的模块（即半导体&ensp;IP）授权给客户使用，并提供相应的配套软件。
+<br/>&ensp;&ensp;芯原的处理器&ensp;IP&ensp;主要包括图形处理器&ensp;IP、神经网络处理器&ensp;IP、视频处理器&ensp;IP、数字信号处
+<br/>理器&ensp;IP、图像信号处理器&ensp;IP&ensp;和显示处理器&ensp;IP。
+<br/>&ensp;&ensp;公司还拥有数模混合&ensp;IP、射频&ensp;IP&ensp;和接口&ensp;IP&ensp;共计&ensp;1,700&ensp;多个。其中，芯原基于&ensp;22nm&ensp;FD-SOI
+<br/>等工艺开发了多款低功耗高性能的射频&ensp;IP&ensp;和基带&ensp;IP，支持包括蓝牙、Wi-Fi、蜂窝物联网、多模
+<br/>卫星导航定位在内的多种技术标准，所有射频&ensp;IP&ensp;均已获多款客户芯片采用，被广泛部署于智能家
+<br/>居、智能穿戴、高精度定位等领域。芯原还在多节点工艺平台完成了系列接口&ensp;IP&ensp;的开发，覆盖成
+<br/>熟工艺与先进工艺，具体包括&ensp;28nm/22nm&ensp;FD-SOI、中芯国际&ensp;40nm/55nm&ensp;及&ensp;28nm&ensp;HKE、三星
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>广泛赋能消费电子、人工智能、高性能计算和智能汽车等核心领域。
+<br/>&ensp;&ensp;&ensp;此外，公司还可根据客户需求，为部分芯片定制客户提供定制&ensp;IP&ensp;的服务。
+<br/>&ensp;&ensp;&ensp;为降低客户开发成本、风险和缩短产品上市周期，芯原根据客户和市场需求，还推出了半导
+<br/>体&ensp;IP&ensp;平台授权服务。该授权平台通常含有公司的多个&ensp;IP&ensp;产品，IP&ensp;之间有机结合形成了子系统解
+<br/>决方案和平台解决方案，优化了&ensp;IP&ensp;之间协处理的效率、降低了系统功耗，简化了系统设计。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;图：公司提供的主要服务图
+<br/>&ensp;&ensp;&ensp;公司商业模式以及具体盈利、采购、研发、营销、管理及服务模式如下：
+<br/>&ensp;&ensp;&ensp;芯原的主要经营模式为芯片设计平台即服务（Silicon&ensp;Platform&ensp;as&ensp;a&ensp;Service，SiPaaS）模式（以
+<br/>下简称“SiPaaS&ensp;模式”）。
+<br/>&ensp;&ensp;&ensp;与传统的芯片设计服务公司经营模式不同，芯原自主拥有的各类处理器&ensp;IP、数模混合&ensp;IP、射
+<br/>频&ensp;IP&ensp;和接口&ensp;IP&ensp;是&ensp;SiPaaS&ensp;模式的核心。通过对各类&ensp;IP&ensp;进行工艺节点、面积、带宽、性能和软件等
+<br/>系统级优化，芯原打造出了灵活可复用的芯片设计平台，从而降低客户的设计时间、成本和风险，
+<br/>提高芯原的服务质量和效率。此外，芯原的芯片设计服务全面包含了芯片的前端设计、后端设计、
+<br/>软件设计和量产管理服务，可为客户提供完整的从芯片定义到交付的一站式服务。
+<br/>&ensp;&ensp;&ensp;公司与芯片产品公司的经营模式亦有一定差异，通常行业内芯片设计公司主要以设计并销售
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>自有品牌芯片产品而开展业务运营。SiPaaS&ensp;模式并无自有品牌的芯片产品，而是通过积累的芯片
+<br/>定制技术和半导体&ensp;IP&ensp;技术为客户提供一站式芯片定制服务和半导体&ensp;IP&ensp;授权服务，而产品的销售
+<br/>则由客户自身负责。该种经营模式使得公司集中力量于自身最为擅长的技术授权和研发平台输出，
+<br/>市场风险和库存风险压力较小。
+<br/>&ensp;&ensp;SiPaaS&ensp;模式具有平台化、全方位、一站式三个主要特点，这三个特点分别带来了可复用性、
+<br/>应用领域扩展性、可规模化的独特优势，这些优势共同形成了芯原较高的竞争壁垒。
+<br/>&ensp;&ensp;公司主要通过向客户提供一站式芯片定制服务（含软件支持）和半导体&ensp;IP&ensp;授权服务取得业务
+<br/>收入。
+<br/>&ensp;&ensp;一站式芯片定制服务收入主要系公司根据客户芯片和软件定制需求，完成客户芯片设计和制
+<br/>造中的全部或部分业务流程环节，以及相关软件设计所获取的收入。在芯片设计阶段，公司主要
+<br/>负责芯片硬件和软件设计工作，以及按客户需求为其定制部分&ensp;IP（通常为模拟&ensp;IP），并获取相关
+<br/>收入。
+<br/>&ensp;&ensp;当芯片设计和软件完成并通过验证后，客户将根据终端市场情况向公司下达量产芯片的订单，
+<br/>订单通常包含量产芯片的名称、规格、数量、单价等要素，公司将依据客户订单为其提供芯片的
+<br/>委外生产管理服务，交付符合规格要求的芯片产品并获取芯片量产业务收入，该阶段通常在客户
+<br/>下达生产订单时预收一部分款项，待芯片完工发货后收取剩余款项。
+<br/>&ensp;&ensp;半导体&ensp;IP&ensp;授权服务收入主要系公司将其研发的半导体&ensp;IP&ensp;以单个&ensp;IP&ensp;或&ensp;IP&ensp;平台的方式授权给客
+<br/>户使用所获取的收入。在客户芯片设计阶段，公司直接向客户交付半导体&ensp;IP&ensp;或&ensp;IP&ensp;平台，并获取
+<br/>知识产权授权使用费收入。该阶段通常在签署合同时收取一部分款项，待&ensp;IP&ensp;或&ensp;IP&ensp;平台交付完成
+<br/>后收取剩余款项。客户利用该&ensp;IP&ensp;或&ensp;IP&ensp;平台完成芯片设计并量产后，公司依照合同约定，根据客
+<br/>户芯片的销售情况，按照量产芯片的单位数量获取特许权使用费收入，该阶段客户通常按季度向
+<br/>公司提交芯片销售情况作为结算依据。
+<br/>&ensp;&ensp;公司建立了完整稳定的采购管理流程，并使用企业级资源管理系统&ensp;SAP&ensp;作为基本工具来执行
+<br/>公司采购业务。公司的采购模式主要包括一般采购模式和客户订单需求采购模式。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;一般采购模式主要适用于公司研发所需的通用软硬件采购，主要采购内容包含&ensp;EDA/设计工
+<br/>具、验证工具、仪器设备、服务器、存储以及网络设备等。客户订单需求采购模式主要适用于一
+<br/>站式芯片定制服务，公司将根据客户的量产芯片订单需求，以委外的形式向晶圆厂采购晶圆，并
+<br/>向封装及测试厂采购封装及测试服务，以完成芯片制造。
+<br/>&ensp;&ensp;供应商选择方面，公司实施严格的供应商准入制度，设有合格供应商名单，并对该名单中的
+<br/>合格供应商服务进行定期考核和评定。在具体项目执行时，通常会综合考虑供应商生产工艺节点
+<br/>的稳定性、成本结构以及交货周期等因素，以保证产品的质量，协助客户做出最佳的选择。
+<br/>&ensp;&ensp;公司采用以市场和客户需求为导向的研发模式，结合未来技术及相关行业发展方向，开展关
+<br/>键性、先进性的芯片定制技术、半导体&ensp;IP&ensp;技术和软件技术的研发，并建立了中国上海、成都、北
+<br/>京、南京、海口和广州，美国硅谷和达拉斯，以及越南胡志明市九个研发中心。
+<br/>&ensp;&ensp;（1）一站式芯片定制服务研发流程
+<br/>&ensp;&ensp;公司一站式芯片定制服务研发方向包括应用于设计平台的设计方法论，以&ensp;IP&ensp;为核心的功能子
+<br/>系统等。公司结合自有或第三方&ensp;IP，针对不同应用场景，开发了相应的设计平台并应用于实际客
+<br/>户的项目实现中。设计平台包括功能子系统、相应的设计及验证方法论和工艺节点实现流程。设
+<br/>计平台的研发流程主要包含需求收集、项目立项、项目研发、项目验收及成果推广，研发成果主
+<br/>要应用于设计平台的预研及改进。
+<br/>&ensp;&ensp;（2）软件研发流程
+<br/>&ensp;&ensp;公司软件开发流程主要包括需求分析、软件规格制定、软件开发计划制定、软件架构设计、
+<br/>软件开发、代码审核与测试、软件质量评审以及软件发布。
+<br/>&ensp;&ensp;公司已经建立了完善的自动化测试和严格的质量管控流程，实现软件快速持续迭代与发布，
+<br/>确保按照客户要求交付高质量的软件。
+<br/>&ensp;&ensp;（3）半导体&ensp;IP&ensp;研发流程
+<br/>&ensp;&ensp;公司半导体&ensp;IP&ensp;研发流程主要包括产品市场调研、技术可行性分析、产品规格制定、研发计划
+<br/>制定、IP&ensp;架构设计、IP&ensp;设计实现、IP&ensp;设计验证、IP&ensp;性能测试以及设计验收。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;（1）一站式芯片定制服务的服务模式
+<br/>&ensp;&ensp;①设计规格定义
+<br/>&ensp;&ensp;根据客户提交的产品规格要求书，细化芯片的设计规格，包括&ensp;IP&ensp;选型、部分&ensp;IP&ensp;的定制、功
+<br/>能及性能指标、芯片架构方案等，并制定芯片设计规格书。芯片设计规格书通常由双方经过反复
+<br/>讨论及修订，形成书面文件，并由双方审核确认。
+<br/>&ensp;&ensp;②设计实现及样片验证
+<br/>&ensp;&ensp;根据芯片设计规格书进行设计实现，包括但不局限于&ensp;IP&ensp;的采购及定制、逻辑设计、设计整合、
+<br/>设计验证、原型验证、物理实现及封测设计。在设计过程中，根据芯片设计规格书，并按照与客
+<br/>户约定的设计审核里程碑，定期或在关键节点对项目进展及阶段性设计成果进行讨论及审核。依
+<br/>据审核结果决定是否进入下一阶段。如果芯片设计规格需要更改，在双方同意下，更新相应的芯
+<br/>片设计规格书，并对设计计划做相应调整。
+<br/>&ensp;&ensp;设计完成并通过流片审核后，芯片进入样片试生产阶段，设计数据交付给相应晶圆厂、封装
+<br/>测试厂进行样片流片。
+<br/>&ensp;&ensp;样片流片完成后，进入样片验证阶段。公司与客户的设计及系统团队，根据设计规格，完成
+<br/>样片的测试验证，并在双方审核后签署样片确认书。
+<br/>&ensp;&ensp;③产品量产及配套支持
+<br/>&ensp;&ensp;完成样片验证后，项目进入量产阶段。按照与客户约定的下单流程，接受客户订单，制定生
+<br/>产计划，将相应订单分解为各委外供应商（晶圆厂、封测厂、物流及其他供应商）的订单，安排
+<br/>产品生产。同时监控各阶段生产状况（生产进程及相关数据），并定期将生产状况向客户汇报。当
+<br/>生产需求或状况发生变动时，协调客户及委外供应商，调整生产计划、调查变动原因，保证生产
+<br/>的正常进行。
+<br/>&ensp;&ensp;④软件设计支持
+<br/>&ensp;&ensp;根据客户的需求，在芯片设计的同时，开展相应的软件设计服务。按照与客户的约定，为客
+<br/>户设计应用软件、软件开发平台、软件开发包等，亦可根据客户需求提供定制软件、软件维护与
+<br/>升级等服务。在软件设计过程中，按照与客户约定的设计审核里程碑，定期或在关键节点对项目
+<br/>进展及阶段性设计成果进行讨论及审核。依据审核结果决定是否进入下一阶段。如果设计需求发
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>生更改，在双方同意下，对设计计划做相应调整，然后进行下一步的开发。
+<br/>&ensp;&ensp;设计完成后，将所有设计数据交由客户进行验收测试，并根据客户的反馈进行相应的调试工
+<br/>作。设计通过客户审核后，双方签署软件确认书。
+<br/>&ensp;&ensp;（2）半导体&ensp;IP&ensp;授权服务的服务模式
+<br/>&ensp;&ensp;①半导体&ensp;IP&ensp;或&ensp;IP&ensp;平台向客户交付
+<br/>&ensp;&ensp;在根据协议向客户交付授权的半导体&ensp;IP&ensp;或&ensp;IP&ensp;平台时，主要交付该&ensp;IP&ensp;或&ensp;IP&ensp;平台的数据文件，
+<br/>并附以全套功能说明文档和用户&ensp;IP&ensp;或&ensp;IP&ensp;平台的集成和实现使用手册。
+<br/>&ensp;&ensp;②交付后配套支持
+<br/>&ensp;&ensp;一般情况下，根据协议，半导体&ensp;IP&ensp;或&ensp;IP&ensp;平台交付后客户享有一年的技术支持期，芯原为客
+<br/>户提供半导体&ensp;IP&ensp;或&ensp;IP&ensp;平台集成和使用过程中所需的技术支持。技术支持期结束后，客户可根据
+<br/>实际需要延长技术支持期或采购其他后续服务。
+<br/>&ensp;&ensp;公司建立了全球化的市场销售体系，在中国大陆、中国台湾、美国硅谷、欧洲、日本、韩国
+<br/>等目标客户集中区域设置了销售和技术支持中心，能及时了解市场动向和客户需求，便于推广和
+<br/>销售公司各项服务。同时，根据芯原分区域销售原则，芯原通常以境外主体与境外客户签署协议、
+<br/>境内主体与境内客户签署协议。在销售过程中，各区域的销售团队和技术支持中心保持紧密沟通
+<br/>和协作，就近为客户提供相关销售及技术支持，以提高客户服务的响应速度和满意度。
+<br/>&ensp;&ensp;公司采用一站式全流程管理模式，为客户提供从芯片和软件定义、IP&ensp;选型及工艺评估，到芯
+<br/>片和软件设计、验证、实现、样片流片、小生产测试，直至大规模量产的全流程服务。一站式全
+<br/>流程管理模式主要包括芯片设计（含软件设计）、流片/小批量生产测试及量产三个阶段。
+<br/>(1).&ensp;行业的发展阶段、基本特点、主要技术门槛
+<br/>&ensp;&ensp;根据《国民经济行业分类》（GB/T4754-2017），公司隶属于“软件和信息技术服务业”下的“集
+<br/>成电路设计”（行业代码：I6520）。公司所处行业情况具体如下：
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;（1）全球集成电路市场需求旺盛
+<br/>&ensp;&ensp;集成电路产业发展的大环境为半导体产业，二者的发展景气度高度一致。受全球经济、国际
+<br/>形势起伏的影响，近期半导体行业存在一定的周期波动，但长期的增长趋势始终未发生变化，其
+<br/>最重要的原因是以技术进步为基石而带来的新兴应用的推陈出新。
+<br/>&ensp;&ensp;从个人电脑和宽带互联网，到智能手机和移动互联网，再到人工智能（AI）赋能万物的技术
+<br/>更替，使得半导体产业的市场前景和发展机遇越来越广阔。目前，半导体产业已进入智能手机后
+<br/>的下一个发展周期，其最主要的发展动力源自于人工智能、大数据、云计算、5G&ensp;通信、物联网、
+<br/>智慧汽车和新能源等应用的快速发展，而这其中，生成式人工智能（AIGC）的快速演进与边缘计
+<br/>算技术的日益成熟，正推动全球半导体产业进入新一轮快速增长阶段。根据&ensp;IBS&ensp;报告，全球半导
+<br/>体市场在&ensp;2025&ensp;年市场规模为&ensp;6,726&ensp;亿美元，而上述应用将驱动着该市场在&ensp;2035&ensp;年达到&ensp;16,341&ensp;亿
+<br/>美元，呈稳定快速增长态势。
+<br/>&ensp;&ensp;IBS&ensp;报告指出，就具体终端应用而言，无线通信和计算机是半导体的最大应用市场，计算机
+<br/>应用受&ensp;AI&ensp;驱动影响较大，将在&ensp;2035&ensp;年占据半导体市场的&ensp;36.95%。生成式&ensp;AI&ensp;技术则将快速渗透
+<br/>至半导体各类应用场景，到&ensp;2035&ensp;年，AI&ensp;相关半导体将占据&ensp;77.7%的整体半导体市场份额，边缘
+<br/>端物理&ensp;AI&ensp;的广泛普及将成为半导体市场增长的核心驱动力。
+<br/>&ensp;&ensp;虽然近两年半导体市场受到公共卫生事件、地缘政治等因素影响出现波动，但自&ensp;2024&ensp;年起，
+<br/>该市场正在逐步复苏。世界半导体贸易统计组织（WSTS）于&ensp;2025&ensp;年&ensp;12&ensp;月发布的最新全球半导
+<br/>体市场预测，预计&ensp;2025&ensp;年全球半导体营收将同比增长&ensp;22.5%至&ensp;7,720&ensp;亿美元，2026&ensp;年将进一步增
+<br/>长&ensp;26.3%，达到&ensp;9,750&ensp;亿美元，逼近&ensp;1&ensp;万亿美元大关。
+<br/>&ensp;&ensp;（2）中国集成电路产业快速发展
+<br/>&ensp;&ensp;中国大陆是全球最大的电子设备生产基地，也是集成电路器件最大的消费市场，而且其需求
+<br/>增速持续保持较高水平。强劲的市场需求，明确的政策引导，以及本土化安全可控的供应链管理
+<br/>趋势，促使中国大陆集成电路生态得到快速发展，进而扩大了中国集成电路整体产业规模。
+<br/>&ensp;&ensp;从上游集成电路制造端来看，国际半导体产业协会（SEMI）最新公布的《300&ensp;毫米晶圆厂展
+<br/>望》报告指出，中国大陆将继续在&ensp;300&ensp;毫米设备支出方面保持领先地位，预计&ensp;2026&ensp;年至&ensp;2028&ensp;年
+<br/>的投资额将达到&ensp;940&ensp;亿美元。韩国将以&ensp;860&ensp;亿美元的投资额位居第二，中国台湾未来三年将在&ensp;300
+<br/>毫米设备上投资&ensp;750&ensp;亿美元，位居第三，主要集中在&ensp;2nm&ensp;及以下产能上。Trend&ensp;Force&ensp;预计，2023
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>年至&ensp;2027&ensp;年，全球成熟（28nm&ensp;及以上）与先进（16nm&ensp;及以下）半导体制程的比例约为&ensp;7&ensp;比&ensp;3。
+<br/>预计到&ensp;2027&ensp;年，中国大陆成熟制程产能的全球占比将从&ensp;29%增长至&ensp;33%。
+<br/>&ensp;&ensp;从下游集成电路设计端来看，中国大陆晶圆产能的快速提升，为国内集成电路设计行业在降
+<br/>低成本、扩大产能、提高地域便利性等方面提供了支持，对整个集成电路产业的发展起到了拉动
+<br/>作用。同时，大陆市场的旺盛需求和投资热潮也促进了我国集成电路设计行业专业人才的培养及
+<br/>配套产业的发展。集成电路产业环境的良性发展为我国集成电路设计产业的扩张和升级提供了机
+<br/>遇。在上述大环境下，中国的芯片设计公司数量稳步增加。中国半导体行业协会集成电路设计分
+<br/>会公布的数据显示，自&ensp;2016&ensp;年以来，我国芯片设计公司数量大幅提升，2015&ensp;年仅为&ensp;736&ensp;家，2025
+<br/>年快速增长到了&ensp;3901&ensp;家。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;图：2010-2025&ensp;年芯片设计企业数量增长情况
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;数据来源：中国半导体行业协会集成电路设计分会
+<br/>&ensp;&ensp;中国半导体市场是全球重要且高速发展的市场。根据&ensp;IBS&ensp;的报告，中国半导体公司在中国市
+<br/>场的供应也处在高速增长阶段，外国半导体公司在中国的市场份额正在减少。2025&ensp;年，中国半导
+<br/>体市场规模达&ensp;2,744&ensp;亿美元，中国半导体公司占据其中&ensp;38.2%的市场份额；到&ensp;2030&ensp;年，预计中国
+<br/>半导体市场规模达&ensp;3,737&ensp;亿美元，中国半导体公司所占的市场份额则将快速扩大到&ensp;63%。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;图：中国的半导体供应预测
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;数据来源:&ensp;IBS,&ensp;2025&ensp;年&ensp;8&ensp;月
+<br/>&ensp;&ensp;（3）AI&ensp;ASIC&ensp;从云到端的需求显著提升，进而推动定制&ensp;ASIC&ensp;市场增长
+<br/>&ensp;&ensp;近年来，随着人工智能技术的快速发展，尤其是&ensp;AIGC&ensp;模型的广泛应用，半导体产业迎来了
+<br/>高速增长期。研究机构&ensp;IBS&ensp;的数据显示，到&ensp;2035&ensp;年，AI&ensp;相关半导体将占据&ensp;77.7%的半导体市场
+<br/>份额，边缘端物理&ensp;AI&ensp;的广泛普及将成为半导体市场增长的核心驱动力。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;图：AI&ensp;相关半导体产品市场占比
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;数据来源:&ensp;IBS,&ensp;2025&ensp;年&ensp;8&ensp;月
+<br/>&ensp;&ensp;因算法较为复杂和需要进行海量数据处理，AIGC&ensp;模型在云侧进行训练和推理，以及在端侧
+<br/>进行微调和推理时，产生了很大的算力需求，传统通用芯片（如&ensp;CPU、GPU）在能效比和算力成
+<br/>本上逐渐难以满足特定场景需求。而&ensp;AI&ensp;ASIC&ensp;凭借其定制化架构、高计算密度和低功耗特性，可
+<br/>以在特定场景中实现高性价比和低功耗，正成为市场增长的核心驱动力，这也推动了产业链相关
+<br/>企业加速研发更先进的制程工艺、先进的封装技术、创新的芯片架构（如&ensp;Chiplet），以及定制专
+<br/>用的&ensp;AI&ensp;ASIC&ensp;芯片。目前，AI&ensp;ASIC&ensp;正在被众多细分垂直领域的领先企业所采用，包括谷歌的&ensp;TPU、
+<br/>百度的昆仑芯，以及自动驾驶和消费电子领域的领先&ensp;OEM&ensp;厂商等。
+<br/>&ensp;&ensp;值得一提的是，随着&ensp;AI&ensp;技术不断向应用端渗透，边缘端的&ensp;AI&ensp;计算，包括微调和推理，将成
+<br/>为半导体市场未来十年增长的关键。研究机构&ensp;IBS&ensp;的数据显示，
+<br/>亿美元，2035&ensp;年将快速增长至&ensp;7,093&ensp;亿美元，极大驱动着半导体市场的增速。在边缘&ensp;AI&ensp;计算中，
+<br/>性能、功耗和面积尺寸（PPA）的每一项指标都很重要，将直接影响应用端数据处理的效率、能
+<br/>耗和成本，AI&ensp;ASIC&ensp;更是成为端侧&ensp;AI&ensp;芯片的首要选择。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;图片：云端计算&ensp;AI&ensp;芯片&ensp;vs.&ensp;边缘计算&ensp;AI&ensp;芯片
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;数据来源:&ensp;IBS,&ensp;2025&ensp;年&ensp;8&ensp;月
+<br/>&ensp;&ensp;（4）系统厂商、互联网厂商、云服务提供商、车企自主设计芯片的趋势明显
+<br/>&ensp;&ensp;近年来，系统厂商、互联网公司、云服务提供商、车企因成本、差异化竞争、创新性、掌握
+<br/>核心技术、供应链可控等原因，越来越多地开始设计自有品牌的芯片。这类企业因为业务结构、
+<br/>运营策略、芯片设计资源和经验相对欠缺等原因，多寻求与芯片设计服务公司进行合作。例如小
+<br/>米、苹果等系统厂商都拥有自己的芯片设计团队或者希望依托集成电路设计服务企业帮助自己开
+<br/>发专用芯片；谷歌、亚马逊、阿里巴巴、腾讯、百度、字节跳动、快手等互联网公司，纷纷着手
+<br/>开发与其业务相关的自有芯片；国内知名的新能源车企如蔚来、小鹏、理想等，都纷纷推出了自
+<br/>研智驾芯片等，这种趋势为集成电路设计产业中半导体&ensp;IP&ensp;和芯片设计服务的发展拓展了市场空间。
+<br/>&ensp;&ensp;此外，该类企业因其核心业务为应用端的产品或是服务，因此在寻求芯片设计服务时，多倾
+<br/>向于采用含硬件和软件的完整的系统解决方案，以缩短开发周期和降低风险。
+<br/>&ensp;&ensp;（5）安全、可控的迫切需求
+<br/>&ensp;&ensp;集成电路产业是国家战略性产业，集成电路芯片被运用在社会的各个角落，只有做到芯片底
+<br/>层技术和底层架构的完全“安全、可控”，才能保证国家信息系统的安全独立。目前我国绝大部分
+<br/>的芯片都建立在国外公司的&ensp;IP&ensp;授权或架构授权基础上。核心技术和知识产权的受制于人具有着较
+<br/>大的技术风险。由于这些芯片底层技术不被国内企业掌握，因此在安全和供应问题上得不到根本
+<br/>保障。IP&ensp;和芯片底层架构国产化是解决上述困境的有效途径，市场对国产芯片的“安全、可控”的
+<br/>迫切需求为本土半导体&ensp;IP&ensp;供应商提供了发展空间。
+<br/>&ensp;&ensp;（6）良好的半导体产业扶持政策
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;国家高度重视和大力支持集成电路行业的发展，相继出台了多项政策，如国务院于&ensp;2020&ensp;年&ensp;8
+<br/>月发布的《新时期促进集成电路产业和软件产业高质量发展的若干政策》，将集成电路产业发展提
+<br/>升到国家战略的高度，充分显示出国家发展集成电路产业的决心。在&ensp;2021&ensp;年发布的《中华人民共
+<br/>和国国民经济和社会发展第十四个五年规划和&ensp;2035&ensp;年远景目标纲要》中，则进一步提出了要加强
+<br/>在人工智能、量子计算、集成电路前沿领域的前瞻性布局。2024&ensp;年《政府工作报告》则围绕“加
+<br/>快发展新质生产力”做出了三大具体部署，其中包括推动传统产业向高端化、智能化、绿色化转型；
+<br/>深化大数据、人工智能等研发应用，开展“人工智能＋”行动，打造具有国际竞争力的数字产业集
+<br/>群；以及积极培育新兴产业和未来产业。2025&ensp;年，国务院发布的《关于深入实施“人工智能+”行
+<br/>动的意见》，明确指出要强化智能算力统筹，支持&ensp;AI&ensp;芯片创新，加大金融和财政支持力度，发展
+<br/>耐心资本等，以推动人工智能与经济社会各行业各领域广泛深度融合，重塑人类生产生活范式，
+<br/>促进生产力革命性跃迁和生产关系深层次变革，加快形成人机协同、跨界融合、共创分享的智能
+<br/>经济和智能社会新形态。
+<br/>&ensp;&ensp;在良好的政策环境下，我国集成电路行业迎来了前所未有的发展契机，有助于我国集成电路
+<br/>设计产业技术水平的提高和行业的快速发展。
+<br/>(2).&ensp;公司所处的行业地位分析及其变化情况
+<br/>&ensp;&ensp;芯原的主要业务为一站式芯片定制和半导体&ensp;IP&ensp;授权两类业务，且占比均为重要，两者具有很
+<br/>强的协同效应，共同促进公司研发成果价值最大化，加之行业内类似供应商的业务布局、市场策
+<br/>略及目标客户群体有所不同，因此芯原不存在完全可比公司。规模化运营的芯片设计服务提供商
+<br/>或是半导体&ensp;IP&ensp;提供商基本都集中在海外，芯原是我国企业中极少数能与同行业全球知名公司直接
+<br/>竞争并不断扩大市场占有率的公司。
+<br/>&ensp;&ensp;（1）公司的客户群体逐步转变，系统厂商、互联网公司、云服务提供商和车企占比保持高位
+<br/>&ensp;&ensp;近年来，系统厂商、互联网公司、云服务提供商和车企等因成本、差异化竞争、创新性、掌
+<br/>握核心技术、供应链可控等原因，越来越多地开始设计自有品牌的芯片。这类企业因为业务结构、
+<br/>运营策略、芯片设计资源和经验相对欠缺等原因，多寻求与芯片设计服务公司进行合作。
+<br/>&ensp;&ensp;芯原拥有先进的芯片定制技术、丰富的&ensp;IP&ensp;储备，延伸至软件和系统平台的设计能力，以及长
+<br/>期服务各类客户的经验积累，成为了系统厂商、互联网公司、云服务提供商和车企首选的芯片设
+<br/>计服务合作伙伴之一，服务的公司包括三星、谷歌、亚马逊、微软、百度、腾讯、阿里巴巴等国
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>际领先企业。报告期内，公司来自系统厂商、互联网企业、云服务提供商和车企客户的收入占总
+<br/>收入比重约四成。
+<br/>&ensp;&ensp;（2）公司是中国大陆排名第一的半导体&ensp;IP&ensp;供应商
+<br/>&ensp;&ensp;根据&ensp;IPnest&ensp;的最新统计，从半导体&ensp;IP&ensp;销售收入角度，芯原是&ensp;2024&ensp;年中国大陆排名第一、全
+<br/>球排名第八的半导体&ensp;IP&ensp;授权服务提供商；2024&ensp;年，芯原的知识产权授权使用费收入排名全球第
+<br/>六。根据&ensp;IPnest&ensp;的报告和企业公开数据，在全球排名前十的&ensp;IP&ensp;企业中，芯原的&ensp;IP&ensp;种类排名前二。
+<br/>随着后续客户产品的逐步量产，公司的特许权使用费收入将进一步提升，从而使得公司&ensp;IP&ensp;授权业
+<br/>务的规模效应将进一步扩大。
+<br/>&ensp;&ensp;目前，芯原的神经网络处理器（NPU）IP&ensp;已被&ensp;91&ensp;家客户用于其&ensp;140&ensp;余款人工智能芯片中，
+<br/>集成了芯原&ensp;NPU&ensp;IP&ensp;的人工智能（AI）类芯片已在全球范围内出货近&ensp;2&ensp;亿颗，这些内置芯原&ensp;NPU
+<br/>的芯片主要应用于智能手机、平板电脑、可穿戴设备、智慧电视、智慧家居、安防监控、物联网、
+<br/>服务器、汽车电子、智慧医疗等&ensp;10&ensp;余个市场领域，奠定了芯原在人工智能领域全球领先的根基。
+<br/>芯原最新一代&ensp;NPU&ensp;架构针对&ensp;Transformer&ensp;类模型进行了优化，既能高效运行&ensp;Qwen、LLAMA&ensp;类的
+<br/>大语言模型，也能支撑&ensp;Stable&ensp;Diffusion、MiniCPM&ensp;等&ensp;AIGC&ensp;和多模态模型。报告期内，芯原与谷
+<br/>歌基于之前&ensp;Open&ensp;Se&ensp;Cura&ensp;开源项目合作基础，共同打造了面向端侧大语言模型应用、基于&ensp;RISC-V
+<br/>指令集的超低能耗&ensp;Coral&ensp;NPU&ensp;IP，这其中，谷歌提供开源技术，芯原提供企业级&ensp;IP、芯片设计及
+<br/>量产服务，为智能眼镜、可穿戴设备、AI&ensp;玩具等提供“轻量级、始终在线、超低能耗”的端侧&ensp;AI
+<br/>解决方案。报告期内，芯原超低能耗&ensp;NPU&ensp;已可为移动端大语言模型应用提供超&ensp;40&ensp;TOPS&ensp;算力，
+<br/>并已在知名企业的手机和平板电脑中量产出货。芯原的&ensp;NPU&ensp;还与自有的众多处理器&ensp;IP&ensp;深度集成，
+<br/>形成包括&ensp;AI-ISP、AI-Display、AI-VPU、AI-GPU、AI-DSP&ensp;在内的多个&ensp;AI&ensp;加速子系统解决方案。
+<br/>报告期内，芯原的&ensp;AI-ISP&ensp;芯片定制方案（芯原提供架构设计、软硬协同设计和量产支持）已在知
+<br/>名企业的智能手机中量产出货。此外，针对智慧汽车快速发展的趋势，芯原神经网络处理器&ensp;IP
+<br/>VIP9000Nano&ensp;已于报告期内通过&ensp;ISO&ensp;26262&ensp;ASIL&ensp;B&ensp;级汽车功能安全认证，标志着公司在&ensp;NPU&ensp;功
+<br/>能安全领域的重要进展。基于其可编程、可扩展特性，以及自有的创新&ensp;NeuroBrick&ensp;片上硬件加速
+<br/>解决方案，芯原的&ensp;NPU&ensp;IP&ensp;可针对不同应用场景极大优化客户芯片的&ensp;PPA&ensp;特性，在业界极具竞争
+<br/>优势。
+<br/>&ensp;&ensp;芯原的图形处理器（GPU）IP&ensp;已深耕嵌入式市场超过&ensp;20&ensp;年，在多个重要市场领域获得了头
+<br/>部企业的采用，包括数据中心、汽车电子、PC、可穿戴设备等，内置芯原&ensp;GPU&ensp;的芯片已在全球
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>范围内出货超过&ensp;20&ensp;亿颗。报告期内，公司推出了全新超低功耗的&ensp;GPU&ensp;IP——GCNano3DVG，该
+<br/>IP&ensp;具备&ensp;3D&ensp;与&ensp;2.5D&ensp;图形渲染功能，在视觉效果与功耗效率之间实现了卓越平衡，专为可穿戴设备
+<br/>及其他需要动态图形渲染的紧凑型电池供电设备而设计，如智能手表、智能手环、AI/AR&ensp;眼镜等。
+<br/>目前，芯原的&ensp;GPU&ensp;IP&ensp;已在&ensp;30&ensp;余款智能手表和&ensp;10&ensp;余款&ensp;AI&ensp;眼镜中量产上市。芯原的&ensp;GPU&ensp;IP&ensp;在桌
+<br/>面显示渲染方面也有突出的性能表现，现已在&ensp;10&ensp;余款国产电脑中量产上市。此外，通过将自有的
+<br/>GPU&ensp;和&ensp;NPU&ensp;技术进行流水线级的深度融合，芯原还推出了系列&ensp;AI-GPU（GPGPU-AI）IP，可灵
+<br/>活支持图形渲染、通用计算以及&ensp;AI&ensp;处理，为数据中心、云游戏、边缘服务器、AIGC&ensp;相关应用提
+<br/>供大算力通用处理器平台，并利用统一的软件接口和一体化的编译器，让用户可以使用标准编程
+<br/>接口来驱动不同的硬件处理器单元。报告期内，芯原正式发布了面向汽车和边缘&ensp;AI&ensp;服务器应用的
+<br/>可扩展、高性能&ensp;GPGPU-AI&ensp;IP，可高效支持大语言模型推理、多模态感知以及实时决策等复杂的
+<br/>AI&ensp;工作负载。目前，芯原的&ensp;GPGPU&ensp;IP&ensp;已获得众多&ensp;AI&ensp;高性能计算客户的采用；芯原的&ensp;GPU&ensp;和
+<br/>GPGPU-AI&ensp;IP&ensp;还在全球范围内进行了多次架构授权，被应用在众多高性能计算产品中。
+<br/>&ensp;&ensp;芯原的&ensp;Hantro&ensp;视频处理器（VPU）IP&ensp;已被全球前&ensp;20&ensp;名云平台解决方案提供商中的&ensp;7&ensp;家，中
+<br/>国前&ensp;5&ensp;大互联网提供商中的&ensp;3&ensp;家，以及&ensp;2024&ensp;年中国造车新势力&ensp;Top&ensp;8&ensp;榜单中&ensp;5&ensp;家所采用。这反映
+<br/>了公司在服务器、数据中心和汽车市场占据了有利地位，这些市场也是芯原的重要目标市场。针
+<br/>对目前不断增长的&ensp;AI&ensp;视频应用，以及高质量流媒体和沉浸式体验需求，报告期内，公司还推出了
+<br/>新一代低复杂度增强视频编码（LCEVC）视频解码器&ensp;IP——VC9000D_LCEVC。其与芯原的
+<br/>VC9000D&ensp;基础视频解码器协同工作，可提供高达&ensp;8K&ensp;超高清的解码能力，满足高性能、低功耗的
+<br/>视频处理需求，适用于智能电视、机顶盒和移动设备等先进多媒体应用。
+<br/>&ensp;&ensp;芯原的数字信号处理器&ensp;ZSP&ensp;IP&ensp;于&ensp;2006&ensp;年从&ensp;LSI&ensp;Logic&ensp;公司收购而来，至今已有&ensp;20&ensp;余年的技
+<br/>术积累，被广泛应用于音频/语音、无线通信和计算机视觉等领域。报告期内，公司推出了&ensp;ZSP5000
+<br/>系列&ensp;IP，该产品线基于公司第五代经硅验证的数字信号处理器（DSP）架构，采用高可扩展性和
+<br/>低功耗的设计，并针对计算机视觉、嵌入式人工智能等计算密集型应用进行了深度优化，结合架
+<br/>构的可配置能力，该系列&ensp;IP&ensp;可为各类边缘设备提供兼具能效优势和计算效率的优秀解决方案。
+<br/>&ensp;&ensp;芯原的图像信号处理（ISP）IP&ensp;自&ensp;2017&ensp;年正式推出以来，快速获得了市场的认可。截至报告
+<br/>期末，已有&ensp;100&ensp;余家客户授权使用了芯原的&ensp;ISP&ensp;IP，广泛应用于扫地机器人、汽车、安防监控、
+<br/>AI&ensp;眼镜、无人机和运动相机等领域，并进一步向&ensp;AI&ensp;玩具、具身智能等更泛化的&ensp;AI&ensp;边缘计算领域
+<br/>拓展。针对日益增长的&ensp;AI&ensp;应用，报告期内，芯原推出了基于&ensp;AI&ensp;技术的&ensp;ISP&ensp;调优系统&ensp;AcuityPercept，
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>以智能优化图像处理参数，提升目标识别能力，从而提升&ensp;AI&ensp;感知系统的准确性和效率；还发布了
+<br/>新一代&ensp;AI&ensp;ISP&ensp;解决方案&ensp;ISP9000，除了利用&ensp;AI&ensp;图像处理算法&ensp;AI&ensp;降噪（AI&ensp;NR）和&ensp;AI&ensp;WDR&ensp;提供
+<br/>高图像质量和低功耗外，还高效支持多传感器，具备快速上下文切换和低延迟响应能力，同时优
+<br/>化输出以兼顾&ensp;NPU&ensp;处理和人眼视觉需求。芯原的&ensp;ISP&ensp;研发与车规认证工作同步进行，目前已有多
+<br/>款&ensp;ISP&ensp;IP&ensp;通过车规认证，截至报告期末，芯原&ensp;ISP&ensp;IP&ensp;已获全球&ensp;80&ensp;多家客户采用，其中包括&ensp;20&ensp;多
+<br/>家汽车公司，赋能超过百万个高级辅助驾驶系统摄像头。
+<br/>&ensp;&ensp;&ensp;此外，芯原还于报告期内推出了新的&ensp;AI&ensp;图像处理系列&ensp;IP，包括提供智能降噪的&ensp;AINR1000
+<br/>和&ensp;AINR2000，以及提供先进超分辨率的&ensp;AISR1000&ensp;和&ensp;AISR2000。该系列&ensp;IP&ensp;为汽车、监控、云游
+<br/>戏、消费电子等多个领域提供高效、灵活且可扩展的解决方案，并兼具成本效益和优化的性能、
+<br/>功耗和面积（PPA）特性。公司于&ensp;2026&ensp;年&ensp;1&ensp;月完成收购的逐点半导体在图像后处理技术上具有深
+<br/>厚的积累，主要包含插帧、超级分辨率和图像增强等核心模块，结合芯原的图像前处理&ensp;IP，双方
+<br/>将为&ensp;AI&ensp;手机、AI&ensp;眼镜、AI&ensp;电视、AI&ensp;Pad、AI&ensp;投影等更多领域客户提供完整的图像处理方案，提
+<br/>升公司在显示处理&ensp;IP&ensp;领域的综合竞争力。
+<br/>&ensp;&ensp;&ensp;芯原正在加速各类车规&ensp;IP&ensp;的认证进程。目前，公司的第一代&ensp;ISP&ensp;IP&ensp;已获得&ensp;ISO&ensp;26262&ensp;汽车功
+<br/>能安全标准认证和&ensp;IEC&ensp;61508&ensp;工业功能安全标准认证；芯原的第二代&ensp;ISP&ensp;IP&ensp;通过了&ensp;ISO&ensp;26262&ensp;ASIL
+<br/>B&ensp;和&ensp;ASIL&ensp;D&ensp;认证；芯原的畸变矫正处理器&ensp;IP&ensp;通过了&ensp;ISO&ensp;26262&ensp;ASIL&ensp;B&ensp;认证。报告期内，芯原的
+<br/>显示处理器&ensp;IP&ensp;DC8200-FS、神经网络处理器&ensp;IP&ensp;VIP9000Nano&ensp;和接口&ensp;IP&ensp;MIPI&ensp;C/D-PHY&ensp;TX/RX&ensp;IP
+<br/>均获得了&ensp;ISO&ensp;26262&ensp;ASIL&ensp;B&ensp;认证。公司其他&ensp;IP，包括数模混合&ensp;IP&ensp;和接口类&ensp;IP，也正在逐一通过
+<br/>各类车规认证的进程中。
+<br/>&ensp;&ensp;&ensp;公司在&ensp;FD-SOI&ensp;工艺上拥有较为丰富的&ensp;IP&ensp;积累。截至目前，公司在&ensp;22nm&ensp;FD-SOI&ensp;工艺上开发
+<br/>了超过&ensp;60&ensp;个模拟及数模混合&ensp;IP，种类涵盖基础&ensp;IP、数模转换&ensp;IP、接口协议&ensp;IP&ensp;等，已累计向&ensp;46
+<br/>个客户授权了&ensp;300&ensp;多个/次&ensp;FD-SOI&ensp;IP&ensp;核；并已经为国内外知名客户提供了&ensp;45&ensp;个&ensp;FD-SOI&ensp;项目的一
+<br/>站式设计服务，其中&ensp;36&ensp;个项目已经进入量产。
+<br/>&ensp;&ensp;&ensp;面向物联网多样化场景应用，芯原在&ensp;22nm&ensp;FD-SOI&ensp;工艺上还布局了较为完整的射频类&ensp;IP&ensp;产
+<br/>品及平台方案，支持双模蓝牙、低能耗蓝牙&ensp;BLE、NB-IoT、多通道&ensp;GNSS&ensp;及&ensp;802.11ah&ensp;等物联网连
+<br/>接技术。所有射频&ensp;IP&ensp;均已获得客户芯片采用，且采用芯原&ensp;802.11ah、802.15.4g&ensp;和&ensp;GNSS&ensp;射频&ensp;IP
+<br/>的客户芯片已量产。上述产品被广泛应用于智能家居、智能穿戴、高精度定位等领域。在此基础
+<br/>上，芯原将继续拓展&ensp;IP&ensp;种类，正在开发&ensp;Wi-Fi&ensp;6&ensp;等更多高性能射频&ensp;IP&ensp;产品及方案，支持更多物联
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>网连接应用场景。
+<br/>&ensp;&ensp;&ensp;公司在接口&ensp;IP&ensp;上亦有丰富的布局。芯原已拥有完善的接口&ensp;IP&ensp;产品组合，可提供端到端完整
+<br/>解&ensp;决&ensp;方&ensp;案&ensp;，&ensp;核&ensp;心&ensp;产&ensp;品&ensp;涵&ensp;盖&ensp;UCIe&ensp;物&ensp;理&ensp;层&ensp;及&ensp;控&ensp;制&ensp;器&ensp;IP&ensp;、&ensp;USB&ensp;物&ensp;理&ensp;层&ensp;及&ensp;控&ensp;制&ensp;器&ensp;IP&ensp;、&ensp;MIPI
+<br/>D-PHY/C-PHY/A-PHY&ensp;物理层及控制器&ensp;IP、HDMI&ensp;物理层及控制器&ensp;IP、DP/eDP&ensp;物理层&ensp;IP，以及
+<br/>PCIe&ensp;物理层与高速&ensp;SerDes&ensp;IP。目前，绝大部分接口&ensp;IP&ensp;已成功导入国内外客户多款产品，实现大
+<br/>规模量产落地，助力客户在低能耗智能家居、可穿戴设备、车载高分辨率视频传输、Chiplet&ensp;高性
+<br/>能计算等领域实现商业化。在车规领域，芯原的接口&ensp;IP&ensp;也已取得阶段性突破——MIPI&ensp;C/D-PHY
+<br/>TX/RX&ensp;IP&ensp;已通过&ensp;ISO&ensp;26262&ensp;ASIL&ensp;B&ensp;功能安全认证，并已应用在多款高级驾驶辅助系统（ADAS）
+<br/>芯片中。
+<br/>&ensp;&ensp;&ensp;（3）公司具有全球领先的芯片设计服务能力
+<br/>&ensp;&ensp;&ensp;在一站式芯片定制服务方面，芯原拥有从先进&ensp;4nm&ensp;FinFET、22nm&ensp;FD-SOI&ensp;到传统&ensp;250nm
+<br/>CMOS&ensp;制程的设计能力，所掌握的工艺可涵盖全球主要晶圆厂的主流工艺、特殊工艺等，已拥有
+<br/>还提供芯片设计相关的全套软件解决方案。
+<br/>&ensp;&ensp;&ensp;此外，为满足面向汽车应用的定制芯片的特殊要求，芯原的芯片设计流程已获得&ensp;ISO&ensp;26262
+<br/>汽车功能安全管理体系认证。芯原还推出了功能安全（FuSa）系统级芯片（SoC）平台的总体设
+<br/>计流程，并基于该平台推出了智能驾驶辅助系统（ADAS）功能安全方案，完整的自动驾驶软件
+<br/>平台框架，以及车规级高性能智慧驾驶&ensp;SoC&ensp;设计平台。这其中，于报告期内推出的车规级高性能
+<br/>智慧驾驶&ensp;SoC&ensp;设计平台采用灵活可配置的架构，支持高性能多核中央处理器（CPU）、图像信号
+<br/>处理器、视频编解码器和神经网络处理器等多个协处理器高效协同工作，可选配内置芯原自研的
+<br/>ASIL&ensp;D&ensp;等级的功能安全岛，并支持高速高带宽存储子系统，具备优秀的数据吞吐和实时处理能力，
+<br/>该平台还针对包含&ensp;5nm&ensp;和&ensp;7nm&ensp;在内的先进车规工艺制程进行了优化，具备优异的功耗、性能和面
+<br/>积（PPA）特性。报告期内，公司车规级高性能智慧驾驶&ensp;SoC&ensp;设计平台已正式完成验证，并在客
+<br/>户项目上成功实施，该平台可为自动驾驶、ADAS&ensp;等高性能计算芯片提供强大且全面的技术支持。
+<br/>&ensp;&ensp;&ensp;芯原一站式芯片定制服务的整体市场认可度不断提高，已开始占据有利地位，经营成果不断
+<br/>优化，特别是当英特尔、博世、恩智浦、亚马逊、谷歌、微软等众多在其各自领域具有较强的代
+<br/>表性和先进性的国内外知名企业成为芯原客户并且形成具有较强示范效应的服务成果后，公司在
+<br/>品牌方面的竞争能力进一步增强。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;基于公司先进的芯片设计能力，芯原还推出了一系列面向快速发展市场的平台化解决方案。
+<br/>尤其在&ensp;AI&ensp;应用领域，&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;AR/VR
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;公司已拥有了丰富的软硬件芯片定制平台解决方案，涵盖如智能手表、
+<br/>眼镜等始终在线（Always-on）的轻量化空间计算设备，AI&ensp;PC、AI&ensp;手机、智慧汽车、机器人等高
+<br/>效率端侧计算设备，以及数据中心/服务器等高性能云侧计算设备。公司的芯片设计平台可以极大
+<br/>地帮助客户降低设计风险和加快上市时间。以芯原的高端应用处理器平台为例，该平台基于高性
+<br/>能总线架构和全新的先进内存方案（终极内存/缓存技术），为高性能计算、笔记本电脑、平板电
+<br/>脑、移动计算、自动驾驶等提供一个全新的实现高性能、高效率和低功耗的计算平台，并可显著
+<br/>地降低系统总体成本。公司设计的该处理器的样片，从定义到流片只用了约&ensp;12&ensp;个月的时间，回片
+<br/>的当天就顺利点亮，相关的操作系统、应用软件都在这个平台上快速得到了顺利运行。这个项目
+<br/>不仅对先进内存方案（终极内存/缓存技术）成功进行了首次验证，还充分证明了公司拥有设计国
+<br/>际领先的高端应用处理器芯片的能力，帮助公司顺利拓展了平板电脑、笔记本电脑、服务器、自
+<br/>动驾驶等业务市场。目前，公司正在面向&ensp;AIGC&ensp;和智慧出行领域推进&ensp;Chiplet&ensp;平台解决方案的研发
+<br/>和产业化工作。
+<br/>(3).&ensp;报告期内新技术、新产业、新业态、新模式的发展情况和未来发展趋势
+<br/>&ensp;&ensp;（1）所属行业在新技术方面近年来的发展情况与未来发展趋势
+<br/>&ensp;&ensp;近年来，为继续延续摩尔定律的演进，两种集成电路新工艺节点技术的诞生打破了技术瓶颈，
+<br/>分别是&ensp;FinFET&ensp;和&ensp;FD-SOI。FinFET&ensp;和&ensp;FD-SOI&ensp;两种技术都是晶体管进一步缩小所需要发展的核心
+<br/>手段。
+<br/>FinFET&ensp;和&ensp;FD-SOI&ensp;两种解决方案，以将&ensp;CMOS&ensp;工艺技术扩展到&ensp;20nm&ensp;以下。其中&ensp;FinFET&ensp;采用&ensp;3D
+<br/>架构，可大幅改善电路控制并减少漏电流，以及大幅缩短晶体管的栅长。FD-SOI&ensp;具有超薄的全耗
+<br/>尽通道，以实现更好的栅极控制，但其顶层硅厚度均匀性必须保证在几个原子层内。FinFET&ensp;和
+<br/>FD-SOI&ensp;都是关键的先进工艺技术。FinFET&ensp;具有高计算性能的特点，适用于服务器、电脑、大规
+<br/>模计算等需要长时间保持较高计算性能的应用；FD-SOI&ensp;具有低功耗、低成本和可集成射频和存储
+<br/>的优势，适用于物联网、通信、传感器、自动驾驶等待机时间较长，偶尔需要高性能计算，但更
+<br/>多地强调低功耗和高集成的应用。目前&ensp;FinFET&ensp;技术在智能手机、平板电脑、高性能计算等领域
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>已经获得了广泛的采用；而&ensp;FD-SOI&ensp;技术则在图像传感器、图像信号处理器和众多物联网相关领
+<br/>域拓开了市场空间。博世的汽车毫米波雷达，亚马逊的家用监控摄像头、索尼的相机摄像头、瑞
+<br/>萨和意法半导体的&ensp;MCU&ensp;等均已采用了&ensp;FD-SOI&ensp;技术。FD-SOI&ensp;的技术特点和优势已经获得了市场
+<br/>的广泛关注与重视，产业链各方纷纷加大相关投资。例如，2024&ensp;年&ensp;3&ensp;月&ensp;19&ensp;日，意法半导体宣布
+<br/>与三星联合推出&ensp;18nm&ensp;FD-SOI&ensp;工艺，该工艺支持嵌入式相变存储器（ePCM）；2024&ensp;年&ensp;6&ensp;月&ensp;11&ensp;日，
+<br/>法国&ensp;CEA-Leti&ensp;宣布推出&ensp;FAMES&ensp;中试生产线，43&ensp;家公司已正式表示支持，该生产线将开发包括
+<br/>约和德国德累斯顿扩大&ensp;FD-SOI&ensp;产能，以满足&ensp;MCU、雷达及其他产品对&ensp;FD-SOI&ensp;晶圆日益增长的
+<br/>需求。
+<br/>&ensp;&ensp;Chiplet（芯粒）是一种可平衡大规模集成电路的计算性能与成本，提高设计灵活度，且提升
+<br/>IP&ensp;模块经济性和复用性的技术之一。Chiplet&ensp;实现原理如同搭积木一样，把一些预先在工艺线上生
+<br/>产好的实现特定功能的芯片裸片，通过先进的封装技术（如&ensp;2.5D、3D&ensp;封装技术等）集成封装在
+<br/>一起，从而形成一个系统芯片。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;图：基于&ensp;Chiplet&ensp;异构架构的应用处理器示意图
+<br/>&ensp;&ensp;Chiplet&ensp;在继承了&ensp;SoC&ensp;的&ensp;IP&ensp;可复用特点的基础上，更进一步开启了&ensp;IP&ensp;的新型复用模式，即硅
+<br/>片级别的&ensp;IP&ensp;复用。不同功能的&ensp;IP，如&ensp;CPU、存储器、模拟接口等，可灵活选择不同的生产工艺
+<br/>分别进行生产，从而可以灵活平衡计算性能与成本，实现功能模块的最优配置而不必受限于晶圆
+<br/>厂工艺。基于&ensp;Chiplet&ensp;模式的芯片设计具备开发周期短、设计灵活性强、设计成本低等特点；可将
+<br/>不同工艺节点、材质、功能、供应商的具有特定功能的商业化裸片集中封装，以解决&ensp;7nm、5nm
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>及以下工艺节点中性能与成本的平衡，有效缩短芯片的设计时间和降低风险，并提高供应链管理
+<br/>的灵活度。Chiplet&ensp;的发展演进为&ensp;IP&ensp;供应商，尤其是具有芯片设计能力的&ensp;IP&ensp;供应商，拓展了商业
+<br/>灵活性和发展空间。
+<br/>&ensp;&ensp;&ensp;研究机构&ensp;Omdia&ensp;的报告显示，2024&ensp;年，采用&ensp;Chiplet&ensp;的处理器芯片的全球市场规模预计达&ensp;58
+<br/>亿美元，到&ensp;2035&ensp;年将达到&ensp;570&ensp;亿美元。Chiplet&ensp;主要适用于大规模计算和异构计算。以&ensp;AMD、英
+<br/>特尔、台积电等为代表的多家集成电路领导厂商已先后发布了相关&ensp;Chiplet&ensp;解决方案、接口协议或
+<br/>封装技术。2022&ensp;年&ensp;3&ensp;月&ensp;2&ensp;日，英特尔、AMD、ARM、高通、台积电、三星、日月光、Google&ensp;云、
+<br/>Meta(Facebook)、微软这十家行业领导企业共同成立了&ensp;Chiplet&ensp;标准联盟，正式推出了通用&ensp;Chiplet
+<br/>的高速互联标准，芯原已经成为大陆首批加入&ensp;UCIe&ensp;联盟的企业之一。
+<br/>&ensp;&ensp;&ensp;Chiplet&ensp;将在&ensp;AIGC&ensp;和自动驾驶领域率先获得应用，主要由于该技术可解决&ensp;AIGC&ensp;和智慧出行
+<br/>领域现阶段所面临的主要痛点。
+<br/>&ensp;&ensp;&ensp;对于&ensp;AIGC&ensp;应用来说，云侧（如服务器）的训练和推理，以及端侧（如手机、汽车、物联网
+<br/>设备）的微调和推理，对算力的需求均正在快速增长。一方面，目前满足云端训练需求的大算力
+<br/>单芯片，因成本、良率、设计资源和供应等因素，必须拆分成算力相对较低的&ensp;Chiplet&ensp;模块，再通
+<br/>过先进封装集成为大算力芯片，以及进行后续迭代；另一方面，端侧对算力的要求较为多样化，
+<br/>比如汽车、智能手表等不同端侧会因为产品形态和应用场景不同，对算力的需求不尽相同，因此
+<br/>Chiplet&ensp;架构的芯片更能灵活满足&ensp;AIGC&ensp;类应用的实际需求。
+<br/>&ensp;&ensp;&ensp;目前，新能源汽车正在全球范围内快速发展，其带来的先进&ensp;ADAS&ensp;和自动驾驶技术需求，使
+<br/>得汽车芯片在汽车中的价值和价格比重均日益增加。高端智驾芯片面临设计周期长、单芯片（大
+<br/>芯片）良率较低、生产受限以及算力扩展困难等挑战，采用&ensp;Chiplet&ensp;技术可以有效解决这些问题，
+<br/>并已在汽车产业界达成共识，相关技术获得了积极部署。例如，2023&ensp;年&ensp;11&ensp;月，瑞萨发布了第五
+<br/>代汽车芯片战略，明确表示将会采用&ensp;Chiplet&ensp;架构，并在&ensp;2027&ensp;年提供基于&ensp;Chiplet&ensp;架构的&ensp;SoC、
+<br/>MCU&ensp;等系列产品；国内蓝洋智能、北极雄芯都已经推出了&ensp;Chiplet&ensp;架构的汽车芯片（北极雄芯推
+<br/>出了基于&ensp;Chiplet&ensp;架构的&ensp;Qiming935&ensp;系列车规级芯片，并于&ensp;2023&ensp;年&ensp;7&ensp;月通过了&ensp;SGS&ensp;功能安全产品
+<br/>认证&ensp;ISO&ensp;26262:2018&ensp;ASIL&ensp;B，是国内首款获得此认证的基于&ensp;Chiplet&ensp;的车规级芯片）；2023&ensp;年&ensp;10
+<br/>月&ensp;10&ensp;日和&ensp;11&ensp;日，汽车生态系统在比利时微电子研究中心（IMEC）召开第二届汽车&ensp;Chiplet&ensp;会议，
+<br/>各方形成共识：“无论如何，Chiplet&ensp;都将成为未来汽车的一部分”；2024&ensp;年&ensp;10&ensp;月，博世与&ensp;Tenstorrent
+<br/>宣布合作，开发用于汽车芯片的&ensp;Chiplet&ensp;标准化平台，该合作旨在通过标准化&ensp;Chiplet&ensp;降低成本并
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>加速汽车芯片的上市等。
+<br/>&ensp;&ensp;RISC-V&ensp;是一个免费、开放的指令集架构，是加州大学伯克利分校图灵奖得主&ensp;David&ensp;Patterson
+<br/>教授及其课题组，历经三十多年研发的第五代基于&ensp;RISC&ensp;的&ensp;CPU&ensp;指令集架构。2015&ensp;年，加州伯克
+<br/>利大学将&ensp;RISC-V&ensp;指令集架构开源，并成立由工业界和学术界成员组成的非营利组织&ensp;RISC-V&ensp;基金
+<br/>会，来指导&ensp;RISC-V&ensp;的发展方向以及促进其在不同行业的应用。目前，RISC-V&ensp;基金会已经有来自
+<br/>高通、三星、腾讯等国际领军企业，以及加州大学伯克利分校、麻省理工学院、中科院计算所等
+<br/>顶尖学术机构。
+<br/>&ensp;&ensp;RISC-V&ensp;的出现极大地促进了芯片设计的灵活性和商业模式的自由度。全球已有大量的芯片设
+<br/>计公司采用了&ensp;RISC-V&ensp;指令集进行芯片设计，如西部数据、英伟达、英特尔、兆易创新、全志科
+<br/>技等，这些芯片被广泛应用到消费电子、工业控制、自动驾驶、人工智能、通信、数据中心等领
+<br/>域。谷歌已公开表示，将把&ensp;RISC-V&ensp;架构作为&ensp;Android&ensp;操作系统的主要硬件平台，进行深度支持。
+<br/>Semico&ensp;Research&ensp;预测，2025&ensp;年全球基于&ensp;RISC-V&ensp;架构处理器核的芯片出货量将达到&ensp;800&ensp;亿颗。
+<br/>RISC-V&ensp;产业联盟（CRVIC），截至&ensp;2025&ensp;年&ensp;12&ensp;月底，会员单位已达到&ensp;204&ensp;家。2024&ensp;年，芯原联合
+<br/>芯来科技、达摩院共同发起成立了民办非企业单位——上海开放处理器产业创新中心（SOPIC），
+<br/>该中心专注于推动处理器技术，特别是基于开放指令集架构（如&ensp;RISC-V）的研发、生态建设和产
+<br/>业化应用。
+<br/>&ensp;&ensp;由中国&ensp;RISC-V&ensp;产业联盟和芯原共同主办的滴水湖中国&ensp;RISC-V&ensp;产业论坛已经成功召开了&ensp;4
+<br/>届，每届会议集中发布&ensp;10&ensp;余款国产&ensp;RISC-V&ensp;芯片新品，现已累计推广了&ensp;40&ensp;多款，量产率达&ensp;90%，
+<br/>被广泛应用于消费电子、智能家居、可穿戴设备、通信、汽车、工业控制等多个领域。由上海开
+<br/>放处理器产业创新中心在上海主办的第五届“RISC-V&ensp;中国峰会”规模盛大，包括&ensp;1&ensp;场主论坛、9&ensp;场
+<br/>垂直领域分论坛、5&ensp;场研习会、11&ensp;项同期活动，以及&ensp;4500&ensp;平方米未来科技展览区，汇聚来自&ensp;17
+<br/>个国家的数百家企业、研究机构及开源技术社区参会。主论坛当日共计&ensp;3000&ensp;余人线下参会，12.5
+<br/>万人次线上观看论坛直播；当日媒体原创报道达&ensp;200&ensp;余篇，会后媒体原创报道总数达&ensp;425&ensp;篇；参
+<br/>会总人次为&ensp;8188&ensp;人。该中心还联合清华大学、北京大学、浙江大学、上海交通大学、复旦大学、
+<br/>西安交通大学、同济大学、山东大学、华东师范大学、电子科技大学、上海大学和上海科技大学
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>这&ensp;12&ensp;所高校，历时半年精心编撰和发布了《RISC-V&ensp;导论：设计与实践》研究生选修课开源课件，
+<br/>助力&ensp;RISC-V&ensp;专业人才培养。
+<br/>&ensp;&ensp;&ensp;（2）所属行业在新产业方面近年来的发展情况与未来发展趋势
+<br/>&ensp;&ensp;&ensp;集成电路产业经过了数十年的发展，在技术上的不断突破带来持续的应用迭代，改变了许多
+<br/>传统行业，亦催生出众多新产业，如&ensp;AI&ensp;PC、AI&ensp;手机、AI/AR&ensp;眼镜等可穿戴设备、智慧家居、智
+<br/>慧出行，以及其他&ensp;AIGC&ensp;相关应用等。上述集成电路设计产业新技术的快速发展直接推动了集成
+<br/>电路产品的推陈出新，促成新兴产业的诞生。
+<br/>&ensp;&ensp;&ensp;以广义物联网为代表的新兴产业，在可预见的未来内发展趋势明朗。可穿戴设备、智能家电、
+<br/>自动驾驶汽车、智能机器人、3D&ensp;显示等应用的发展将促使数以百亿计的新设备进入这些领域，万
+<br/>物互联的时代正在加速来临。Fortune&ensp;Business&ensp;Insights&ensp;的研究报告指出，2024&ensp;年，全球物联网市
+<br/>场规模为&ensp;7,144.8&ensp;亿美元。预计该市场将从&ensp;2024&ensp;年的&ensp;8,643.2&ensp;亿美元增长到&ensp;2032&ensp;年的&ensp;40,623.4&ensp;亿
+<br/>美元，预测期内复合年增长率为&ensp;24.30%。
+<br/>&ensp;&ensp;&ensp;人类正在步入数字化社会，所产生的数据呈指数级增长。随着信息技术的高速发展，数据价
+<br/>值挖掘是大势所趋，AIGC&ensp;是将这些数据转化成为高价值的重要手段。
+<br/>术的自然语言处理应用成为了&ensp;AIGC&ensp;技术的重要应用突破口，快速在各行各业取得应用。大算力
+<br/>是支撑&ensp;AIGC&ensp;应用快速发展演进的根基。OpenAI&ensp;预估人工智能应用对算力的需求每&ensp;3.5&ensp;个月翻一
+<br/>倍，每年增长近&ensp;10&ensp;倍，这极大地提升了&ensp;NPU、GPU、GPGPU&ensp;和相关高性能计算技术的市场应用
+<br/>空间，并对其性能持续提出更高的要求。
+<br/>了更优化的硬件使用策略、创新的训练方法、高效的模型压缩技术，充分符合端侧设备对&ensp;AI&ensp;模型
+<br/>紧凑、高效、易用的需求，将推动&ensp;AI&ensp;大语言模型在端侧的快速部署。DeepSeek&ensp;为发展端侧的“小
+<br/>的大模型”或者“小模型”提供了很好的技术条件：比如，DeepSeek&ensp;部署在&ensp;AI/AR&ensp;眼镜中可以很好
+<br/>地解决用户隐私和安全问题；DeepSeek&ensp;部署在汽车中，可以解决智驾系统的时延问题等。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;在边缘人工智能终端产品中，以&ensp;AI/AR&ensp;眼镜为代表的智慧可穿戴设备被认为是继智能手机之
+<br/>后的下一个十亿级出货量的产品，这类设备可搭载更为自然的人机交互界面和越来越强大的本地
+<br/>AI&ensp;处理能力，创新人们的数字生活和社交。
+<br/>&ensp;&ensp;AI&ensp;玩具正快速演进为儿童的“智能成长伙伴”，其核心趋势是从被动娱乐转向主动式个性化教
+<br/>育与情感陪伴。通过整合嵌入式&ensp;AI、多模态感知与先进计算技术，玩具能实时理解儿童的情绪状
+<br/>态和学习进度，提供自适应互动与内容，拓展了儿童的成长视野和帮助心智发育。AI&ensp;玩具有望逐
+<br/>步成为个性启蒙和家庭教育不可或缺的刚需产品。
+<br/>&ensp;&ensp;数据已经成为信息化时代中重要的生产要素和社会财富，甚至关乎国家安全。近年来，信息
+<br/>通信技术产业加速向万物互联、万物感知、万物智能时代演进，海量数据资源集聚增速远超摩尔
+<br/>定律。据&ensp;IBS&ensp;的报告，2018&ensp;年至&ensp;2030&ensp;年，数据量将成长&ensp;1455&ensp;倍，这给以数据存储和通信为核心
+<br/>业务的数据中心带来巨大的压力，同时也带来了巨大的市场发展潜力。
+<br/>&ensp;&ensp;随着数据中心对网络通信速度和性能需求的不断提升，高速接口技术也迎来关键发展时期，
+<br/>这其中最为关键的高速&ensp;SerDes&ensp;接口&ensp;IP&ensp;已经成为了近年来研究的热点。该接口&ensp;IP&ensp;实现了高速串行
+<br/>通信链路的升级，提供更多带宽和更高端口密度，提升数据中心效率，为大数据的持续发展奠定
+<br/>了基础。
+<br/>&ensp;&ensp;此外，AI&ensp;技术的不断演进促使对高性能计算的需求不断攀升。随着摩尔定律在晶体管微缩上
+<br/>的效益递减，以及以&ensp;Chiplet&ensp;为代表的先进封装技术崛起，芯片内与芯片间数据通路的带宽和能效
+<br/>瓶颈日益凸显。Serdes&ensp;技术通过提供高带宽、降低延迟、提升能效，直接决定了多核、多芯粒、
+<br/>异构计算架构的有效算力总和，是打破现有系统瓶颈、实现更高级别计算的关键使能技术。
+<br/>&ensp;&ensp;随着短视频、直播、移动办公/会议、电竞、云游戏、视频社交等应用的快速发展，以及网络
+<br/>影视剧内容的不断丰富，视频已经成为了重要的信息媒介。在无线通信技术、高速数据传输技术
+<br/>和高清显示技术的发展驱动下，超高清视频显示已经成为了投影仪、电视、电脑、手机等具备多
+<br/>媒体功能的设备的标配。
+<br/>&ensp;&ensp;这类应用既需要优质的视频图像显示效果，也需要兼顾从云到端的带宽资源占用、功耗和时
+<br/>延等问题。上述应用将为支持超高清视频标准的视频编解码芯片、显示处理芯片、音视频处理芯
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>片、应用处理器芯片等芯片产品开辟出广阔的市场空间。
+<br/>&ensp;&ensp;汽车行业正经历“电动化、网联化、智能化、无人化”的变革，智能出行时代已经到来。在上
+<br/>述趋势推动下，汽车电子的元件数量和价值量均得到飞速提升。中商产业研究院数据显示，2020
+<br/>年汽车电子占整车成本比例为&ensp;34.32%，至&ensp;2030&ensp;年有望达到&ensp;49.55%，汽车电子行业前景广阔。IC
+<br/>Insights&ensp;的数据显示，汽车专用模拟&ensp;IC&ensp;和汽车专用逻辑&ensp;IC&ensp;为近年来增长最快的两个&ensp;IC&ensp;细分领域。
+<br/>随着汽车智能化提高、自动驾驶技术突破以及新能源汽车销量增长，预计每辆汽车的平均半导体
+<br/>器件价格也将提高到&ensp;550&ensp;美元以上。
+<br/>&ensp;&ensp;车联网（V2X,&ensp;Vehicle-to-Everything）是未来汽车实现自动驾驶的重要基础，其以车辆为主体，
+<br/>依靠通信网络互连实现车间（V2V）、车与人（V2P）、车与网（V2N）、车与基础设施（V2I）的
+<br/>互通互联、信息共享，进而达到保障交通安全、提高驾驶体验、拓展智能服务等目标的智慧交通
+<br/>解决方案。C-V2X（Cellular&ensp;Vehicle-to-Everything，基于蜂窝网络的车联网通信技术）是中国主推
+<br/>的车联网技术标准，也是目前全球车联网的唯一标准。当前我国在车联网方面走在了世界前列，
+<br/>未来我国有望凭借产业链领先优势，引领全球车联网产业发展，抢占&ensp;V2X&ensp;的全球市场份额。
+<br/>动交通、医疗、制造等传统行业向智能化、无线化等方向变革的重要参与者。高性能、低延时、
+<br/>大容量是&ensp;5G&ensp;网络的突出特点，这对高性能芯片提出了海量需求，且&ensp;5G&ensp;在物联网以及消费终端的
+<br/>大量使用，还需要低功耗技术做支撑。目前高性能、低功耗芯片技术正处于快速发展期，5G&ensp;市场
+<br/>正在推动集成电路设计行业进入新一波发展高峰。根据中国信通院《5G&ensp;经济社会影响白皮书》预
+<br/>测，就中国市场而言，在直接产出方面，按照&ensp;2020&ensp;年&ensp;5G&ensp;正式商用算起，当年带动近&ensp;5,000&ensp;亿元
+<br/>的直接产出，2025&ensp;年、2030&ensp;年将分别增长至&ensp;3.3&ensp;万亿元和&ensp;6.3&ensp;万亿元，十年间的年均复合增长率
+<br/>为&ensp;29%；在间接产出方面，2020&ensp;年、2025&ensp;年、2030&ensp;年，5G&ensp;将分别带动&ensp;1.2&ensp;万亿、6.3&ensp;万亿和&ensp;10.6
+<br/>万亿元，年均复合增长率为&ensp;24%。
+<br/>&ensp;&ensp;全球产业界已启动&ensp;6G&ensp;标准化工作，目标是在&ensp;2030&ensp;年前后实现商用。下一代网络将支持沉浸
+<br/>式体验，并为智慧城市、AI&ensp;工业基础设施等提供集成式通信。同时，量子安全通信、更环保的可
+<br/>持续网络也正成为重要的探索前沿。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;（3）所属行业在新业态、新模式方面近年来的发展情况与未来发展趋势
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;随着集成电路产业的不断发展，集成电路产业链上下游企业在运营模式上，均出现了新的变
+<br/>化，具体体现为半导体产业的三次转移，以及第三次转移带来的“轻设计”趋势。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;始于&ensp;1960&ensp;年代的世界半导体发展至今，共发生三次转移，分别是从美国到日本，从日本到韩
+<br/>国、中国台湾，以及从韩国、中国台湾到中国大陆的转移。正在进行过程中的第三次转移，也即
+<br/>向中国的转移，是在智能手机、移动互联网快速发展的契机下，全球半导体产业从韩国、中国台
+<br/>湾地区向中国大陆转移，而物联网、人工智能、5G、新能源汽车等应用的兴起，进一步促进了该
+<br/>转移。虽然近年来有国际局势、地缘政治等因素的影响，但在中国发展新质生产力的号召下，传
+<br/>统产业的全面数字化转型，5G&ensp;的快速部署，电动汽车和新能源产业的快速发展，快速兴起的云上
+<br/>/远程办公、教育、娱乐和社交，以及“人工智能+”赋能的全面产业升级等，都带动了相关产业的
+<br/>发展。从国家和地方政策、产业基金到科创板，也都充分展示了国家发展半导体产业的意志和决
+<br/>心。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;在产业转移的过程中，产业链的分工不断细化。因此集成电路产业正在进行轻设计
+<br/>（Design-Lite）这一运营模式的升级。与之前相对“重设计”的&ensp;Fabless&ensp;模式不同，在轻设计模式下，
+<br/>芯片设计公司将专注于芯片定义、芯片架构、软件/算法，以及市场营销等，将芯片前端和后端设
+<br/>计，量产管理等全部或部分外包给设计服务公司，以及更多地采用半导体&ensp;IP，减少运营支出，实
+<br/>现轻量化运营。在集成电路产业“轻设计”的趋势下，芯片设计公司的设计工作将更加灵活便捷，
+<br/>从而促进集成电路产业的快速发展。
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;单位：元&ensp;&ensp;&ensp;币种：人民币
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;本年比上年
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;增减(%)
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;总资产&ensp;&ensp;&ensp;&ensp;&ensp;7,717,557,679.75&ensp;&ensp;&ensp;4,629,859,316.97&ensp;&ensp;&ensp;&ensp;66.69&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;4,406,380,975.42
+<br/>归属于上市公司股
+<br/>&ensp;&ensp;东的净资产
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;营业收入&ensp;&ensp;&ensp;&ensp;3,152,444,709.71&ensp;&ensp;&ensp;2,321,885,572.72&ensp;&ensp;&ensp;&ensp;35.77&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;2,337,996,408.69
+<br/>扣除与主营业务无
+<br/>关的业务收入和不&ensp;&ensp;&ensp;&ensp;&ensp;3,148,403,194.58&ensp;&ensp;&ensp;2,316,975,603.43&ensp;&ensp;&ensp;&ensp;35.88&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;2,328,953,201.99
+<br/>具备商业实质的收
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>入后的营业收入
+<br/>&ensp;&ensp;利润总额&ensp;&ensp;&ensp;&ensp;&ensp;-513,269,696.75&ensp;&ensp;&ensp;-581,882,714.75&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;不适用&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-269,223,602.01
+<br/>归属于上市公司股
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-527,813,327.29&ensp;&ensp;&ensp;-600,879,358.50&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;不适用&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-296,466,724.17
+<br/>&ensp;&ensp;东的净利润
+<br/>归属于上市公司股
+<br/>东的扣除非经常性&ensp;&ensp;&ensp;-613,604,191.40&ensp;&ensp;&ensp;-643,427,174.53&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;不适用&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-318,070,037.57
+<br/>&ensp;损益的净利润
+<br/>经营活动产生的现
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-221,686,853.90&ensp;&ensp;&ensp;-345,990,209.33&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;不适用&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-8,523,893.46
+<br/>&ensp;&ensp;金流量净额
+<br/>加权平均净资产收
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-18.64&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-24.98&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;增加&ensp;6.34&ensp;个百分点&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-10.54
+<br/>&ensp;&ensp;益率（%）
+<br/>基本每股收益（元
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-1.03&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-1.20&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;不适用&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-0.59
+<br/>&ensp;&ensp;&ensp;／股）
+<br/>稀释每股收益（元
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-1.03&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-1.20&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;不适用&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-0.59
+<br/>&ensp;&ensp;&ensp;／股）
+<br/>研发投入占营业收&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;减少&ensp;10.94&ensp;个百分
+<br/>&ensp;入的比例（%）&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;点
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;单位：元&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;币种：人民币
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;第一季度&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;第二季度&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;第三季度&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;第四季度
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;（1-3&ensp;月份）&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;（4-6&ensp;月份）&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;（7-9&ensp;月份）&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;（10-12&ensp;月份）
+<br/>&ensp;&ensp;&ensp;营业收入&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;389,670,345.85&ensp;&ensp;&ensp;&ensp;584,129,488.35&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;897,907,944.99
+<br/>归属于上市公司股东的
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-220,343,448.02&ensp;&ensp;&ensp;&ensp;-99,505,119.46&ensp;&ensp;&ensp;-26,851,090.49&ensp;&ensp;&ensp;&ensp;-181,113,669.32
+<br/>&ensp;&ensp;&ensp;&ensp;净利润
+<br/>归属于上市公司股东的
+<br/>扣除非经常性损益后的&ensp;&ensp;&ensp;&ensp;&ensp;-233,263,057.69&ensp;&ensp;&ensp;-124,751,937.15&ensp;&ensp;&ensp;-78,657,134.86&ensp;&ensp;&ensp;&ensp;-176,932,061.70
+<br/>&ensp;&ensp;&ensp;&ensp;净利润
+<br/>经营活动产生的现金流
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-219,770,413.57&ensp;&ensp;&ensp;-145,429,380.29&ensp;&ensp;&ensp;-25,903,267.38&ensp;&ensp;&ensp;&ensp;169,416,207.33
+<br/>&ensp;&ensp;&ensp;&ensp;量净额
+<br/>季度数据与已披露定期报告数据差异说明
+<br/>□适用&ensp;√不适用
+<br/>&ensp;&ensp;&ensp;&ensp;名股东情况
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;单位:&ensp;股
+<br/>截至报告期末普通股股东总数(户)&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;53,043
+<br/>年度报告披露日前上一月末的普通股股东总数
+<br/>(户)
+<br/>截至报告期末表决权恢复的优先股股东总数
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>（户）
+<br/>年度报告披露日前上一月末表决权恢复的优先
+<br/>股股东总数（户）
+<br/>截至报告期末持有特别表决权股份的股东总数
+<br/>（户）
+<br/>年度报告披露日前上一月末持有特别表决权股
+<br/>份的股东总数（户）
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;前十名股东持股情况（不含通过转融通出借股份）
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;质押、标记或冻结
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;持有有&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;情况
+<br/>&ensp;&ensp;&ensp;&ensp;股东名称&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;报告期内&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;期末持股&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;比例&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;限售条&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;股东
+<br/>&ensp;&ensp;&ensp;&ensp;（全称）&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;增减&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;数量&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;(%)&ensp;&ensp;&ensp;&ensp;&ensp;件股份&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;性质
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;股份
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;数量&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;数量
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;状态
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;境外法
+<br/>VeriSilicon&ensp;Limited&ensp;&ensp;&ensp;-15,771,398&ensp;&ensp;&ensp;59,907,001&ensp;&ensp;&ensp;11.39&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;&ensp;无&ensp;&ensp;&ensp;&ensp;0
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;人
+<br/>国家集成电路产业投&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;国有法
+<br/>资基金股份有限公司&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;人
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;境外法
+<br/>富策控股有限公司&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-4,749,949&ensp;&ensp;&ensp;&ensp;34,454,307&ensp;&ensp;&ensp;6.55&ensp;&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;&ensp;无&ensp;&ensp;&ensp;&ensp;0
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;人
+<br/>嘉兴时兴创业投资合
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-4,017,492&ensp;&ensp;&ensp;&ensp;20,505,910&ensp;&ensp;&ensp;3.90&ensp;&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;&ensp;无&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;其他
+<br/>伙企业（有限合伙）
+<br/>嘉兴海橙创业投资合
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-3,538,286&ensp;&ensp;&ensp;&ensp;17,035,422&ensp;&ensp;&ensp;3.24&ensp;&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;&ensp;无&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;其他
+<br/>伙企业（有限合伙）
+<br/>招商银行股份有限公
+<br/>司－华夏上证科创板
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-8,345,981&ensp;&ensp;&ensp;&ensp;14,394,484&ensp;&ensp;&ensp;2.74&ensp;&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;&ensp;无&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;其他
+<br/>&ensp;指数证券投资基金
+<br/>中国工商银行股份有
+<br/>限公司－易方达上证
+<br/>科创板&ensp;50&ensp;成份交易&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-1,149,450&ensp;&ensp;&ensp;&ensp;13,508,531&ensp;&ensp;&ensp;2.57&ensp;&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;&ensp;无&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;其他
+<br/>型开放式指数证券投
+<br/>&ensp;&ensp;&ensp;资基金
+<br/>香港中央结算有限公&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;境外法
+<br/>&ensp;&ensp;&ensp;&ensp;司&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;人
+<br/>上海浦东新兴产业投&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;国有法
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;-4,563,779&ensp;&ensp;&ensp;&ensp;10,702,140&ensp;&ensp;&ensp;2.04&ensp;&ensp;&ensp;&ensp;&ensp;0&ensp;&ensp;&ensp;&ensp;&ensp;无&ensp;&ensp;&ensp;&ensp;0
+<br/>&ensp;&ensp;资有限公司&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;人
+<br/>&ensp;&ensp;DAI,&ensp;WAYNE&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;境外自
+<br/>&ensp;&ensp;&ensp;WEI-MING&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;然人
+<br/>&ensp;&ensp;&ensp;&ensp;上述股东关联关系或一致行动的说明&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;1、嘉兴时兴创业投资合伙企业（有限合伙）和
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;嘉兴海橙创业投资合伙企业（有限合伙）构成
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;一致行动人；
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;芯原微电子（上海）股份有限公司2025&ensp;年年度报告摘要
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;WEI-MING&ensp;构成一致行动人；
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;也未知是否属于一致行动人。
+<br/>表决权恢复的优先股股东及持股数量的说明&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;无
+<br/>存托凭证持有人情况
+<br/>□适用&ensp;√不适用
+<br/>截至报告期末表决权数量前十名股东情况表
+<br/>□适用&ensp;√不适用
+<br/>□适用&ensp;&ensp;&ensp;√不适用
+<br/>□适用&ensp;&ensp;&ensp;√不适用
+<br/>□适用&ensp;√不适用
+<br/>□适用&ensp;√不适用
+<br/>&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;&ensp;第三节&ensp;重要事项
+<br/>公司经营情况有重大影响和预计未来会有重大影响的事项。
+<br/>&ensp;&ensp;公司报告期内具体经营情况分析详见本节“二、经营情况讨论与分析”相关内容。
+<br/>止上市情形的原因。
+<br/>□适用&ensp;&ensp;&ensp;√不适用
+<p></p>
+                            
+                        </div>
+                    </div>
+                    <div class="tags">
+                        
+                        <div class="ybnm">
+    <div class='ylng'>
+        <a href='http://weibo.com/stock666666' class='share_stock' target="_blank">证券之星</a>
+        <a href="http://weibo.com/stock666666" class="share_sina" title="证券之星官方微博"></a>
+        <a id='Weixin' onmouseover="this.className='hover'" onmouseout="this.className=''" href="http://info.stockstar.com/hb/mobquote/" style="text-decoration:none" title="证券之星微信"> 微信
+            <div class='show-weixin'>
+                <div class='jian'></div>
+                <div class='img'></div>
+                <div class='txt'>
+                    <div class='weixin-icon'>扫描二维码</div>
+                    <div class='weixin-btn'>关注</div>
+                    <div>证券之星微信</div>
+                </div>
+            </div>
+        </a>
+        <a href="http://4g.stockstar.com/" id="weixin_share_bottom" title="分享到微信朋友圈"></a>
+  
+        <div class="bdsharebuttonbox" data-tag="share_1" style="float:left">
+            <a class="bds_tsina" data-cmd="tsina" href="#"></a>
+            <a class="bds_qzone" data-cmd="qzone" href="#"></a>
+        </div>
+        <a href="http://info.stockstar.com/aboutus/report.htm" id="share_reporting" title="举报专区"></a>
+        <script type="text/javascript">
+            //添加一个事件
+            var init = function (o) {
+                var url = '//news.stockstar.com/api/Weixin.aspx?';
+                url += "m=" + encodeURIComponent(encodeURIComponent(globalConfig && globalConfig.Mobile ? globalConfig.Mobile : this.location.href));
+                url += "&title=" + encodeURIComponent(encodeURIComponent(globalConfig && globalConfig.Title ? globalConfig.Title : this.title));
+                url += "&url=" + encodeURIComponent(encodeURIComponent(globalConfig && globalConfig.Url ? globalConfig.Url : this.location.href));
+                o.attr('href', url);
+                o.attr('target', '_blank');
+            }
+
+
+            $("#weixin_share_bottom").click(function () {
+                init($(this));
+                return true;
+            });
+            $("#weixin_share_top").click(function () {
+                init($(this));
+                return true;
+            });
+            $('.bds_tsina').click(function () {
+                $(this).attr('href', 'http://service.weibo.com/share/share.php?url=' + (globalConfig && globalConfig.Url ? globalConfig.Url : this.location.href) + '&type=text&pic=&title=' + encodeURIComponent(globalConfig && globalConfig.Title ? globalConfig.Title : this.title));
+            });
+            $('.bds_qzone').click(function () {
+                $(this).attr('href', ' http://sns.qzone.qq.com/cgi-bin/qzshare/cgi_qzshare_onekey?url=' + (globalConfig && globalConfig.Url ? globalConfig.Url : this.location.href) + '&title=' + encodeURIComponent(globalConfig && globalConfig.Title ? globalConfig.Title : this.title) + '');
+            });
+        </script>
+    </div>
+</div>
+                    </div>
+                   <div style="width:100%;border-bottom: 1px solid #aeaeae;"></div>
+                    <!--相关个股-->
+                    <div class="xggg"><div style="float:left;"><span>相关股票：</span></div> <div class="stock"><div class="active" onmousemove="ShowRelatedStock(this, '688521')"><a href="//stock.quote.stockstar.com/688521.shtml">芯原股份</a></div><div class="app" style="display:block"> <img src="//i.ssimg.cn/images/public/news/jt.gif" alt=""> </div></div></div><div class="hzyk"> <div id="stock_688521" class="jgpj" style="display: block"><svg style="position:absolute;width:0;height:0;overflow:hidden;"  xmlns="http://www.w3.org/2000/svg"  xmlns:xlink="http://www.w3.org/1999/xlink"><defs><path id="fa-star-path" d="M259.3 17.8L194 150.2 47.9 171.5c-26.2 3.8-36.7 36.1-17.7 54.6l105.7 103-25 145.7c-4.5 26.3 23.2 46 46.4 33.7L288 439.6l129 68.4c23.2 12.3 51-7.4 46.4-33.7l-25-145.7 105.7-103c19-18.5 8.5-50.8-17.7-54.6L382 150.2 316.7 17.8c-11.7-23.4-45.1-23.4-56.9 0z" /></defs></svg> <div class="fl jg"><div class="fl Xc">好投资评级：<div class="fa-stars"><span class="half-star"><svg class="svg-star" viewBox="0 0 576 512"> <use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gold" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg></span><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg></div></div><div class="fl Xb">好价格评级：<div class="fa-stars"><span class="half-star"><svg class="svg-star" viewBox="0 0 576 512"> <use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gold" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg></span><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg><svg class="svg-star gray" viewBox="0 0 576 512"><use xlink:href="#fa-star-path"></use></svg></div></div></div><div class="pj fl"><i>证券之星估值分析提示芯原股份行业内竞争力的护城河优秀，盈利能力较差，营收成长性较差，综合基本面各维度看，估值偏高。 <a href="//resource.stockstar.com/DataCenter/PrivateData/Assess_value_688521.html">更多&gt;&gt;</a></i></div></div></div>
+                    <!--end 相关个股-->
+                    <!--相关新闻-->
+                    
+                    <!--end 相关新闻-->
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="dian1">
+        下载<span style="color: #c42607;">证券之星</span>
+        <img src="//i.ssimg.cn/images/public/news/qr-zqzx-app.jpg" alt="" style="margin-left: 4px;">
+        <a id="test" style="cursor: pointer">
+            <img src="//i.ssimg.cn/images/public/news/ji.png" alt="" style="margin-left: 2px;">
+        </a>
+    </div>
+    <div class="statement">
+    <strong>郑重声明：</strong>以上内容与证券之星立场无关。证券之星发布此内容的目的在于传播更多信息，证券之星对其观点、判断保持中立，不保证该内容（包括但不限于文字、数据及图表）全部或者部分内容的准确性、真实性、完整性、有效性、及时性、原创性等。相关内容不对各位读者构成任何投资建议，据此操作，风险自担。股市有风险，投资需谨慎。如对该内容存在异议，或发现违法及不良信息，请发送邮件至jubao@stockstar.com，我们将安排核实处理。如该文标记为算法生成，算法公示请见  网信算备310104345710301240019号。
+</div>
+
+    <div class="bottom">
+    <div class="btop">
+        <a href="https://www.stockstar.com/nav/map.html">网站导航</a>
+        |
+        <a href="https://info.stockstar.com/aboutus/">公司简介</a>
+        |
+        <a href="https://info.stockstar.com/aboutus/disclaimer.htm">法律声明</a>
+        |
+        <a href="https://info.stockstar.com/job/">诚聘英才</a>
+        |
+        <a href="https://info.stockstar.com/aboutus/in.htm"> 征稿启事</a>
+        |
+        <a href="https://info.stockstar.com/aboutus/lx.htm">联系我们</a>
+        |
+        <a href="https://info.stockstar.com/aboutus/lx.htm#ad">广告服务</a>
+        |
+        <a href="https://info.stockstar.com/aboutus/report.htm">举报专区</a>
+    </div>
+    <div class="bbottom">
+        <span>欢迎访问证券之星！请<a href="https://info.stockstar.com/aboutus/lx.htm">点此</a>与我们联系 版权所有： Copyright &copy; 1996-<script type="text/javascript">document.write(new Date().getFullYear())</script>年</span>
+    </div>
+</div>
+<!--WebTCode Start-->
+<script type="text/javascript" src="https://www.stockstar.com/wt/SS_dcs_tag.js"></script>
+<!--WebTCode End-->
+    <script type="text/javascript">
+        (function () {
+            var a = document.getElementById("ssTypeRadio"),
+                b = a.getElementsByTagName("input");
+            for (var i = 0; i < b.length; i++) {
+                (function (a, b, c) {
+                    c.onclick = function () {
+                        for (var i = 0; i < b; i++) {
+                            if (i == a) {
+                                document.getElementById("ssType_" + i).style.display = 'block';
+                            } else {
+                                document.getElementById("ssType_" + i).style.display = 'none';
+                            }
+                        }
+                    }
+                })(i, b.length, b[i]);
+            }
+            new StockSuggest("ajaxinput", {
+                width: "200px",
+                autoSubmit: true,
+                className: 'ssajax_lib_suggest',
+                types: [101, 102, 103, 104, 105, 201, 300, 401, 403, 405, 501, 502, 503, 504],
+                status: [1, 2, 3, 4],
+                thColor: '#eeeeee',
+                borderstyle: 'dotted',
+                opacity: 1,
+                orderBy: 2,
+                text: '代码/名称/拼音',
+                header: { show: true, columns: [/*"代码", */"简称", "类型"] },
+                evt: 'ajaxinputquery'
+            });
+        })();
+    </script>
+        <!--2026-09-18 13:06:35-->
+    <script type="text/javascript">
+        var advertsId = 'stock';
+        var allowComment = false;
+        var allowCopy = true;
+    </script>
+    <script type="text/javascript">
+    if (window["allowCopy"] != null && window["allowCopy"] != undefined && !window["allowCopy"]) {
+        document.oncontextmenu = function () { return false }; document.onkeydown = function () { if (event.ctrlKey && window.event.keyCode == 67) { return false } }; document.body.oncopy = function () { return false }; document.onselectstart = function () { return false };
+    }
+</script>
+<script type="text/javascript">
+    $(function () {
+        stockstar.ad.init(['right_Top', 'right_Mid', 'right_Bot']); //投放广告
+    });
+</script>
+    <!--[if IE 8]>
+     <script type="text/javascript" src="//j.ssajax.cn/js/info/news/PIE.js"></script>
+    <![endif]-->
+    <!--[if IE 7]>
+     <script type="text/javascript" src="//j.ssajax.cn/js/info/news/PIE.js"></script>
+    <![endif]-->
+    <script>
+       //兼容ie
+        $(function () {
+            if (window.PIE) {
+                $('.headimg').each(function () {
+                    PIE.attach(this);
+                });
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1180,3 +1180,65 @@ prefill 过程中，每当一个 chunk 跨过某个"距末尾 k 个 token"的阈
 `QW_PREFIX_SNAPSHOT` 与 `QW_PREFIX_DISK` **仍是 opt-in**。磁盘缓存会在
 `QW_PREFIX_DISK` 目录下占用数 GB（默认上限 8 GB，`QW_PREFIX_DISK_MB` 可调），
 是否把它作为默认启动参数，应该由用户决定——**未经要求就往 home 目录写几 GB 是不合适的。**
+
+
+---
+
+## 26. 与 llama.cpp / Ollama 对比：基线与阻塞（第 21 轮）
+
+目标：在 TTFT 与输出 tok/s 上超过 llama.cpp / Ollama 部署的 Qwen3.8-27B FP4。
+
+### 已完成
+
+**1. 装好 llama.cpp 0.4.0**（brew bottled）：`llama-bench`、`llama-cli`、`llama-server`，
+Metal 后端已识别（`ggml_metal_device_init`）。Ollama 未装。
+
+**2. 确认模型身份**：源仓库 **`Qwen/Qwen3.8-27B`**（MLX 版是 `mlx-community/Qwen3.8-27B-4bit`，
+其 README 的 `base_model` 字段给出）。`model_type: qwen3_5`、`Qwen3_5ForConditionalGeneration`
+（多模态），**18 个分片 / 55.56 GB**。
+
+**3. 本地无法转 GGUF**：`models/Qwen3.8-27B-bf16-mtp/` 里**只有第 18/18 片**（3.2 GB，
+MTP 头），`index.json` 引用的另外 17 片（52 GB）不在本地。
+
+**4. 但不需要转——有现成 GGUF**：
+- `ggml-org/Qwen3.8-27B-GGUF` → `Qwen3.8-27B-Q4_K_M.gguf`（llama.cpp 官方组织）
+- `unsloth/Qwen3.8-27B-GGUF` → `Qwen3.8-27B-Q4_0.gguf` 等 7 个 Q4 变体
+
+**5. 我们这一侧的基线测准了**：
+
+| 指标 | 实测 |
+|---|---|
+| TTFT（23 token 短 prompt） | **0.6 s** |
+| TTFT（OpenCode hello，命中前缀缓存） | **0.2 s** |
+| **decode（真实服务端，48 token / 2.6 s）** | **23.9 tok/s** |
+| decode（纯 GEMV 权重扫读，`bench -k1`） | 33.1 tok/s（30.18 ms/token） |
+| **prefill（真实，k=4）** | **47.9 tok/s**（20.89 ms/token） |
+
+**⇒ 真实 decode 23.9 tok/s 对纯 GEMV 的 33.1 tok/s，中间有约 28% 的开销不在权重扫读上**
+（注意力、GDN、卷积、采样、HTTP）。这是 decode 侧的真实优化空间。
+
+### 阻塞
+
+**网络不可用**：HF 下载实测约 **0.5 MB/s**（55.6 GB bf16 需要 30+ 小时），
+换 16 GB 的 Q4_K_M GGUF 后**连连接都建立不起来**（60 秒仅 4 KB 元数据，持续 Retrying）。
+本会话早前 `git push` 也反复超时（"Failed to connect to github.com port 443"、"HTTP2 framing layer"），
+是同一问题。
+
+**⇒ 没有 GGUF 就无法跑 llama.cpp 的基线，也就无法做同权重对拍。**
+需要的命令（网络恢复后）：
+
+```bash
+hf download ggml-org/Qwen3.8-27B-GGUF Qwen3.8-27B-Q4_K_M.gguf
+llama-bench -m ~/.cache/huggingface/hub/models--ggml-org--Qwen3.8-27B-GGUF/\
+  snapshots/*/Qwen3.8-27B-Q4_K_M.gguf -p 512 -n 64
+```
+
+### 不依赖下载、可以直接推进的部分
+
+目标是比较，但**改进我们这一侧不需要对方基线**。两个已量化的方向：
+
+1. **prefill 的 2.8 倍**：多行 GEMV 在 k=4 时跑 172 GB/s，而 k=1 证明硬件能到 477 GB/s。
+   核从带宽受限滑向发射受限（§20）。修好可把 prefill 从 47.9 推向约 133 tok/s。
+   注意 §21 的教训：**换核已被配对 A/B 否决**，需要真正重做核，且必须用交错配对 A/B 判定。
+2. **decode 的 28%**：23.9 对 33.1 tok/s 的差距在权重扫读之外。
+   `forward_rows` 里注意力有 5 个逐行 dispatch 循环（§20），单 token 时这些固定开销占比很高。
