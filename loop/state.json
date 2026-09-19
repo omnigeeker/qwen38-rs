@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 197,
+ "round": 198,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4889,9 +4889,53 @@
     ],
     "default_untouched": "yes, reverted"
    }
+  },
+  {
+   "round": 198,
+   "title": "Corrected a vacuous measurement and produced a precise decomposition of the cold prefill.  The 602-token cold prefill returns '<think>' for both mode 0 and mode 2 (which skips every MAC), so a max_tokens=1 cold-prefill md5 carries almost no information - this model's first token on that prompt is always '<think>'.  Earlier correctness claims resting on that comparison, including the single-pass prefill change, were therefore vacuous; that change is still validated by accept.sh's mlx-lm oracle so the conclusion stands, but correctness must now go through gemm-check or the oracle.  The diagnostic modes do work - mode 2 changes output on a 26-token generation (a97e4ebb to fc75a676).  Decomposition of the 5.39 s cold prefill: mode 1 (skip dequant) 5.246/5.384, mode 2 (skip MACs) 3.827/3.830, mode 3 (skip activation staging) 3.978/4.126.  Cross-check: weight+output = 3.83-1.35-0.1 = 2.38 and 2.38+0.1+1.56 = 4.04 vs mode 3's 3.98-4.13.  So weight staging plus output plus dispatch is about 2.4 s (44%), MACs 1.56 s (29%), activation staging 1.35 s (25%), dequant 0.1 s (2%).  Dequant is free and MACs already run at 20.8 TFLOPS; staging as a class is 3.75 s or 70%.  The BK sweep refuted coalescing in the opposite direction: BK=32 gives 9.28 KB and 5.387/5.397, BK=64 gives 12.9 KB and 5.558/5.536, BK=128 gives 23.3 KB and 8.077/8.077.  Performance degrades monotonically with threadgroup memory, so the kernel is occupancy/latency bound rather than bandwidth bound - which also explains why all sixteen earlier staging optimisations failed, since they all reduced bytes and bytes are not the bottleneck.  Next: cut threadgroup memory.  Of the 9.28 KB, wsh is 2560, xsh 2624 and osh 4096; osh alone is 44% and exists only to bounds-check partial row blocks.  Store simdgroup accumulators straight into device y: rows are safe because y is sized for BATCH_MAX (1020) and the overflow rows land inside the allocation unread, but columns need out_f % 32 == 0.  Target 5.18 KB, about 1.8x occupancy.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "kernel restored to the committed BK=32 state; default path and gemm-check re-verified",
+   "evidence": {
+    "vacuous_check": "602-token cold prefill returns '<think>' for both mode 0 and mode 2, so max_tokens=1 md5 proves nothing; mode 2 does change a 26-token generation (a97e4ebb -> fc75a676)",
+    "decomposition_s": {
+     "mode0": [
+      "5.387",
+      "5.397"
+     ],
+     "mode1_skip_dequant": [
+      "5.246",
+      "5.384"
+     ],
+     "mode2_skip_mac": [
+      "3.827",
+      "3.830"
+     ],
+     "mode3_skip_act_staging": [
+      "3.978",
+      "4.126"
+     ]
+    },
+    "breakdown": {
+     "weight_staging_output_dispatch": "~2.4 s (44%)",
+     "mac": "~1.56 s (29%)",
+     "activation_staging": "~1.35 s (25%)",
+     "dequant": "~0.1 s (2%)"
+    },
+    "cross_check": "2.38 + 0.1 + 1.56 = 4.04 vs mode 3 measured 3.98-4.13",
+    "bk_sweep": {
+     "32": "9.28 KB, 5.387/5.397",
+     "64": "12.9 KB, 5.558/5.536",
+     "128": "23.3 KB, 8.077/8.077"
+    },
+    "conclusion": "occupancy/latency bound, not bandwidth bound - performance degrades monotonically with threadgroup memory",
+    "explains_sixteen_failures": "all earlier staging optimisations reduced bytes; bytes are not the bottleneck",
+    "next": "drop osh (4096 B, 44% of the 9.28 KB) by storing accumulators straight into device y; rows are safe via BATCH_MAX padding, columns need out_f % 32 == 0",
+    "default_untouched": "yes, BK restored to 32"
+   }
   }
  ],
- "next": "Overturning result: MetalPerformancePrimitives does not execute at all on this machine, which invalidates the entire MPP line of work since round 94.  It started with a long-form comparison: on an 80-token generation the default path produces 'The user wants two things: 1. A short paragraph explaining why the ocean is salty. 2. Three facts about whales' (md5 a97e4ebb) while mode 7 produces an unrelated answer about 'the three main types of data' (md5 fc75a676), so mode 7's output has always been wrong and its 3.8x speed came from not computing.  I then turned that into a number by adding a fourth measurement path to gemm-check so the mode 7 probe is compared against the same CPU reference it had never been checked against: PROBE rel 1.000e0 on all four linears, i.e. all zeros, so the device-tensor destination is zero too and the long-standing claim that op.run into a device tensor works is false.  Elimination: cooperative versus device destination - both zero; dextents taking the shape from the bound buffer (I had been binding the whole 14.4 GB weight arena) - binding an exactly-sized copy still gives zero; dynamic_extent versus static K=5120 with slice<64,5120> - still zero; the __HAVE_INT4B_FORMAT_TYPE__ macro that gates the int4b branch - dumping it through the engine's own compiler chain gives int4b=1 tensor=1 bfloat=1 metalver=400, so the branch is compiled in; and finally a pure half-by-half matmul with device operands, a device destination and static extents gives max_abs 2.250e0 rel 1.000e0 with nonzero 0/2048.  Conclusion: mpp::tensor_ops::matmul2d::run silently does nothing on macOS 26.6.2 with SDK 27.0 and __METAL_VERSION__ 400 - output identically zero, no error, no crash, compiles fine, symbol present, feature macros present.  Consequences: round 94's '3.2x faster than the hand-written GEMM' is wrong because it timed an empty operator; last round's 'MPP ceiling 1.73 s, only 8% from llama.cpp' is wrong; last round's staging-bound explanation is partly wrong - the QW_GEMM_MODE=2 skip-MAC measurement does exercise a real branch of the hand-written kernel and remains valid, but 'MPP bypasses staging' does not hold; and every affine experiment from rounds 95-100 rested on a primitive that never worked.  What still holds: q4_gemm_tile is the only path that computes correct results (rel 3.3e-4), the single-pass prefill change in 799a417 is a real 9%, and BN=32 means a 602-token prompt reads the 14.4 GB of weights 19 times, about 274 GB, which is the main source of staging cost.  Next: drop MPP and raise BN in the hand-written kernel to cut the number of weight sweeps, doing a clean sweep that changes only BN with everything else fixed - earlier BN=8/64/128 attempts varied several things at once and were made while treating MPP as the viable route.",
+ "next": "Two results, one of which invalidates a measurement method used repeatedly before.  First, the 602-token cold prefill returns the literal string '<think>' for BOTH mode 0 and mode 2 (which skips every MAC), so comparing the md5 of a max_tokens=1 cold prefill carries almost no information - this model's first token on that prompt is always '<think>'.  Several earlier correctness claims rested on that comparison, including the single-pass prefill change, and they were therefore vacuous; that change is still validated independently by accept.sh's mlx-lm oracle, so the conclusion stands, but the method must be abandoned: correctness goes through gemm-check or the oracle, never through a cold-prefill md5.  The diagnostic modes themselves do work - mode 2 changes the output on a 26-token generation (a97e4ebb to fc75a676).  Second, a precise decomposition of the 5.39 s cold prefill using the kernel's own diagnostic modes: mode 1 (skip dequant, constant weights) 5.246/5.384, mode 2 (skip MACs) 3.827/3.830, mode 3 (skip activation staging) 3.978/4.126.  Cross-check: weight+output = 3.83 - 1.35 - 0.1 = 2.38, and 2.38 + 0.1 + 1.56 = 4.04 against mode 3's measured 3.98-4.13.  So of 5.39 s: weight staging plus output write plus dispatch about 2.4 s (44%), MACs about 1.56 s (29%), activation staging about 1.35 s (25%), dequantisation about 0.1 s (2%).  Dequantisation is essentially free and the MACs already run at 20.8 TFLOPS; the real cost is staging as a class, about 3.75 s or 70%.  The BK sweep then refuted the coalescing hypothesis in the opposite direction: BK=32 uses 9.28 KB of threadgroup memory and gives 5.387/5.397, BK=64 uses 12.9 KB and gives 5.558/5.536, BK=128 uses 23.3 KB and gives 8.077/8.077.  Performance degrades monotonically with threadgroup memory - BK=128 drops each SM from three concurrent threadgroups to one and costs 50% - so this kernel is occupancy/latency bound, not bandwidth bound.  That also explains why all sixteen earlier staging optimisations (double buffering, register prefetch, smem aliasing, uint4 staging) failed: they all reduced bytes, and bytes are not the bottleneck.  Next: cut threadgroup memory to raise occupancy.  Of the current 9.28 KB, wsh is 2560, xsh 2624 and osh 4096 - osh alone is 44% and only exists to bounds-check partial row blocks before copying into y.  Store the simdgroup accumulators straight into device y instead: the row direction is naturally safe because y is allocated for BATCH_MAX (1020) rows and the overflow rows of the last block land inside the allocation and are never read (the four-row kernel already relies on this), while the column direction needs out_f % 32 == 0 or it writes through into the next row.  Target 9.28 KB down to 5.18 KB, roughly 1.8x more occupancy.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
