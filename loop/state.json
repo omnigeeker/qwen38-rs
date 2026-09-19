@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 138,
+ "round": 139,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3286,9 +3286,38 @@
     ],
     "next": "per-row non-GEMV batching"
    }
+  },
+  {
+   "round": 139,
+   "title": "Re-measured the GEMM's cost breakdown and it reframed the whole cold-prefill problem.  With bench --rows 8 --tokens 32 over all 497 linears: full mode 12.228 ms/token (391 ms per pass), mode 1 with constant weights 12.220 - so dequantisation costs nothing at all - and mode 2 with the MMAs skipped 10.891, i.e. 348 ms.  Staging is therefore 348 of the 391 ms, 89 percent, and the actual matrix multiply is only 43 ms.  Effective bandwidth is 14.412 GB / 0.391 s = 36.8 GB/s, while the GEMV pulls 362-417 GB/s reading the same weights - a 10x deficit.  The conclusion is that cold prefill is not arithmetic-bound at all, it is bound by weight-staging memory efficiency.  The whole pass reads 391 ms here against the 272 ms recorded earlier, which may be machine state, but the composition is stable and mode 1 matching mode 0 proves dequantisation is free.  Two suspected causes, both testable: the GEMV reads weights as uint4 (16 bytes per thread) whereas staging reads one uint (4 bytes) per iteration; and sp[g]/bp[g] are re-read for every word even though eight words share a group, so scale and bias are read eight times redundantly, about 2.7 KB of extra traffic per row.  The next move is to vectorise the staging and read the scale and bias once per group, but the write side has to be redesigned first: a thread handling four consecutive words writes at offset wd*8, whose bank index is (32L) % 32 = 0, a 32-way conflict, so it needs a different mapping or a different wsh layout rather than a direct edit.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (measurement only)",
+   "evidence": {
+    "ms_per_token": {
+     "full": 12.228,
+     "no_dequant": 12.22,
+     "no_mma": 10.891
+    },
+    "per_pass_ms": {
+     "full": 391,
+     "staging": 348,
+     "mma": 43
+    },
+    "staging_share": 0.89,
+    "effective_gbps": 36.8,
+    "gemv_gbps": "362-417",
+    "deficit_x": 10,
+    "suspects": [
+     "staging reads a single uint (4 B) per iteration vs the GEMV's uint4 (16 B)",
+     "sp[g]/bp[g] re-read per word although 8 words share a group (~2.7 KB extra per row)"
+    ],
+    "write_side_hazard": "four consecutive words per thread -> bank (32L)%32 = 0 -> 32-way conflict; needs a new mapping or wsh layout",
+    "next": "vectorise staging + read scale/bias once per group"
+   }
   }
  ],
- "next": "Interleaved paired cold TTFT re-measured, with Ollama's prompt_eval_count as the no-cache proof: ours 7.44 / 9.23 / 10.46 s against Ollama 2.87 / 2.11 / 2.08 s (eval_count 455 / 450 / 429).  So cold TTFT is still lost by about 3.4-4.4x.  That is the accurate baseline now: our side improved from 10.6-14.5 s to 7.4-10.5 s, but Ollama also came in faster this time (2.1-2.9 s) than in the earlier valid run (2.5-3.2 s), so the ratio only moved from 4-5x to 3.5-4x.  Harness leftover: our usage.prompt_tokens still reads 0 because OpenAI-style streaming only carries usage when stream_options.include_usage is set.  Remaining attackable items on the cold path, from the round-33/72 decomposition: weight staging at 212 ms per pass (register prefetch already refuted), the MAC at 60 ms per pass, the per-row non-GEMV ops with a 12 percent ceiling that has never been started, and the encode overhead of 497 dispatches per pass.  The per-row non-GEMV batching is the largest untouched item, so that is the next target.",
+ "next": "Re-measured the GEMM cost breakdown with bench --rows 8 --tokens 32 and the answer changed the picture: full 12.228 ms/token (391 ms per pass), mode 1 with constant weights 12.220 (so dequantisation is completely free), and mode 2 skipping the MMAs 10.891 (348 ms) - staging is 348 of the 391 ms, 89 percent, and the MAC is only 43 ms.  Effective bandwidth is 14.412 GB / 0.391 s = 36.8 GB/s, whereas the GEMV reaches 362-417 GB/s reading the same weights.  So the cold-prefill bottleneck is NOT arithmetic, it is weight-staging memory efficiency, and it is a 10x deficit.  Note the whole pass reads 391 ms here against the 272 ms recorded earlier, which may be machine state, but the composition is stable and mode 1 equalling mode 0 proves dequantisation costs nothing.  Suspected causes to test: the GEMV reads weights as uint4 (16 bytes) while staging reads a single uint (4 bytes) per iteration, and sp[g]/bp[g] are re-read for every word although eight words share one group, so scale and bias are read eight times redundantly (about 2.7 KB extra per row).  NEXT: vectorise the staging to a uint4 load per thread and read scale/bias once per group - but the write side must be redesigned first, because a thread handling four consecutive words writes at offset wd*8, giving bank (32L) % 32 = 0, a 32-way conflict; that needs a different mapping or a different wsh layout, not a direct edit.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

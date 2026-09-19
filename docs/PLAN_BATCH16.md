@@ -4338,3 +4338,31 @@ harness 遗留：我们的 `usage.prompt_tokens` 仍读到 0 —— 需要
 **冷路径剩余可攻击项**（按 §67/§72 的分解）：
 权重 staging 212 ms/pass（register prefetch 已证无效）、MAC 60 ms/pass、
 非 GEMV 的 per-row 操作（12% 上限，未做）、以及 497 次 dispatch 的编码开销。
+
+### 72o. **GEMM 的成本分解重测：staging 占 89%，带宽只有 37 GB/s**（第 79 轮）
+
+`bench --rows 8 --tokens 32`（497 个 linear，32 token = 一个 pass），三个模式：
+
+| 模式 | ms/token | 每 pass | 含义 |
+|---|---|---|---|
+| 0 完整 | 12.228 | **391 ms** | 全部 |
+| 1 权重常数（免反量化） | 12.220 | 391 ms | **反量化免费** |
+| 2 跳过 MMA | 10.891 | **348 ms** | **staging = 348 ms** |
+
+⇒ **staging 348 ms（89%），MAC 只有 43 ms。** 有效带宽
+`14.412 GB / 0.391 s = 36.8 GB/s`。
+
+**这是关键发现：staging 跑在 37 GB/s，而 GEMV 读同样的权重能到 362–417 GB/s
+—— 差 10 倍。** 所以冷 prefill 的瓶颈**不是**算力，是权重 staging 的访存效率。
+
+（注：这次整 pass 391 ms 比 §67 记的 272 ms 高，可能是机器状态；但三项的相对
+构成是稳定的，且 mode 1 == mode 0 说明反量化完全不构成瓶颈。）
+
+**疑似原因**（待实测）：GEMV 用 `uint4`（16 字节）向量化读权重，而 staging 每次
+只读**一个 `uint`（4 字节）**；另外 `sp[g]`/`bp[g]` 每个 word 都读一次，
+8 个 word 共用一个 group，**scale/bias 被冗余读了 8 次**（每行多读约 2.7 KB）。
+
+**下一轮**：把 staging 改成向量化读（每线程 4 个 word 的 `uint4`）+ scale/bias
+每 group 只读一次。注意写入侧要重新设计：若线程处理连续 4 个 word，
+写入偏移是 `wd*8`，bank = `(32L) % 32 = 0` ⇒ **32 路冲突**，必须换映射或改
+`wsh` 布局，不能直接改。
