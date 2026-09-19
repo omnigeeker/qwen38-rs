@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 178,
+ "round": 179,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4374,9 +4374,40 @@
     "guard": "one_seq - a batch pass of unrelated sequences keeps the per-row loop",
     "next": "fuse copy_off and conv1d_silu_ring over tokens (41% of what remains)"
    }
+  },
+  {
+   "round": 179,
+   "title": "Pulled the complete prefill dispatch histogram, having previously looked only at its top seven entries, and it names the largest remaining target: the full-attention layers are still processed one token at a time during prefill.  Of 29,682 dispatches per pass, copy_off 6144 and conv1d_silu_ring 6144 form the GDN phase-2 pair at 41 per cent - per-token but with no barriers - while the attention path is 16,384 or 55 per cent: rmsnorm_s 4096 and rope_partial 4096 at 128 tokens times 32, then kv_append, attn_scores_softmax, attn_out and gate_mul at 2048 each, 128 tokens times 16 layers.  In other words prefill drives the single-token attention path, with its chain of per-token barriers.  round_bf16 does not appear, so bf16_residual is off by default and no hidden 8192 lurks there.  Since the gdn fusion showed that removing barriers pays far more than removing dispatches, the priority is clear: rmsnorm_s, rope_partial, kv_append and gate_mul total 12,288 dispatches or 41 per cent and are entirely independent per token, so they can be batched immediately, while attn_scores_softmax and attn_out total 4,096 or 14 per cent and need a causal mask over the query block, which is harder.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (measurement only; no code change this step)",
+   "evidence": {
+    "total": 29682,
+    "gdn_phase2": {
+     "copy_off": 6144,
+     "conv1d_silu_ring": 6144,
+     "share": "41%",
+     "barriers": "none"
+    },
+    "attention": {
+     "rmsnorm_s": 4096,
+     "rope_partial": 4096,
+     "kv_append": 2048,
+     "attn_scores_softmax": 2048,
+     "attn_out": 2048,
+     "gate_mul": 2048,
+     "share": "55%",
+     "barriers": "per token"
+    },
+    "interpretation": "prefill drives the single-token attention path",
+    "round_bf16": "absent - bf16_residual off by default",
+    "easy_batchable": "rmsnorm_s, rope_partial, kv_append, gate_mul = 12,288 (41%), independent per token",
+    "hard_batchable": "attn_scores_softmax, attn_out = 4,096 (14%), need a causal mask",
+    "next": "batch the attention layer over tokens, starting with the four independent operators"
+   }
   }
  ],
- "next": "Found and fixed the real fragmentation: it was never the dispatch count but the barrier per token.  A prefill pass issued 128 gdn_step dispatches and 128 barriers per GDN layer, 6,144 barriers per pass across 48 layers, repeatedly draining the GPU.  The gdn_step kernel has no threadgroup_barrier at all, each thread (hv, dv) owns its own state slice at state + (hv*Dv+dv)*Dk, and threads never communicate - so the token loop fuses into the kernel with no barrier between consecutive tokens.  The new gdn_step_seq wraps the body in a loop over t and advances each buffer by a per-token stride (s_q, s_k, s_v, s_ab and s_y in half elements, s_snap through a char* so its unit cannot be misread).  The caller guards with one_seq, rows.iter().all(|r| r.0 == rows[0].0): a prefill pass's n rows are consecutive positions of ONE sequence sharing a single state slice and must be applied in order, which the fused kernel does internally, while a batch pass of unrelated sequences keeps the per-row loop.  Dispatches per pass fell from 35,778 to 29,682, a 29 per cent cut from the original 41,874, the GDN barriers went from 6,144 to zero, gates passed 19/0 and the output is word-for-word identical.  Six interleaved A/B rounds gave A 6.201 median against B 6.071, B winning 6/6 at -3.1 per cent with every difference negative and tightly clustered (-0.173, -0.193, -0.189, -0.296, -0.086, -0.193).  So the real lever is not issuing fewer dispatches but draining the GPU less often.  The largest remaining target is copy_off 6,144 plus conv1d_silu_ring 6,144, 41 per cent of what is left, and both are entirely independent per token so they fuse the same way.  NEXT: fuse copy_off and conv1d_silu_ring over tokens.",
+ "next": "Pulled the complete prefill dispatch histogram, having only looked at the top seven entries before, and it names the largest remaining target: the full-attention layers are still processed one token at a time during prefill.  Of the 29,682 dispatches per pass, copy_off 6144 and conv1d_silu_ring 6144 are the GDN phase-2 pair at 41 per cent, per-token but with no barriers, while the attention path is 16,384 or 55 per cent - rmsnorm_s 4096 and rope_partial 4096 at 128 tokens times 32, then kv_append, attn_scores_softmax, attn_out and gate_mul at 2048 each, 128 tokens times 16 layers - meaning the prefill drives the single-token attention path with its chain of per-token barriers.  round_bf16 does not appear, so bf16_residual is off by default and there is no hidden 8192 there.  The lesson from the gdn fusion is that removing barriers pays far more than removing dispatches, so the priority is clear: rmsnorm_s, rope_partial, kv_append and gate_mul are 12,288 dispatches or 41 per cent and are entirely independent per token, so they can be batched immediately, whereas attn_scores_softmax and attn_out are 4,096 or 14 per cent and need a causal mask over the query block, which is harder.  NEXT: batch the attention layer over tokens, starting with those four independent operators.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

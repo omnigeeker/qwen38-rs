@@ -5803,3 +5803,37 @@ r5 6.158/6.072   r6 6.573/6.380
 **⇒ 这是 §72ba 之后真正有效的杠杆：不是「少发 dispatch」，而是「少排空 GPU」。**
 **剩余最大目标：`copy_off` 6,144 + `conv1d_silu_ring` 6,144（占剩余 41%），
 两者逐 token 完全独立，可同样融合。**
+
+### 72bc. 完整直方图：**全注意力层在 prefill 里是逐 token 处理的**（第 116 轮续）
+
+```
+=== FULL prefill histogram: 29,682 dispatches ===
+    copy_off                6144  (21%)   <- GDN 阶段 2，逐 token，无 barrier
+    conv1d_silu_ring        6144  (21%)   <- 同上
+    rmsnorm_s               4096  (14%)   <- 128 token × 32（16 attn 层 × 2）
+    rope_partial            4096  (14%)   <- 128 × 32
+    kv_append               2048  ( 7%)   <- 128 × 16
+    attn_scores_softmax     2048  ( 7%)   <- 128 × 16
+    attn_out                2048  ( 7%)   <- 128 × 16
+    gate_mul                2048  ( 7%)   <- 128 × 16
+    q4_gemm_tile             497  ( 2%)
+    rmsnorm_gated             48  ( 0%)   <- 已批量化
+    gdn_step_seq              48  ( 0%)   <- 已融合
+```
+
+（`round_bf16` 不在表内 ⇒ `bf16_residual` 默认为假，没有隐藏的 8,192。）
+
+**⇒ 结论**：
+- GDN 阶段 2（`copy_off` + `conv1d_silu_ring`）= **12,288（41%）**，逐 token 但**无 barrier**；
+- **全注意力层 = 16,384（55%）**，`rmsnorm_s`/`rope_partial`/`kv_append`/
+  `attn_scores_softmax`/`attn_out`/`gate_mul` **全部按 128 token × 16 层逐个派发**
+  —— 也就是 **prefill 时注意力层仍走单 token 路径**，每 token 还有一串 barrier。
+
+**⇒ 这就是下一个（也是最大的）目标。** 按 §72bb 的经验，
+「融合 + 去 barrier」的收益远大于「单纯减少 dispatch」：
+- **可立即批量化**（逐 token 完全独立）：`rmsnorm_s`、`rope_partial`、`kv_append`、`gate_mul`
+  = 12,288（41%）；
+- **需要因果掩码**（较难）：`attn_scores_softmax`、`attn_out` = 4,096（14%）。
+
+**下一轮：把注意力层按 token 批量化**（先做那 4 个独立的），
+这是本轮之后收益最大的一步。
