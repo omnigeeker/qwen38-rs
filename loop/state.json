@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 162,
+ "round": 163,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3906,9 +3906,43 @@
     "open_question": "split-K needs BN=128, so it must first restore the threadgroup count to 640 - test that directly",
     "variance": "bn32 measured 5.7-5.9 s now against 6.4 s last round, a 12% swing"
    }
+  },
+  {
+   "round": 163,
+   "title": "Finished the BN sweep and found BN=32 to be a genuine local optimum, with all three other directions measured slower.  Since the traffic formula W*(rows/BN) makes BN the only knob that reduces the weight re-read, each value was tested with a 300 s cooldown, a shared fresh 672-token prompt per round and interleaved order: BN=8 lost 6 of 6, BN=32 is the fastest baseline, BN=64 lost 4 of 4 by 27 percent - 5.876/5.929/5.707/5.979 against 7.601/7.603/7.237/7.706 - and BN=128 lost 4 of 4 by 73 percent.  Working the bandwidth back out of each explains it: 640 threadgroups achieve 61 GB/s, 320 only about 20 GB/s and 160 about 7.6 GB/s, so bandwidth is acutely sensitive to threadgroup count and the traffic saving is more than cancelled by the bandwidth collapse.  BN=32 with a 128-row pass, grid.y = 4 and 640 threadgroups is therefore the true optimum of this kernel structure, with every other direction now excluded by measurement.  Further speed needs a different structure - dequantising in registers with no shared staging at all, as the GEMV does, to bring its 400 GB/s across - rather than more tile tuning.  Reverted, md5 restored to 3826791b87de8814392d476370de4612, gemm-check PASSES and the tree is clean.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BN=64 reverted; the shipped 128-row/BN=32 build is restored)",
+   "evidence": {
+    "bn_sweep": {
+     "8": "0/6 slower",
+     "32": "baseline, fastest",
+     "64": "0/4, 27% slower",
+     "128": "0/4, 73% slower"
+    },
+    "bn32": [
+     5.876,
+     5.929,
+     5.707,
+     5.979
+    ],
+    "bn64": [
+     7.601,
+     7.603,
+     7.237,
+     7.706
+    ],
+    "bandwidth_by_threadgroups": {
+     "640": "61 GB/s",
+     "320": "~20 GB/s",
+     "160": "~7.6 GB/s"
+    },
+    "verdict": "BN=32 + 128-row pass is the optimum of this kernel structure; all other directions excluded",
+    "next": "needs a different kernel structure - register dequantisation with no shared staging, like the GEMV, to import its 400 GB/s"
+   }
   }
  ],
- "next": "Implemented BN=128 exactly as planned and it is 73 percent SLOWER, so it is reverted.  The kernel was correct - gemm-check PASSED with bit-identical max_abs and rel against BN=32, and the gates were 19/0 ACCEPTED - but four interleaved cold-TTFT rounds after a 300 s cooldown on a shared fresh 672-token prompt gave bn32 5.718/5.771/5.765/5.934 against bn128's 9.897/9.954/9.920/10.068, so it lost every pair by 73 percent.  The estimate in the previous round was wrong in one specific way: I assumed grid.y = 1 would still reach 39 GB/s, but backing the bandwidth out of the measurement - 14.4 GB of traffic spread over 9.95 s scaled to 128 of 672 tokens - puts it near 7.6 GB/s, so when parallelism falls to 160 threadgroups the bandwidth collapses far below 39 GB/s and the fourfold traffic saving is more than eaten.  The conclusion is that BN=32 with a 128-row pass, grid.y = 4, is already a good local optimum: it trades a fourfold re-read for fourfold parallelism, and here parallelism is worth much more than traffic.  split-K remains the only route that keeps both - reading the weights once while retaining four-way parallelism - but it requires BN=128, which has now been shown infeasible on its own unless split-K restores the threadgroup count to 640.  That is the question to test directly next.  Also worth recording that bn32 measured 5.7-5.9 s for 672 tokens, about 115 tok/s, better than the 6.4 s of the previous round on the same configuration - a 12 percent swing between sessions, which is exactly why comparisons must be interleaved.",
+ "next": "Completed the BN sweep and BN=32 is a genuine local optimum - all three other directions are slower.  The traffic formula W*(rows/BN) makes BN the only knob that reduces the weight re-read, so all of them were measured with a 300 s cooldown, a shared fresh 672-token prompt per round, and interleaved order: BN=8 lost 6 of 6, BN=32 is the baseline and fastest, BN=64 lost 4 of 4 by 27 percent (5.876/5.929/5.707/5.979 against 7.601/7.603/7.237/7.706), and BN=128 lost 4 of 4 by 73 percent.  Backing the bandwidth out of each shows why: 640 threadgroups reach 61 GB/s, 320 reach only about 20 GB/s and 160 about 7.6 GB/s, so achieved bandwidth is extremely sensitive to the threadgroup count and the saving in traffic is more than eaten by the collapse in bandwidth.  So BN=32 with a 128-row pass, grid.y = 4 and 640 threadgroups is the real optimum of THIS kernel structure, with all three other directions now excluded by measurement.  Going faster requires a different kernel structure - for instance dequantising in registers with no shared staging at all, as the GEMV does, to bring its 400 GB/s across - rather than further tile tuning.  Reverted, md5 back to 3826791b87de8814392d476370de4612, gemm-check PASSES, tree clean.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
