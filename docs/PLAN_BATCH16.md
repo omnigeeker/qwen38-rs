@@ -4958,3 +4958,47 @@ r2 B 0.076  A 0.056     r4 B 0.061  A 0.061
 **修正方案（下一轮）**：测试台必须**打印并校验 `prompt_eval_count` / `usage.prompt_tokens`**
 （或开 `QW_PREFIX_TIME` 看服务端 prefill 计时），确认每次都是真正的冷 prefill，
 再谈 A/B。**在此之前不采信任何冷 TTFT 数字。**
+
+### 72ag. 冷 TTFT 测试台修好；**按 out_f 选路被实测否掉（4/4 输约 15%）**（第 97 轮）
+
+**测试台的真正缺陷**：服务端在**任何 token 生成之前**先发一个**只带 role 的
+SSE 块**：
+
+```
+0.063s  data: {"choices":[{"delta":{"content":"","role":"assistant"},...}]}
+```
+
+旧脚本在**第一个 `data:` 行**就停表 ⇒ 测到的是「role 块」的延迟，
+不是 TTFT。这正是之前记录过的陷阱（**TTFT 不能用第一个 SSE 字节来测**），
+我又踩了一次。
+
+**修正**：跳过 `delta.content` 为空的块与 `:` 保活行，**只在第一个非空 content
+块停表**。服务端日志同时证实这是真冷 prefill：
+
+```
+prefix cache miss - skipped 0 of 672 prompt tokens (0%)
+prefill 192/672 (28%) after 3.1s ... 576/672 (85%) after 10.0s
+```
+
+**修好后重跑 out_f A/B**（4 轮交错，672-token 全新随机 prompt）：
+
+| 轮 | A 默认（GEMM 全开） | B `min_out_f=17408`（5120 走 tile） |
+|---|---|---|
+| 1 | **18.779** | 20.745 |
+| 2 | **17.177** | 21.154 |
+| 3 | **16.735** | 19.575 |
+| 4 | **17.791** | 20.023 |
+
+**⇒ GEMM 全开 4/4 全胜，快约 15%。**
+「小 `out_f` 用 8 倍线程的 tile kernel 更快」这个假设**被实测否掉** ——
+尽管它少了 8 倍的权重重读，GEMM 仍然赢。**`QW_GEMM_MIN_OUT_F` 保持默认 0。**
+
+**另记两件事**：
+
+1. `stream_options.include_usage` **没有**让本服务返回 `usage`，
+   `prompt_tokens` 仍为 `None` —— 测试台目前靠**服务端日志**证明冷 prefill，
+   下一轮应把 usage 补齐；
+2. 本轮测到的冷 TTFT 是 **16.7–21.2 s / 672 token（约 38 tok/s）**，
+   与之前记录的 7.4–10.5 s / 约 490 token 不可直接比较（prompt 更长、
+   且机器经过多轮压测后处于更热的状态）。**冷路径的绝对数字需要在
+   机器冷却后用统一 prompt 重测一次，才能作为最终结论。**

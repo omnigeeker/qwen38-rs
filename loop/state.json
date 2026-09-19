@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 156,
+ "round": 157,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3750,9 +3750,38 @@
     "verdict": "A/B void - the harness measured a cache hit or a stub",
     "next": "verify prompt_eval_count / usage.prompt_tokens or QW_PREFIX_TIME before believing any cold-TTFT number"
    }
+  },
+  {
+   "round": 157,
+   "title": "Fixed the cold-TTFT harness and used it to refute the out_f routing idea.  The bug was concrete: the server sends a role-only SSE chunk with empty content before generating anything, at 0.063 s, and the old script stopped its clock on the first data: line, so it was timing the role chunk rather than TTFT - the previously recorded trap of not measuring TTFT on the first SSE byte, hit again.  The fix skips empty-content chunks and ':' keep-alives and stops only on the first non-empty content; the server log confirms a real cold prefill, with a prefix cache miss, 0 of 672 tokens skipped, and prefill progress at 192/672 after 3.1 s and 576/672 after 10.0 s.  Four interleaved rounds on a fresh random 672-token prompt then gave the default GEMM-everywhere 18.779/17.177/16.735/17.791 against min_out_f=17408's 20.745/21.154/19.575/20.023: GEMM everywhere won every pair by roughly 15 percent, refuting the hypothesis that the tile kernel's eightfold thread count would win on out_f=5120 even though it avoids the eightfold weight re-read.  QW_GEMM_MIN_OUT_F therefore stays at 0.  Two further notes: stream_options.include_usage does not make this server return usage, so prompt_tokens remains None and the harness currently leans on server logs to prove a cold prefill, which should be fixed next round; and the cold TTFT seen here is 16.7-21.2 s for 672 tokens, about 38 tok/s, which is not comparable with the earlier 7.4-10.5 s for roughly 490 tokens since the prompt is longer and the machine is hotter after many rounds of benchmarking.  The absolute cold-path numbers need one measurement on a cool machine with a fixed prompt before they can be called final.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no code change this round; the out_f gate stays at its default of 0)",
+   "evidence": {
+    "harness_bug": "the server emits a role-only SSE chunk with empty content at 0.063 s before generating anything; the old script timed that",
+    "proof_of_cold_prefill": "server log: prefix cache miss, 0 of 672 tokens skipped, prefill 192/672 after 3.1 s, 576/672 after 10.0 s",
+    "A_default": [
+     18.779,
+     17.177,
+     16.735,
+     17.791
+    ],
+    "B_min_out_f_17408": [
+     20.745,
+     21.154,
+     19.575,
+     20.023
+    ],
+    "verdict": "GEMM everywhere won 4/4 by ~15%; the out_f routing idea is refuted",
+    "open_issues": [
+     "stream_options.include_usage does not return usage, so prompt_tokens is None",
+     "cold TTFT 16.7-21.2 s for 672 tokens (~38 tok/s) is not comparable to the earlier 7.4-10.5 s for ~490 tokens; needs a cool-machine re-measurement with a fixed prompt"
+    ],
+    "next": "fix usage reporting, then re-measure the cold path on a cool machine with a fixed prompt"
+   }
   }
  ],
- "next": "Added the out_f-aware routing switch and then discovered the cold-TTFT harness is broken.  The motivation is solid: the GEMM's parallelism is grid.x = (out_f/BM)*128 and the model only has four out_f values - 48, 5120, 17408 and 248320 - so out_f = 5120 gives just 160 threadgroups, about two waves on 40 SMs, which is exactly the 39 GB/s regime, while the four-row tile kernel launches out_f*32 threads, eight times as many, and may therefore win on the small tensors.  The switch is in: `if rows >= gemm_min_rows() && self.out_f >= gemm_min_out_f()`, with QW_GEMM_MIN_OUT_F defaulting to 0 so the shipped behaviour is bit-for-bit unchanged and gemm-check still PASSES at worst rel 3.347e-4.  But the measurement failed: /tmp/pfout.py, which starts a fresh server per run with a fresh random 430-word prompt and alternates the order, returned 0.06 s in all eight runs (0.066/0.061, 0.076/0.056, 0.061/0.065, 0.061/0.061).  That is impossible for a 550-token cold prefill, which at 74 tok/s should take 7.4 s, and I confirmed QW_PREFIX_DISK and QW_PREFIX_SNAPSHOT are both unset and explicitly removed them in the script.  So the harness is measuring a cache hit or a stub and the A/B is void - the mirror image of the Ollama trap recorded earlier, where a reused prompt produced bogus numbers.  NEXT: the harness must print and check prompt_eval_count / usage.prompt_tokens, or enable QW_PREFIX_TIME to read the server-side prefill timing, and prove every run is a genuine cold prefill before any A/B is believed.  No cold-TTFT number should be trusted until then.",
+ "next": "Fixed the cold-TTFT harness and used it to refute the out_f routing idea.  The harness bug was real: the server emits a role-only SSE chunk (`{\"delta\":{\"content\":\"\",\"role\":\"assistant\"}}`) BEFORE any token is generated, at 0.063 s, and the old script stopped the clock on the first data: line - so it was timing the role chunk, not TTFT.  That is the previously recorded trap (never measure TTFT on the first SSE byte) hit a second time.  The fix skips empty-content chunks and ':' keep-alives and stops only on the first non-empty content, and the server log confirms a genuine cold prefill (prefix cache miss, 0 of 672 tokens skipped, prefill 192/672 after 3.1 s and 576/672 after 10.0 s).  With it working, four interleaved rounds on a fresh random 672-token prompt gave the default GEMM-everywhere 18.779/17.177/16.735/17.791 against the min_out_f=17408 variant's 20.745/21.154/19.575/20.023 - GEMM everywhere won 4/4 by about 15 percent.  So the hypothesis that the tile kernel's eight times more threads would win on out_f=5120 is refuted by measurement despite its eight-fold weight re-read being avoided, and QW_GEMM_MIN_OUT_F stays at its default of 0.  Two other things to record: stream_options.include_usage does NOT make this server return usage, so prompt_tokens is still None and the harness currently relies on server logs to prove a cold prefill, which should be fixed next; and the cold TTFT measured this round is 16.7-21.2 s for 672 tokens (about 38 tok/s), not comparable with the earlier 7.4-10.5 s for about 490 tokens because the prompt is longer and the machine is hotter after many rounds of benchmarking.  The absolute cold-path figures need one more measurement on a cool machine with a fixed prompt before they can be treated as final.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
