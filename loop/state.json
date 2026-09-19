@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 168,
+ "round": 169,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4071,9 +4071,36 @@
     "decision": "default OFF behind QW_SPLITK=1; implementation kept and proved correct",
     "next": "retest split-K on a quiet machine"
    }
+  },
+  {
+   "round": 169,
+   "title": "Ran an eight-round paired A/B with per-round GPU sampling and learned two things: split-K buys nothing, and this machine cannot currently be measured at all.  The paired differences (B minus A) were -0.201, +0.121, -0.064, -0.574, +0.274, -5.781, +0.041, -0.346, so split-K won 5 of 8 with a median difference of -0.133 s, roughly one percent - a zero effect, consistent with the earlier finding that the GEMM is not traffic-bound.  Cutting traffic from 4W to W gains nothing, so the 5x the theory predicted never materialised and the eighteen-times-traffic analysis, arithmetically sound, is not the reason we are slow; the real cause remains unknown.  The weightier discovery concerns the environment: GPU utilisation sat at 84 to 99 percent for the entire run with no qwen38 process alive, only the first sample reading 0, so an external process - almost certainly the DSH Desktop web GUI - holds the GPU continuously.  Within one run the timings drifted by a factor of 2.4, from a stable 12.4-13.0 s over rounds one to five to 22.8-30.4 s over rounds six to eight, and the machine shows load 3.99, spotlightknowledged at 99.4 percent CPU and 3.7 GB of swap in use.  No absolute cold-TTFT number is trustworthy there and a one-percent effect is unresolvable.  This re-explains the history too: the same configuration measured 3.0 s, 6.0 s, 12.9 s and 30.4 s for 672 tokens within one day, a tenfold spread that is a property of the environment rather than the kernel.  Fixing the measurement environment must precede any further performance judgement, and because the likely consumer is the user's own application I asked instead of killing it.  Next: obtain a quiet measurement window, then re-decide split-K and re-measure the objective.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no code change this round)",
+   "evidence": {
+    "paired_diffs": [
+     -0.201,
+     0.121,
+     -0.064,
+     -0.574,
+     0.274,
+     -5.781,
+     0.041,
+     -0.346
+    ],
+    "verdict": "split-K 5/8, median -0.133 s = -1.0% - a zero effect",
+    "confirms": "the GEMM is not traffic-bound; 4W -> W gains nothing, so the 18x-traffic analysis is not the cause",
+    "gpu_utilisation": "84-99% throughout with no qwen38 process - an external process holds the GPU",
+    "drift_within_run": "2.4x (12.4-13.0 s in rounds 1-5, 22.8-30.4 s in rounds 6-8)",
+    "other_load": "load 3.99, spotlightknowledged 99.4% CPU, swap 3.7 GB",
+    "same_day_spread": "3.0 / 6.0 / 12.9 / 30.4 s for 672 tokens on one configuration - 10x",
+    "blocker": "the measurement environment; asked the user rather than killing their application",
+    "next": "get a quiet window, then re-decide split-K and re-measure the objective"
+   }
   }
  ],
- "next": "Implemented split-K exactly as the checklist specified, and it passes every gate, but the performance case is not made, so it ships OFF by default.  The kernel now takes uint3 tg and under mode 4 slices K by Q4_GEMM_S = 4, writing f32 partials into y as a scratch; a new q4_gemm_reduce kernel sums the four partials into the real half output; CommandBatch grew a buffer() helper for the scratch; and it engages for out_f in [1024, 5120] with rows >= 32, which in this model means only out_f = 5120.  Correctness is established: the gates pass 19 of 19 ACCEPTED with split-K ON, including the mlx-lm oracle.  THE IMPORTANT PART OF THIS ROUND IS A BUG IT EXPOSED.  The first build applied the K slice unconditionally, and because an ordinary dispatch has grid.z = 1 the slice came out as k_hi = K/4, so the GEMM silently computed a quarter of every dot product.  The deception was near-perfect: the server emitted a string of newlines and pipes, which is obviously wrong, yet the interleaved A/B reported it 27 percent FASTER at 3.06 s against 3.87 s - and that win was simply three quarters of the arithmetic going missing.  Gating everything on const bool sk = (mode == 4) fixed it, and the server immediately returned sane text again.  The lesson is to prove correctness before claiming speed: had only the A/B numbers been read, a bug that drops 75 percent of the work would have been filed as a 27 percent optimisation, and the oracle gate was the only thing standing in the way.  With the fix in, four interleaved rounds after a 300 s cooldown gave sk0 16.894/16.188/15.435/15.624 against sk1 13.357/13.508/15.781/15.872 - split-K winning 2 of 4, median 16.165 to 14.645, about 9 percent, inside a noise band of 13.4 to 16.9 s on a machine that also measured 3.0 s and 6.0 s earlier the same day.  Nine percent inside that band is not a verified win, so split-K is default-OFF behind QW_SPLITK=1: the implementation stays, proved correct, for a retest when the machine is quiet, but it is not the default.",
+ "next": "Ran an eight-round paired A/B with per-round GPU sampling and the result is that split-K buys nothing - and, more importantly, that this machine cannot currently be measured.  The paired differences (B minus A) were -0.201, +0.121, -0.064, -0.574, +0.274, -5.781, +0.041 and -0.346, so split-K won 5 of 8 with a median difference of -0.133 s, about one percent.  Its effect is zero, which matches the earlier finding that the GEMM is not traffic-bound: cutting traffic from 4W to W gains nothing, so the 5x the theory predicted never appeared and the eighteen-times-traffic analysis, while arithmetically right, is not why we are slow.  The real cause is still unknown.  The bigger discovery is about the measurement environment.  GPU utilisation was 84 to 99 percent for the whole run with no qwen38 process alive - only the very first sample read 0 - so an external process, almost certainly the DSH Desktop web GUI, holds the GPU continuously.  Within a single run the timings drifted by a factor of 2.4, from a stable 12.4-13.0 s across rounds one to five to 22.8-30.4 s in rounds six to eight.  The machine also shows load 3.99, spotlightknowledged at 99.4 percent CPU and 3.7 GB of swap in use.  In that environment no absolute cold-TTFT figure is trustworthy and a one-percent difference cannot be resolved at all.  This also re-explains the history: the same configuration measured 3.0 s, 6.0 s, 12.9 s and 30.4 s for 672 tokens on the same day, a tenfold spread, which is a property of the environment and not of the kernel.  Resolving the measurement environment has to come before any further performance judgement, and since the likely consumer is the user's own application I have asked rather than killed it.  NEXT: get a quiet measurement window, then re-decide split-K and re-measure the objective.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
