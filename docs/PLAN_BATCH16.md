@@ -3993,3 +3993,29 @@ threadgroup `(128,1,1)`，标量 `5=in_f 6=rows 7=out_f 8=0`（mode）。
 **下一步**：把 `QW_GEMM_MIN_ROWS` 的默认值从 `usize::MAX` 改成 8（或让服务端自己
 设），并用 `server==cli` 与 `oracle parity 6/6` 作为验收；现在只有 1 个 prompt
 的逐字节证据，需要多 prompt、多长度的等价性专测（照 `/tmp/ce_equiv.py` 的做法）。
+
+### 72b. 等价性专测：**9 个长度里 8 个逐字节相同，1 个在第 64 个字符处分叉** ⇒ 不能做默认
+
+同一台服务器、同一批 prompt（8/9/12/16/31/33/64/128/200 words，48 个生成 token），
+先跑标量路径、再跑 `QW_GEMM_MIN_ROWS=8`：
+
+| 长度 | 结果 |
+|---|---|
+| 8 / 9 / 12 / 16 / 33 / 64 / 128 / 200 words | IDENTICAL |
+| **31 words（35 token）** | **DIFFER，第 64 个字符（约第 14 个生成 token）处分叉** |
+
+分叉后两条文本完全不同（标量继续 "from the 1st century BC to the 5th century AD…"，
+GEMM 转向 "for centuries, and its influence can still be seen…"）。
+
+**⇒ GEMM 与标量路径不是逐位等价的，这是两条路径不同的 f16 累加舍入在 argmax
+边界上的正常放大**，但后果是真实的：**把 GEMM 设为默认会让服务端在部分 prompt 上
+与 CLI/oracle 分叉，破坏我们一直维持的 `server==cli` 与 `spec==plain` 逐字节保证。**
+
+**决定：保持 opt-in（`QW_GEMM_MIN_ROWS` 不设 = 关闭）。** 按「正确性优先于交付速度」
+的一贯原则，2.2× 的冷 prefill 提速不足以换掉 token-for-token 等价性。
+
+**下一步（要让 GEMM 可用必须做的）**：把 GEMM 的累加精度对齐到标量路径。
+现在的怀疑点是 `q4_gemm_tile` 在 **BK=64 内做了 8 次 f16 MMA 累加**（每次引入约
+一个 f16 epsilon，合起来约 1e-3）；把 BK 降到 8（BK 内只有一次 MMA，跨 K-step 用
+f32 累加）应当把误差压到只剩输出 f16 舍入，从而与标量路径可比。代价是 K-step
+数从 80 涨到 640，需要实测是否还比标量快。

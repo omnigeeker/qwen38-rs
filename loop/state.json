@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 125,
+ "round": 126,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -2952,9 +2952,37 @@
     "env": "QW_GEMM_MIN_ROWS (default usize::MAX = off), cached in a OnceLock",
     "isolated_bench_ratio": "1.17x (272 vs 317 ms per 32-token pass); end-to-end is 2.2x because dispatch count per linear drops from rows/4 to 1"
    }
+  },
+  {
+   "round": 126,
+   "title": "Ran the equivalence test the previous round asked for, and it says the GEMM cannot be the default.  Nine prompt lengths (8-200 words, 48 generated tokens each), scalar server against QW_GEMM_MIN_ROWS=8 server: 8 of 9 are byte-identical, but the 35-token case diverges at character 64 (about generated token 14) and the two continuations are then completely different - scalar continues 'from the 1st century BC to the 5th century AD', the GEMM turns to 'for centuries, and its influence can still be seen today'.  That is the two paths' different f16 accumulation rounding amplified at an argmax boundary, which is expected, but the consequence is real: making the GEMM the default would make the server diverge from the CLI and from the oracle on some prompts and break the token-for-token guarantee (server==cli, spec==plain, oracle parity 6/6) that has held for 60+ rounds.  Decision: keep QW_GEMM_MIN_ROWS opt-in.  Correctness over delivery speed - 2.2x on cold prefill does not buy giving up bit-equivalence.  Recorded the next step: align the GEMM's accumulation with the scalar path.  The suspicion is that q4_gemm_tile accumulates eight f16 MMA steps inside BK=64, each contributing about one f16 epsilon, so about 1e-3 in total; BK=8 would leave one MMA per BK and f32 accumulation across K-steps, which should cut the error to output rounding only, at the cost of 640 K-steps instead of 80 - needs measuring whether it is still faster.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (unchanged: the GEMM is opt-in and off)",
+   "evidence": {
+    "equiv_lengths_words": [
+     8,
+     9,
+     12,
+     16,
+     31,
+     33,
+     64,
+     128,
+     200
+    ],
+    "equiv_identical": 8,
+    "equiv_differ": 1,
+    "differing_length_words": 31,
+    "differing_prompt_tokens": 35,
+    "diverge_at_char": 64,
+    "approx_generated_token": 14,
+    "decision": "keep QW_GEMM_MIN_ROWS opt-in (off by default)",
+    "next_hypothesis": "q4_gemm_tile accumulates 8 f16 MMA steps inside BK=64 (~1e-3 total); BK=8 should reduce the error to output rounding"
+   }
   }
  ],
- "next": "The GEMM is now WIRED into the wide prefill path and is 2.2x faster end-to-end.  Linear::encode_rows takes a GEMM branch when rows >= QW_GEMM_MIN_ROWS (OnceLock, read once), one dispatch per linear instead of rows/4, grid (out_f/32*128, ceil(rows/32), 1), tg (128,1,1), scalars 5=in_f 6=rows 7=out_f 8=mode.  Default is usize::MAX = OFF, because the two paths round differently.  Paired cold-prefill timing on a 390-token prompt: scalar 21.32 / 28.81 s against GEMM 12.09 / 11.56 s, about 2.2x and far more stable, and better than the best scalar run ever recorded (14.2 s); the gain is larger than the 1.17x the isolated bench showed because the dispatch count per linear drops from rows/4 to 1.  Server output with the GEMM is BYTE-IDENTICAL to the scalar path on the one prompt tested (64 tokens).  Gates 19/0 ACCEPTED (the GEMM is off by default so they still exercise the scalar path).  NEXT: turn it on by default (or have the server set it), then prove equivalence over many prompts and lengths the way /tmp/ce_equiv.py does, and re-run the oracle parity and server==cli gates with it enabled - one prompt is not enough evidence to ship it.",
+ "next": "GEMM prefill is 2.2x faster but NOT byte-equivalent, so it stays opt-in.  Equivalence test over 9 prompt lengths (8-200 words, 48 generated tokens): 8 of 9 byte-identical, but the 35-token case diverges at character 64 (about generated token 14) and the two texts are then completely different.  That is the two paths' different f16 rounding amplified at an argmax boundary, and its consequence is real: shipping the GEMM as default would make the server diverge from the CLI and the oracle on some prompts, breaking the token-for-token guarantee (server==cli, spec==plain) we have kept all along.  Decision: keep QW_GEMM_MIN_ROWS opt-in, because 2.2x on cold prefill is not worth giving up bit-equivalence.  NEXT: align the GEMM's accumulation with the scalar path - the suspicion is that q4_gemm_tile accumulates 8 f16 MMA steps inside BK=64 (about one f16 epsilon each, ~1e-3 total), so BK=8 would leave one MMA per BK with f32 accumulation across K-steps and should reduce the error to output rounding only; measure whether it is still faster than the scalar path.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
