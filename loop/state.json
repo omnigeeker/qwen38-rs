@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 163,
+ "round": 164,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3940,9 +3940,37 @@
     "verdict": "BN=32 + 128-row pass is the optimum of this kernel structure; all other directions excluded",
     "next": "needs a different kernel structure - register dequantisation with no shared staging, like the GEMV, to import its 400 GB/s"
    }
+  },
+  {
+   "round": 164,
+   "title": "Refuted the coalescing hypothesis and ran into a hard limit doing it.  BK=256 refused to build with the message 'Threadgroup memory size (41984) exceeds the maximum threadgroup memory allowed (32768)', which the loud error added in an earlier round surfaced immediately - without it this would have been another all-zero mystery.  Dropping to BK=128 keeps shared at 23296 B, inside the limit, and with a uint4 per lane eight lanes share a row so each warp touches 8 rows x 64 contiguous bytes rather than 8 rows x 16.  Accuracy stayed bit-identical and the gates passed 19/0, but four interleaved rounds after a 300 s cooldown gave bk32 6.011/6.015/5.975/6.081 against bk128+uint4's 8.523/8.511/8.429/8.564 - 0 of 4, 41 percent slower.  Coalescing is therefore refuted, and the reason is worth keeping: at BK=32 the apparently wasted seven eighths of each cache line is not wasted, because the same warp reads the next 16 bytes of that row on the following k0 iteration and L2 catches it.  The 12.5 percent line-utilisation figure was a misleading metric and the true effective bandwidth was never that poor, while BK=128's shared rise from 9.3 KB to 23.3 KB cost more occupancy than the better access pattern bought.  Reverted, md5 restored to 3826791b87de8814392d476370de4612, gemm-check PASSES.  The staging now has eight explanations excluded - dequantisation, per-step overhead, bank conflicts, global bandwidth, shared capacity, instruction count, parallelism past grid.y = 4, traffic via BN, and coalescing - so 61 GB/s is the hard limit of this design and parameter tuning is exhausted.  Any further cold-path gain requires a structurally different kernel.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BK=128+uint4 reverted; the shipped 128-row/BN=32/BK=32 build is restored)",
+   "evidence": {
+    "bk256_error": "Threadgroup memory size (41984) exceeds the maximum threadgroup memory allowed (32768)",
+    "bk128_shared": "23296 B, inside the limit",
+    "accuracy": "bit-identical, gates 19/0",
+    "bk32": [
+     6.011,
+     6.015,
+     5.975,
+     6.081
+    ],
+    "bk128u4": [
+     8.523,
+     8.511,
+     8.429,
+     8.564
+    ],
+    "verdict": "0/4, 41% slower - coalescing refuted",
+    "why": "the wasted line bytes are read by the same warp on the next k0 iteration and absorbed by L2; 12.5% utilisation was a misleading metric",
+    "excluded_count": 8,
+    "next": "a structurally different kernel is required"
+   }
   }
  ],
- "next": "Completed the BN sweep and BN=32 is a genuine local optimum - all three other directions are slower.  The traffic formula W*(rows/BN) makes BN the only knob that reduces the weight re-read, so all of them were measured with a 300 s cooldown, a shared fresh 672-token prompt per round, and interleaved order: BN=8 lost 6 of 6, BN=32 is the baseline and fastest, BN=64 lost 4 of 4 by 27 percent (5.876/5.929/5.707/5.979 against 7.601/7.603/7.237/7.706), and BN=128 lost 4 of 4 by 73 percent.  Backing the bandwidth out of each shows why: 640 threadgroups reach 61 GB/s, 320 reach only about 20 GB/s and 160 about 7.6 GB/s, so achieved bandwidth is extremely sensitive to the threadgroup count and the saving in traffic is more than eaten by the collapse in bandwidth.  So BN=32 with a 128-row pass, grid.y = 4 and 640 threadgroups is the real optimum of THIS kernel structure, with all three other directions now excluded by measurement.  Going faster requires a different kernel structure - for instance dequantising in registers with no shared staging at all, as the GEMV does, to bring its 400 GB/s across - rather than further tile tuning.  Reverted, md5 back to 3826791b87de8814392d476370de4612, gemm-check PASSES, tree clean.",
+ "next": "Refuted the coalescing hypothesis too, and hit a hard limit on the way.  BK=256 failed to build with a clear message - 'Threadgroup memory size (41984) exceeds the maximum threadgroup memory allowed (32768)' - which the loud error added in an earlier round produced directly; without it this would have been another all-zero mystery.  Backing off to BK=128 keeps shared at 23296 B, inside the limit, and with a uint4 per lane eight lanes share a row so a warp touches 8 rows x 64 contiguous bytes instead of 8 rows x 16.  Accuracy was bit-identical and the gates were 19/0 ACCEPTED, but four interleaved rounds after a 300 s cooldown gave bk32 6.011/6.015/5.975/6.081 against bk128+uint4's 8.523/8.511/8.429/8.564 - 0 of 4, 41 percent slower.  So coalescing is refuted, and the reason is instructive: at BK=32 the supposedly wasted seven eighths of each cache line is not wasted at all, because the same warp reads the next 16 bytes of the same row on the next k0 iteration and L2 absorbs it.  The 12.5 percent line-utilisation figure was a misleading metric; the real effective bandwidth was never that poor, and BK=128's shared-memory rise from 9.3 KB to 23.3 KB cost more occupancy than the access pattern gained.  Reverted, md5 back to 3826791b87de8814392d476370de4612, gemm-check PASSES.  The staging now has eight explanations excluded - dequantisation, per-step overhead, bank conflicts, global bandwidth, shared capacity, instruction count, parallelism beyond grid.y = 4, traffic via BN, and coalescing - so its 61 GB/s is the hard limit of this kernel design and further parameter tuning has nothing left to give.  Any further cold-path gain needs a structurally different kernel.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
