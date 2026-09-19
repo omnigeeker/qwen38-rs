@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 176,
+ "round": 177,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4304,9 +4304,42 @@
     "gdn_step": "linear recurrence across tokens - needs a chunked parallel scan",
     "next": "batch copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s and rope_partial over the 128-token pass"
    }
+  },
+  {
+   "round": 177,
+   "title": "Acted on the dispatch-count lead by hoisting rmsnorm_gated out of the per-token recurrence loop and batching it over all n rows.  The kernel gained a stride scalar at buffer 6 where stride == 0 reproduces the old one-row-per-dispatch mapping exactly, so the decode path needed only a .scalar(6, 0), while prefill dispatches a one-dimensional grid of hv * n * NT and decomposes tg into (token, tile) inside; MSL refuses to mix scalar and vector input declarations, so a uint2 tg beside uint lane would not compile and the final form is a plain 1-D grid.  Dispatches per pass fell from 41,874 to 35,778, a 14.6 per cent cut, gates passed 19/0, and the output is word-for-word identical - yet six interleaved A/B rounds gave 6.312/6.277, 6.367/6.313, 6.104/6.087, 6.372/6.214, 6.684/6.663 and 6.783/6.742, B winning 6/6 with the median moving only 6.369 to 6.295, a 0.6 per cent gain.  The dispatch-count hypothesis is therefore refuted: removing 6,096 dispatches should have saved about 4 per cent at 8.4 microseconds each and saved 0.6, so the GPU overlaps dispatches far better than I estimated and the 27 per cent is real if fragmented GPU work rather than launch overhead.  The change is kept as verified, risk-free and directionally right, but it is not a lever that changes the conclusion.  Next: the GEMM remains the only substantial lever, and since the ceiling arithmetic says even an instantaneous GEMM only draws level, the real question is why our per-token work is fragmented where llama.cpp's is not.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (output word-for-word identical)",
+   "evidence": {
+    "dispatches_before": 41874,
+    "dispatches_after": 35778,
+    "reduction": "14.6%",
+    "A": [
+     6.312,
+     6.367,
+     6.104,
+     6.372,
+     6.684,
+     6.783
+    ],
+    "B": [
+     6.277,
+     6.313,
+     6.087,
+     6.214,
+     6.663,
+     6.742
+    ],
+    "verdict": "6/6 B wins but median 6.369 -> 6.295 = only -0.6%; dispatch-count hypothesis refuted",
+    "kept": true,
+    "why_kept": "verified, 19/0, identical output, 14.6% fewer dispatches, directionally right",
+    "lesson": "GPU overlaps dispatches far better than the 8.4 us/dispatch estimate implied",
+    "next": "the GEMM is still the only substantial lever; investigate why our per-token work is fragmented"
+   }
   }
  ],
- "next": "Pulled the per-kernel dispatch histogram for the prefill and found the structural difference: a single 128-token prefill pass issues 41,874 dispatches, while a decode step issues 1,234.  The prefill histogram is dominated by per-token operators - copy_off 6144, conv1d_silu_ring 6144, gdn_step 6144 and rmsnorm_gated 6144, each exactly 128 tokens times the 48 GDN layers, plus rmsnorm_s 4096 and rope_partial 4096 at 128 times 32 - so 327 dispatches per token, and none of them are batched along the token dimension.  That explains the 27 per cent non-GEMM share exactly: 0.35 s per pass divided by 41,874 is 8.4 microseconds per dispatch, pure launch overhead with the GPU idling between launches.  Of those dispatches 26,624, or 64 per cent, are trivially batchable - copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s and rope_partial are all elementwise, convolutional or per-token independent - while gdn_step's 6144 are a linear recurrence across tokens and would need a chunked parallel scan, an algorithmic change.  This is the most valuable lead in many rounds and it attacks the non-GEMM 27 per cent head on, so next is to convert copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s and rope_partial to a single dispatch over the whole 128-token pass.  NEXT: implement batched prefill for those five operators.",
+ "next": "Acted on the dispatch-count lead from last round by hoisting rmsnorm_gated out of the per-token recurrence loop and batching it over all n rows: the kernel gained a stride scalar at buffer 6 where stride == 0 reproduces the old one-row-per-dispatch mapping exactly, so the decode path only needed a .scalar(6, 0), while the prefill path dispatches a one-dimensional grid of hv * n * NT and decomposes tg into (token, tile) inside.  MSL refuses to mix scalar and vector input declarations, so a uint2 tg alongside uint lane failed to compile and the final form is a plain 1-D grid.  The dispatches per pass fell from 41,874 to 35,778, a 14.6 per cent cut, the gates passed 19/0 and the output is word-for-word identical, but the six interleaved A/B rounds came out 6.312/6.277, 6.367/6.313, 6.104/6.087, 6.372/6.214, 6.684/6.663 and 6.783/6.742 - B winning 6/6 with the median moving only 6.369 to 6.295, a 0.6 per cent gain.  So the dispatch-count hypothesis is refuted: removing 6,096 dispatches should have saved about 4 per cent at the 8.4 microseconds per dispatch I inferred, and it saved 0.6, which means the GPU overlaps dispatches far better than I estimated and the 27 per cent is real if fragmented GPU work rather than launch overhead.  The change is kept because it is verified, risk-free, cuts dispatches by 14.6 per cent and moves in the right direction, but it is not a lever that changes the conclusion.  NEXT: the GEMM is still the only substantial lever, and the ceiling arithmetic says even an instantaneous GEMM only draws level, so the real target is why our per-token work is fragmented where llama.cpp's is not.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

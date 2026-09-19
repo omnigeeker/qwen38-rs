@@ -416,13 +416,30 @@ kernel void rmsnorm_gated(
     device half*       y      [[buffer(3)]],
     constant int&      D      [[buffer(4)]],
     constant float&    eps    [[buffer(5)]],
-    uint row  [[threadgroup_position_in_grid]],
+    // Elements between consecutive rows.  Zero for every caller that launches one
+    // row per dispatch, which makes the second term vanish and leaves the address
+    // exactly as it was; the prefill path sets it to the row length and puts the
+    // row count in grid.y, which turns 6,144 launches per pass into 48.
+    constant int&      stride [[buffer(6)]],
+    uint tg   [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_threadgroup]],
     uint nt   [[threads_per_threadgroup]])
 {
-    device const half* xr = x + (size_t)row * D;
-    device const half* gr = gate + (size_t)row * D;
-    device half*       yr = y + (size_t)row * D;
+    // MSL insists that every input declaration be the same vector width, so the
+    // grid stays one-dimensional and the row index is decomposed here instead:
+    // `stride` is the elements between tokens and D the elements per tile, so
+    // tiles = stride/D and tg splits into (token, tile).  stride == 0 reproduces
+    // the original one-row-per-dispatch mapping exactly.
+    size_t row;
+    if (stride > 0) {
+        const uint tiles = (uint)stride / (uint)D;
+        row = (size_t)(tg / tiles) * (size_t)stride + (size_t)(tg % tiles) * (size_t)D;
+    } else {
+        row = (size_t)tg * (size_t)D;
+    }
+    device const half* xr = x + row;
+    device const half* gr = gate + row;
+    device half*       yr = y + row;
     float ss = 0.0f;
     for (int i = (int)lane; i < D; i += (int)nt) {
         const float v = (float)xr[i];

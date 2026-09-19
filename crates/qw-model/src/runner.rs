@@ -1386,7 +1386,8 @@ impl Qwen38 {
                             .buf(2, &scratch.z)
                             .buf(3, &scratch.gdn_gated)
                             .scalar(4, dv as i32)
-                            .scalar(5, eps),
+                            .scalar(5, eps)
+                            .scalar(6, 0),
                     );
                     b.barrier();
                     g.out_proj.encode(
@@ -1858,17 +1859,23 @@ impl Qwen38 {
                                 .scalar(14, if self.spec_snap { 1 } else { 0 }),
                         );
                         b.barrier();
-                        b.encode(
-                            Dispatch::new(&kernels.rmsnorm_gated, (hv * NT, 1, 1), (NT, 1, 1))
-                                .buf_offset(0, &scratch.gdn_y, row * (value_dim * 2))
-                                .buf(1, &g.norm_w)
-                                .buf_offset(2, &scratch.z, row * (value_dim * 2))
-                                .buf_offset(3, &scratch.gdn_gated, row * (value_dim * 2))
-                                .scalar(4, dv as i32)
-                                .scalar(5, eps),
-                        );
-                        b.barrier();
                     }
+                    // The gated norm has no cross-row dependency, so it comes out
+                    // of the recurrence loop entirely: one dispatch over all n rows
+                    // instead of n, and n-1 fewer barriers per layer.  The
+                    // recurrence above still needs a barrier per row - every row
+                    // updates the same state slice - but this does not.
+                    b.encode(
+                        Dispatch::new(&kernels.rmsnorm_gated, (hv * n * NT, 1, 1), (NT, 1, 1))
+                            .buf(0, &scratch.gdn_y)
+                            .buf(1, &g.norm_w)
+                            .buf(2, &scratch.z)
+                            .buf(3, &scratch.gdn_gated)
+                            .scalar(4, dv as i32)
+                            .scalar(5, eps)
+                            .scalar(6, value_dim as i32),
+                    );
+                    b.barrier();
                     g.out_proj.encode_rows(
                         &mut b,
                         &kernels.q4_gemv,

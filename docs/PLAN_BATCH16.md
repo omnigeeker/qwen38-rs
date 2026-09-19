@@ -5728,3 +5728,37 @@ prompt in after 6.3s (TTFT, 602 tokens)
 **⇒ 下一轮：把 `copy_off` / `conv1d_silu_ring` / `rmsnorm_gated` /
 `rmsnorm_s` / `rope_partial` 改成沿 token 维一次 dispatch。**
 这是「非 GEMM 27%」的正面攻击，也是本轮找到的最有价值的线索。
+
+### 72ba. 批量化 `rmsnorm_gated`：dispatch **41,874 → 35,778**，但只快 **0.6%**（第 115 轮）
+
+按 §72az 的线索，把 `rmsnorm_gated` 从逐 token 循环里**提出来并沿 token 维批量化**：
+- 内核加 `stride`（buffer 6）：`stride == 0` 时完全等价于旧的「一行一 dispatch」映射，
+  所以 decode 路径只加一个 `.scalar(6, 0)` 就保持原样；
+- prefill 路径用 1-D 网格 `hv * n * NT`，核内把 `tg` 分解成 `(token, tile)`。
+
+（MSL 不允许混用标量与向量输入声明 —— `uint2 tg` + `uint lane` 直接编译失败，
+所以最终走纯 1-D 网格。）
+
+**实测**：
+
+| | 前 | 后 |
+|---|---|---|
+| 每 pass dispatch | 41,874 | **35,778（−14.6%）** |
+| 门禁 | — | **19/0 ACCEPTED** |
+| 输出 | — | 逐字一致 |
+
+A/B（6 轮交错，120 s 冷却，A=`/tmp/q.bn32base`，B=`/tmp/q.batch1`）：
+
+```
+r1 6.312/6.277   r2 6.367/6.313   r3 6.104/6.087
+r4 6.372/6.214   r5 6.684/6.663   r6 6.783/6.742
+```
+
+**6/6 B 胜，中位数 6.369 → 6.295 = 仅 −0.6%。**
+
+**⇒ dispatch 数量假设被否。** 少 6,096 个 dispatch 按 8.4 µs/dispatch 推算应省 ~4%，
+实际只省 0.6% —— **说明 GPU 的 dispatch 重叠远好于我此前的估计，
+那 27% 不是启动开销，而是真实但细碎的 GPU 工作。**
+
+**决定：保留**（6/6、门禁 19/0、输出逐字一致、dispatch 少 14.6%，方向正确且无风险），
+但**它不是一个能改变结论的杠杆**。
