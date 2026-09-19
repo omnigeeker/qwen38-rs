@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 128,
+ "round": 129,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3016,9 +3016,28 @@
     "correction": "the direct GEMM-vs-scalar measurement already existed; last round's claim that it was missing was wrong",
     "next_fix": "weight split whi + wlo with two MMAs (~2.4e-7 expected error, 2x MMA, weight tile doubled)"
    }
+  },
+  {
+   "round": 129,
+   "title": "Implemented the whi+wlo weight split exactly as planned and it changed nothing - the 497-tensor GEMM-vs-K4_U4HX sweep still reports worst rel 9.662e-4 on the same tensor, with the change confirmed present in the binary.  Reverted.  Conclusion: the ~1e-3 gap is not weight rounding.  This exposed a reversal: placing the two CPU-referenced numbers side by side, the GEMM's worst is 3.347e-4 while the shipped GEMV/K4_U4HX runs 5.0e-4 to 1.6e-3, so the GEMM may actually be MORE accurate than the path we ship - meaning most of the 9.662e-4 gap is the GEMV's own error and the 35-token divergence could be the GEMV drifting rather than the GEMM.  A mechanism that explains it: the GEMV does its multiply-add in half (half4 * sh + bh) while the GEMM dequantises in f32 and rounds once.  Recorded the decisive experiment for next round: measure both kernels against the CPU reference on the SAME tensor set, since the two existing numbers come from different scans over different tensors.  If the GEMM is indeed closer to the CPU, the correct response is to make it the default and re-baseline against the mlx-lm oracle rather than against the GEMV's output, because the oracle is the real correctness standard.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (the kernel experiment was reverted)",
+   "evidence": {
+    "split_result": "worst rel unchanged at 9.662e-4, same tensor",
+    "split_in_binary": "strings | grep -c wsh2 = 8",
+    "gemm_vs_cpu": 0.0003347,
+    "gemv_vs_cpu": [
+     0.0005,
+     0.0016
+    ],
+    "gemm_vs_gemv": 0.0009662,
+    "mechanism": "GEMV multiplies-adds in half (half4 * sh + bh); GEMM dequantises in f32 and rounds once",
+    "next": "same-tensor CPU comparison of both kernels, then decide whether to make the GEMM default and re-baseline on the oracle"
+   }
   }
  ],
- "next": "CORRECTED myself again: the 'missing measurement' from last round already exists.  gemm_check's QW_GEMM_CHECK_ALL branch (bench.rs:558-584) uses the engine's own K_Q4_GEMV_K4_U4HX four-row kernel as the reference, so the 497-tensor sweep I ran two rounds ago WAS the direct GEMM-vs-shipped-scalar comparison, normalised by the GEMV's max|y|.  Its result, worst rel 9.662e-4, therefore means: on the same input the GEMM differs from the shipped kernel by up to ~1e-3 relative, which is exactly the magnitude that flips an argmax and is fully consistent with the 1-of-9 prompt divergence.  (The default 4-tensor run's 3.347e-4 is against the CPU reference instead - two different references, which is the distinction I got wrong.)  So no further measurement is needed; go straight at the precision.  NEXT: split each weight into whi + wlo (whi = (half)w, wlo = (half)(w - whi)) and do two MMAs, which should push the error to ~2.4e-7 relative and make the GEMM MORE accurate than the scalar path, at 2x the MMA work and a doubled weight tile (shared 13.8 -> ~22 KB, occupancy possibly 2 -> 1 threadgroup/SM).  After the change, re-run BOTH QW_GEMM_CHECK_ALL=1 gemm-check and the 9-length equivalence test.",
+ "next": "Implemented the whi+wlo weight split from the previous round's plan and it changed NOTHING: QW_GEMM_CHECK_ALL=1 gemm-check still reports worst rel 9.662e-4, the same tensor, and the change was confirmed present in the binary (strings | grep -c wsh2 = 8).  Reverted (no benefit, 2x MMA, +4.6 KB shared).  So the ~1e-3 gap between the GEMM and K4_U4HX is NOT weight rounding.  That exposed a reversal worth testing: side by side against the SAME CPU reference, the GEMM is at 3.347e-4 while the shipped GEMV/K4_U4HX is at 5.0e-4 to 1.6e-3 - the GEMM looks MORE accurate than the path we ship, which would mean most of the 9.662e-4 is the GEMV's own error and the 35-token divergence may be the GEMV drifting rather than the GEMM.  Mechanism that would explain it: the GEMV does its multiply-add in half (half4 * sh + bh, msl.rs:634-637) while the GEMM dequantises in f32 and rounds once.  NEXT, the decisive experiment: measure K4_U4HX and the GEMM against the CPU reference on the SAME set of tensors (the two existing numbers come from different scans over different tensor sets).  If the GEMM really is closer to the CPU, then the right move is to make it the default and re-baseline on the mlx-lm oracle, because the oracle - not the GEMV's output - is the correctness standard.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
