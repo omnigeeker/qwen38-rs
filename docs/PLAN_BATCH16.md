@@ -6274,3 +6274,35 @@ op.run(mA, mB, cT);          // 结果留在寄存器，不落显存
 **踩坑记录**：`cooperative_tensor<float, dextents<int32_t,2>>` 会报
 "too few template arguments"；补 `void` 或重复 extents 都不对 —— **不要去猜第三个参数，
 Layout 必须从 op 上取。**
+
+### 72bm. **affine-aware MPP GEMM 已实现并运行 —— 但数值尚未对齐**（第 126 轮）
+
+按上一轮找到的 API 写出了完整的 affine 版张量内核（`msl::MPP` 里的 `q4_mpp_affine` +
+`q4_group_sums` + `q4_store_half`），走 `QW_GEMM_MODE=8`：
+
+```
+y[m,n] = Σ_g ( s[n,g] · Σ_{k∈g} A[m,k]·q[k,n]  +  b[n,g] · G[m,g] )
+G[m,g] = Σ_{k∈g} A[m,k]
+```
+- `q4_group_sums`：每 (token, 组) 求激活组和，O(rows×K)，可忽略；
+- `q4_mpp_affine`：按 96 个组循环，`tilek=64`，组间对**寄存器里的**
+  cooperative tensor 施加 `s[n,g]`/`b[n,g]`，**只读 A 和 q，零额外显存流量**；
+- `q4_store_half`：张量 op 的 `store` 要求元素类型匹配（float 累加器 → half 输出不匹配），
+  所以先落 float 中转再收窄，约 2.6 GB/pass ≈ 0.03 s。
+
+**已解决的一串 API 障碍（都记录在此，下次直接可用）：**
+1. `#pragma unroll full`（官方示例里写的）**这个编译器不认**，要写 `#pragma clang loop unroll(full)`；
+2. `__remove_addrspace_t` 在 **`mpp::tensor_ops::__tensor_ops_detail`**，需要 `using namespace`；
+3. 本版本 stdlib **没有 `get_mask`**，要用 **`is_valid_element`**；
+   元素读写是 **`get(i)` / `set(i, v)`**（`get` 对无效元素安全返回 0）；
+4. `store()` 要求 **元素类型一致**，float 累加器不能直接存进 half 张量。
+
+**当前状态：内核编译通过、运行、输出连贯**（模型确实在正常续写），
+但**输出与基线不一致**（md5 `c934afba…` len 161 vs 基线 len 182）。
+
+**尚未解决的关键疑点**：把 `get_multidimensional_index` 的两个分量交换后，
+**md5 完全不变** —— 说明差异不是来自 m/n 映射，而是另有系统性偏差。
+下一个要看的是 `op.run` 是否真的把结果写进了 `part`（怀疑 `part` 全零，
+于是 affine 只剩 bias 项）。
+
+**默认路径（mode 0）完全未变**，affine 路径是 opt-in 的 mode 8。

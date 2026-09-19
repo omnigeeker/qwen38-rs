@@ -1279,6 +1279,7 @@ pub const MPP: &str = r#"
 using namespace metal;
 using namespace mpp;
 using namespace mpp::tensor_ops;
+using namespace mpp::tensor_ops::__tensor_ops_detail;
 
 kernel void q4_mpp_probe(
     tensor<device half, dextents<int32_t, 2>> A,           // [rows, K]
@@ -1295,4 +1296,99 @@ kernel void q4_mpp_probe(
     op.run(mA, mB, mC);
 }
 
+
+// Per-group sums of the activation: G[m,g] = sum_{k in group g} A[m,k].
+// The affine bias term is sum_g b[n,g] * G[m,g], and it cannot come out of the
+// matmul because b is per (output column, group) while the matmul sums over all k.
+kernel void q4_group_sums(
+    device const half* a [[buffer(0)]],
+    device float* gsum [[buffer(1)]],
+    constant int& kdim [[buffer(2)]],
+    constant int& ngroups [[buffer(3)]],
+    uint tid [[thread_position_in_grid]])
+{
+    int g = (int)tid % ngroups;
+    int m = (int)tid / ngroups;
+    float acc = 0.0f;
+    int base = m * kdim + g * 64;
+    for (int j = 0; j < 64; ++j) acc += (float)a[base + j];
+    gsum[(size_t)m * ngroups + g] = acc;
+}
+
+// The affine quantised linear through the tensor units.
+//
+//   y[m,n] = sum_g ( s[n,g] * sum_{k in g} A[m,k]*q[k,n]  +  b[n,g] * G[m,g] )
+//
+// s and b are per (output column, group), so neither can be folded into the
+// activation or into the 4-bit weights.  The only exact route is one matmul per
+// group with tilek = 64, applying the scale and the bias to the in-register
+// accumulator between groups - which is what the cooperative destination tensor
+// is for.  Nothing but A and q is ever read from memory, so this keeps the
+// whole 3.2x that the tensor path bought.
+kernel void q4_mpp_affine(
+    tensor<device half, dextents<int32_t, 2>> A,           // [rows, K]
+    tensor<device uint4b_format, dextents<int32_t, 2>> B,  // [out_f, K]
+    device const ushort* scales [[buffer(2)]],             // [out_f, ngroups] bf16
+    device const ushort* biases [[buffer(3)]],             // [out_f, ngroups] bf16
+    device const float* gsum [[buffer(4)]],                // [rows, ngroups]
+    tensor<device float, dextents<int32_t, 2>> C,          // [rows, out_f]
+    constant int& ngroups [[buffer(6)]],
+    uint2 tgid [[threadgroup_position_in_grid]])
+{
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+        64, 32, 64, false, true, false);
+    mpp::tensor_ops::matmul2d<desc, execution_simdgroups<4>> op;
+
+    auto probeA = A.slice(0, 0);
+    auto probeB = B.slice(0, 0);
+    auto cT = op.get_destination_cooperative_tensor<
+        __remove_addrspace_t<decltype(probeA)>,
+        __remove_addrspace_t<decltype(probeB)>, float>();
+    auto part = op.get_destination_cooperative_tensor<
+        __remove_addrspace_t<decltype(probeA)>,
+        __remove_addrspace_t<decltype(probeB)>, float>();
+
+#pragma clang loop unroll(full)
+    for (uint16_t i = 0; i < cT.get_capacity(); ++i)
+        cT.set(i, 0.0f);
+
+    for (int g = 0; g < ngroups; ++g) {
+        auto mA = A.slice(tgid.y * 64, g * 64);
+        auto mB = B.slice(tgid.x * 32, g * 64);
+#pragma clang loop unroll(full)
+        for (uint16_t i = 0; i < part.get_capacity(); ++i)
+            part.set(i, 0.0f);
+        op.run(mA, mB, part);
+#pragma clang loop unroll(full)
+        for (uint16_t i = 0; i < part.get_capacity(); ++i) {
+            if (part.is_valid_element(i)) {
+                auto ids = part.get_multidimensional_index(i);
+                // get_multidimensional_index returns the coordinate in the
+                // destination's own extent order, which is [n=32, m=64] here -
+                // not the descriptor's (m, n) order.  Reading it the other way
+                // round leaves most of the tile unwritten and indexes the scales
+                // out of range.
+                int n = tgid.x * 32 + (int)ids[0];
+                int m = tgid.y * 64 + (int)ids[1];
+                float sc = as_type<float>((uint)scales[(size_t)n * ngroups + g] << 16);
+                float bi = as_type<float>((uint)biases[(size_t)n * ngroups + g] << 16);
+                cT.set(i, cT.get(i) + part.get(i) * sc + bi * gsum[(size_t)m * ngroups + g]);
+            }
+        }
+    }
+    auto mC = C.slice(tgid.y * 64, tgid.x * 32);
+    cT.store(mC);
+}
+
+// The tensor op accumulates in float and its store requires a matching element
+// type, so the result lands in a float scratch and this narrows it to the half
+// output.  The round trip is about 2.6 GB per pass, roughly 0.03 s.
+kernel void q4_store_half(
+    device const float* src [[buffer(0)]],
+    device half* dst [[buffer(1)]],
+    constant int& n [[buffer(2)]],
+    uint tid [[thread_position_in_grid]])
+{
+    if ((int)tid < n) dst[tid] = (half)src[tid];
+}
 "#;

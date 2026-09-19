@@ -220,6 +220,54 @@ impl<'a> QLinear<'a> {
                 // purely to measure what the tensor op costs on our shapes before
                 // investing in the affine epilogue.  The lm_head is skipped because
                 // its float output tile would be 127 MB.
+                // mode 8: the affine-aware tensor path.  Exact, unlike mode 7:
+                // one matmul per 64-weight group with the per-(column, group)
+                // scale and bias applied to the in-register accumulator.
+                if std::env::var("QW_GEMM_MODE").ok().and_then(|v| v.parse::<i32>().ok())
+                    == Some(8)
+                    && self.out_f <= 17408
+                {
+                    let ng = self.in_f / 64;
+                    let gsum = batch.buffer(rows * ng * 4);
+                    let cacc = batch.buffer(rows * self.out_f * 4);
+                    if let Ok(gs) = batch.kernel(msl::MPP, "q4_group_sums") {
+                        batch.encode(
+                            Dispatch::new(&gs, (rows * ng, 1, 1), (256, 1, 1))
+                                .buf(0, x)
+                                .buf(1, &gsum)
+                                .scalar(2, self.in_f as i32)
+                                .scalar(3, ng as i32),
+                        );
+                    }
+                    batch.barrier();
+                    if let Ok(ak) = batch.kernel(msl::MPP, "q4_mpp_affine") {
+                        batch.encode(
+                            Dispatch::new(
+                                &ak,
+                                (self.out_f.div_ceil(32) * 128, rows.div_ceil(64), 1),
+                                (128, 1, 1),
+                            )
+                            .buf(0, x)
+                            .buf_offset(1, self.weight.buf, self.weight.offset)
+                            .buf_offset(2, self.scales.buf, self.scales.offset)
+                            .buf_offset(3, self.biases.buf, self.biases.offset)
+                            .buf(4, &gsum)
+                            .buf(5, &cacc)
+                            .scalar(6, ng as i32),
+                        );
+                    }
+                    batch.barrier();
+                    if let Ok(sk) = batch.kernel(msl::MPP, "q4_store_half") {
+                        let n = rows * self.out_f;
+                        batch.encode(
+                            Dispatch::new(&sk, (n, 1, 1), (256, 1, 1))
+                                .buf(0, &cacc)
+                                .buf(1, y)
+                                .scalar(2, n as i32),
+                        );
+                        return;
+                    }
+                }
                 if std::env::var("QW_GEMM_MODE").ok().and_then(|v| v.parse::<i32>().ok())
                     == Some(7)
                     && self.out_f <= 17408
