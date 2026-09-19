@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 146,
+ "round": 147,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3485,9 +3485,50 @@
     "write_conflict": "acceptable, bank conflicts measured at 0.8%",
     "next": "implement the uint4 staging and validate with an interleaved A/B"
    }
+  },
+  {
+   "round": 147,
+   "title": "Tested the vectorised staging two ways and adopted neither.  uint4 (four words, 32 weights per thread) with BK=128, chosen so nwords4 is 4 and BM*nwords4 is exactly 128 = NT with every thread busy, came out 40 percent SLOWER across six interleaved rounds - 16.168/16.139/16.136/16.065/16.144/15.950 against 11.578/11.568/11.455/11.606/11.683/11.899, consistent in all six - but the test is confounded because BK=128 alone was already measured at 24.585 against BK=64's 16.580, a 48 percent penalty, so most of the loss is BK rather than the uint4 staging and the instruction-issue hypothesis survives.  The cleaner variant, uint2 (two words, 16 weights per thread) at BK=64, where nwords4 is again 4 so BM*4 = 128 = NT with the weight tile back at BK=64, gave 12.602/14.503/18.077/18.170 against BK=32's 14.510/17.102/18.438/18.119: the first two rounds clearly favour uint2 and the last two are a dead heat, but the machine drifted from 14.5 to 18.4 ms, +27 percent, within the run, so four rounds cannot settle it.  Both variants kept accuracy bit-identical.  Reverted to the committed and verified BK=32 single-word staging, on the principle that a result unresolvable under drift is not evidence.  Next round: cool the GPU, confirm two consecutive baseline readings agree, then re-run uint2/BK64 as an eight-round interleaved A/B - if it holds, it is the second evidence-backed cold-path win after the x staging fix.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (both variants reverted; BK=32 single-word staging is the shipped default)",
+   "evidence": {
+    "uint4_bk128": [
+     16.168,
+     16.139,
+     16.136,
+     16.065,
+     16.144,
+     15.95
+    ],
+    "bk32_baseline": [
+     11.578,
+     11.568,
+     11.455,
+     11.606,
+     11.683,
+     11.899
+    ],
+    "uint4_verdict": "40% slower but confounded by BK=128 (+48% on its own), so the issue-bound hypothesis is not refuted",
+    "uint2_bk64": [
+     12.602,
+     14.503,
+     18.077,
+     18.17
+    ],
+    "uint2_vs_bk32": [
+     14.51,
+     17.102,
+     18.438,
+     18.119
+    ],
+    "uint2_verdict": "inconclusive - machine drifted 14.5 -> 18.4 ms (+27%) within the run",
+    "accuracy": "bit-identical for both variants",
+    "next": "cool down, verify baseline stability, then eight-round interleaved A/B of uint2/BK64"
+   }
   }
  ],
- "next": "New hypothesis for the weight staging, and it explains all five exclusions at once: the staging is INSTRUCTION-ISSUE bound, not memory bound.  Counting the per-iteration work for one word (8 weights) gives roughly 33-39 instructions - about 4 for the index division, multiply-subtract and two compares, 3 loads (the word plus sp[g] and bp[g]), about 24 for the eight nibble extracts, half conversions and multiply-adds, and 2-8 shared stores.  Across the whole model that is 3.6 G words times ~35 = about 120-140 G instructions in 375 ms, i.e. 320-370 G instructions per second, against 40 SMs at about 1.5 GHz = 60 G cycles per second, which is 5.3-6.2 instructions per SM per cycle and ABOVE the roughly 4 per cycle an Apple GPU can issue.  That single fact explains every earlier exclusion: dequantisation looks free because mode 1 still does the eight conversions and stores, BK does not help, bank conflicts are irrelevant at 0.8 percent, bandwidth is far from saturated, and shared capacity is not the constraint.  THE FIX is the GEMV's own trick - have each thread handle four words via one uint4 load (16 bytes, 32 weights): the index arithmetic amortises 4x, the loads drop from twelve (4 words + 4 scales + 4 biases) to three (one uint4 plus one scale half4 plus one bias half4, since eight words share a group), and the conversion and multiply-add can be vectorised, taking the per-32-weights instruction count from about 132 to about 50, a 2.6x reduction.  The 32-way write conflict that this creates is acceptable because bank conflicts were measured at only 0.8 percent.  Implement and validate with an interleaved A/B.  Note GROUP_SIZE is 64, i.e. eight words, so four words always fall inside one group and the scale and bias need only one read per thread.",
+ "next": "Tested the vectorised staging two ways and neither can be adopted yet.  uint4 (four words, 32 weights, per thread) with BK=128 - which makes nwords4 4 so BM*nwords4 is exactly 128 = NT with every thread busy - was 40 percent SLOWER over six interleaved rounds (16.07-16.17 against 11.46-11.90), consistent in all six.  But that test is confounded by BK itself: BK=128 alone was already measured at 24.585 against BK=64's 16.580, a 48 percent penalty, so most of the regression is BK and the instruction-issue hypothesis is NOT refuted by it.  The cleaner variant, uint2 (two words, 16 weights per thread) at BK=64, where nwords4 is 4 and BM*4 is again 128 = NT with the weight tile back at BK=64, gave 12.602 / 14.503 / 18.077 / 18.170 against BK=32's 14.510 / 17.102 / 18.438 / 18.119 - the first two rounds favour uint2 clearly and the last two are a dead heat, but the machine drifted from 14.5 to 18.4 ms (+27 percent) inside the run, so four rounds cannot decide it.  Both variants had bit-identical accuracy.  DECISION: reverted to the committed, verified BK=32 single-word staging, because a result that cannot be resolved under drift is not evidence.  NEXT: let the GPU cool, confirm two consecutive baseline readings are stable, then re-run uint2/BK64 as an EIGHT-round interleaved A/B.  If it holds it is the second evidence-backed cold-path win after the x staging fix's 1.7x.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
