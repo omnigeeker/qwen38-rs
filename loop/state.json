@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 140,
+ "round": 141,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3328,9 +3328,32 @@
     "verdict": "more likely latency/occupancy-bound than bandwidth- or conflict-bound",
     "next": "vary BK across 32/64/128 to see whether staging tracks k0 steps or data (re-test BK=128 after the x fix)"
    }
+  },
+  {
+   "round": 141,
+   "title": "Ran the BK discriminating experiment the previous round called for, found the result confounded, and refused to ship it.  Sequential single measurements at BK = 32, 64 and 128 gave mode 0 at 13.883 / 16.580 / 24.585 ms per token and mode 2 (staging only) at 10.832 / 12.782 / 19.336.  Staging therefore does NOT fall with the number of k0 steps - BK=128 halves them and staging nearly doubles - so the 'per-step fixed overhead dominates' hypothesis is refuted and larger BK is plainly worse, most likely because more shared memory means fewer threadgroups per SM and poorer latency hiding.  But all three were measured in the order 32, 64, 128 within one pass, making thermal drift perfectly collinear with the measurement order, and BK=64 itself read 16.580 in that session against 12.228 in an earlier one, a 35 percent machine-state spread.  The apparent 16 percent win for BK=32 is thus indistinguishable from 'BK=32 ran first while the machine was coolest'.  End to end could not arbitrate: BK=32's fresh 300-word prompts gave 8.0 / 16.9 / 14.2 s whereas BK=64's 7.44 / 9.23 / 10.46 s came from an Ollama-interleaved run, and the 16.9 s shows heavy load, so the two are not comparable.  Reverted Q4_GEMM_BK to 64 and rebuilt: a 16 percent result collinear with measurement order is not enough to change a shipped default.  Next is a proper interleaved two-binary A/B over several alternating rounds with medians, which BK=32 deserves because nwords becomes 4, BM*nwords is then exactly 128 = NT with a single iteration per thread, and xsh shrinks.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED at BK=32 (accuracy bit-identical), then reverted to BK=64",
+   "evidence": {
+    "ms_per_token_mode0": {
+     "32": 13.883,
+     "64": 16.58,
+     "128": 24.585
+    },
+    "ms_per_token_mode2": {
+     "32": 10.832,
+     "64": 12.782,
+     "128": 19.336
+    },
+    "refuted": "staging does not fall with k0 step count; larger BK is worse",
+    "confound": "measured in the order 32/64/128 in one pass; BK=64 read 16.580 here vs 12.228 earlier (35% machine-state spread)",
+    "decision": "reverted to BK=64; needs an interleaved two-binary A/B with medians",
+    "next": "interleaved A/B BK 32 vs 64"
+   }
   }
  ],
- "next": "Did the arithmetic before touching the kernel again, and it argues AGAINST the bank-conflict explanation for the staging's 37 GB/s.  The conflict is real - each thread writes eight consecutive halves for one word at wsh[r*WLD + wd*8 + i] with WLD = 72, and consecutive lanes' wd gives 8*wd % 32 only four distinct values, so every i-th store is an 8-way conflict - but the aggregate numbers do not support it being the bottleneck: the whole model performs about 28.8 G half stores in 391 ms, roughly 0.02 cycles per store, far below the hardware's shared-memory ceiling, and the global side does 3.6 G four-byte loads in the same 391 ms, about 0.15 loads per SM per cycle on 40 SMs, also far below capability.  So 37 GB/s looks latency- or occupancy-bound rather than bandwidth- or conflict-bound, and mode 1 equalling mode 0 only proves dequantisation is free, which does not distinguish those.  NEXT, and before any kernel edit: the discriminating experiment is to vary Q4_GEMM_BK across 32, 64 and 128 and see whether staging time tracks the number of k0 steps or the amount of data.  If it tracks the steps, the per-step fixed cost and the two threadgroup_barriers dominate and the answer is a larger BK - and BK=128, refuted long ago, is worth re-testing because that measurement predates the x-staging fix.  If it tracks the data, it is memory efficiency and only then does vectorisation plus removing the redundant scale/bias reads make sense, with the write-side 32-way-conflict trap in mind.",
+ "next": "Ran the BK discriminating experiment and did NOT adopt its result, because the design was confounded and I caught it before shipping.  Sequential single measurements of BK = 32 / 64 / 128 (bench --rows 8 --tokens 32): mode 0 13.883 / 16.580 / 24.585 ms per token and mode 2 (staging only) 10.832 / 12.782 / 19.336.  So staging does NOT fall with the k0 step count - BK=128 halves the steps and staging nearly doubles - which refutes the 'per-step fixed overhead dominates' hypothesis from the previous round, and larger BK is simply worse, probably because more shared memory means fewer threadgroups per SM and worse latency hiding.  BUT the three values were measured in the order 32, 64, 128 in a single pass, so thermal drift is perfectly collinear with the order, and BK=64 read 16.580 in that session against 12.228 in an earlier one - a 35 percent machine-state difference.  'BK=32 is 16 percent faster' therefore cannot be separated from 'BK=32 happened to run first while the machine was coolest'.  End to end could not arbitrate either: BK=32 gave 8.0 / 16.9 / 14.2 s on fresh 300-word prompts while BK=64's 7.44 / 9.23 / 10.46 s came from an Ollama-interleaved run, and the 16.9 s shows the load was heavy, so they are not comparable.  DECISION: reverted Q4_GEMM_BK to 64 and rebuilt, because a 16 percent result collinear with measurement order is not evidence enough to change a shipped default.  NEXT: an interleaved two-binary A/B, alternating several rounds and taking medians, to settle BK 32 against 64 - BK=32 makes nwords 4, so BM*nwords is exactly 128 = NT with one iteration per thread and a smaller xsh, which is structurally cleaner and worth a fair test.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
