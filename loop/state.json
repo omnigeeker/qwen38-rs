@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 192,
+ "round": 193,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4738,9 +4738,42 @@
     "strategic": "a perfect affine still leaves cold TTFT at ~1.9-2.0 s vs llama.cpp's 1.60 s, so MPP must be paired with a large non-GEMM cut (~1.24 s)",
     "default_untouched": "yes"
    }
+  },
+  {
+   "round": 193,
+   "title": "Shipped a verified single-pass prefill: 602 tokens now run in one pass instead of five, 5.94 s to 5.42 s, 6/6 paired with byte-identical output.  The real per-pass limit was never 128 - engine.rs PREFILL_CHUNK_MAX was a separate conservative cap while the runner enforces max_per_seq = (conv_k + PASS_ROWS_MAX).next_power_of_two() - conv_k = 252, and conv_ring only needs to be a power of two, so PASS_ROWS_MAX 1020 costs a few hundred MB of scratch.  runner.rs:1537 also enforces rows must be 1..=BATCH_MAX, so BATCH_MAX rose with it; it only sizes small scratch buffers (about 100 MB) and the invariant is BATCH_MAX >= PASS_ROWS_MAX.  The decisive strategic result: reading weights once instead of five times bought only 9 percent, so prefill is NOT weight-bandwidth-bound but compute-bound - 32.5 TFLOP over 5.42 s is about 6.0 TFLOPS effective, matching the measured 7.76 TFLOPS GEMM.  That explains why sixteen earlier GEMM tuning directions all failed and means MPP matmul2d is the only route that can close the gap.  The affine scale lookup is still unresolved: sc depending only on g (row 0) hangs the server with no output and no error, so that variant produces NaN and stalls generation, while sc=1 with bi=0 still reproduces mode 7 exactly, pinning the fault on the scales[n*ngroups + g] lookup rather than the group machinery.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "default path verified word-for-word against baseline md5 5b5f6e93 len 182",
+   "evidence": {
+    "single_pass": "602-token prompt now one pass instead of five",
+    "paired": {
+     "ctrl": [
+      5.944,
+      5.957,
+      5.934
+     ],
+     "big": [
+      5.43,
+      5.424,
+      5.415
+     ],
+     "verdict": "6/6, output md5 identical 611fec2e, 1.09x"
+    },
+    "real_limit": "max_per_seq = (conv_k + PASS_ROWS_MAX).next_power_of_two() - conv_k = 252; engine's PREFILL_CHUNK_MAX=128 was a separate conservative cap",
+    "constants_changed": {
+     "PASS_ROWS_MAX": "128 -> 1020",
+     "BATCH_MAX": "128 -> 1020",
+     "PREFILL_CHUNK_MAX": "128 -> 1020"
+    },
+    "bounded_memory": "BATCH_MAX only sizes small scratch buffers (~100 MB); conv_ring stays 1024",
+    "strategic": "weights read once vs five times bought only 9%, so prefill is compute-bound (~6.0 TFLOPS effective), not bandwidth-bound; MPP matmul2d is the only route",
+    "affine_status": "sc depending only on g hangs the server (NaN); sc=1 bi=0 still reproduces mode 7 exactly, so the fault is the scales[n*ngroups+g] lookup",
+    "default_untouched": "default path is the one that got faster"
+   }
   }
  ],
- "next": "Bypassed the broken store and proved the per-group machinery correct, leaving only the scale lookup.  Replacing cT.store(mC) with a manual write - take the coordinate from cT.get_multidimensional_index(i) and write cw[m*outf + n] = acc[i] directly - changed the output from a fixed c934afba that no edit could move to 20afecd3, so the data path is now open.  With the write working, sc=1 and bi=0 produce exactly c934afba, the same output as mode 7's single full-K matmul, which proves the group loop, the cooperative tensor, the acc array accumulation, the coordinate mapping and the manual write are all correct; only the scale lookup is wrong, since real scales with bi=0 give the same broken 20afecd3.  The scales themselves are confirmed sound from the Rust side via as_bf16_f32: in_proj_z has out_f 6144, in_f 5120, ng 80, scales_len 491520, and values around plus or minus 0.005 with biases around 0.03, so the layout, the bf16 encoding and ngroups all match my indexing.  The decisive clue is that clamping n into [0, outf) sends the output back to c934afba, so the second component of get_multidimensional_index is not the n coordinate I assumed and exceeds [0, 32); yet clamping also returns to the unscaled result, so the scaling as a whole still is not taking effect, and that pair of observations needs one more round to explain.  Strategic judgement worth recording: even a perfect affine leaves cold TTFT at roughly 1.9 to 2.0 s against llama.cpp's 1.60 s, so the MPP route cannot win the cold-TTFT half on its own and must be paired with a large cut to the non-GEMM side, which is about 1.24 s.  The MPP path therefore stays opt-in behind QW_MPP and does not block other work.  Default path untouched.",
+ "next": "Shipped a verified single-pass prefill: a 602-token prompt now runs in one pass instead of five, 5.94 s down to 5.42 s, 6/6 paired with byte-identical output.  The real per-pass limit was never 128 - engine.rs PREFILL_CHUNK_MAX was a separate, more conservative cap, while the runner enforces max_per_seq = (conv_k + PASS_ROWS_MAX).next_power_of_two() - conv_k = 252, and conv_ring only has to be a power of two, so raising PASS_ROWS_MAX to 1020 costs a few hundred megabytes of scratch and no more.  runner.rs line 1537 also has a hard rows must be 1..=BATCH_MAX check, so BATCH_MAX had to rise with it; BATCH_MAX only sizes small scratch buffers (x, h, qg, k, conv_out and friends, about 100 MB total) and the invariant is BATCH_MAX >= PASS_ROWS_MAX.  The decisive strategic result is that reading the weights once instead of five times bought only 9 percent, so prefill is NOT weight-bandwidth-bound but compute-bound: 32.5 TFLOP over 5.42 s is about 6.0 TFLOPS effective, matching the measured 7.76 TFLOPS GEMM.  That is why sixteen earlier GEMM tuning directions (double buffering, smem aliasing, register prefetch, BN, BM, BK, split-K, K-major, coalescing) all failed, and it means the MPP matmul2d tensor-core path is the only route that can close the gap.  The affine scale lookup is still unresolved: making sc depend only on g (reading row 0) hangs the server outright with no output and no error, so that variant produces NaN and stalls generation, while sc=1 with bi=0 still reproduces mode 7 exactly, which pins the fault precisely on the scales[n*ngroups + g] lookup rather than on any of the group machinery.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

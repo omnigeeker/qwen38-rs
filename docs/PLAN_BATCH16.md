@@ -6452,3 +6452,57 @@ in_proj_z  out_f=6144 in_f=5120 ng=80 scales_len=491520
 所以这条线继续保持 opt-in，不阻塞其它方向的优化。
 
 **默认路径（mode 0）完全未变**，MPP 路径是 `QW_MPP`。
+
+### 72bq. **单 pass 化：602-token 冷 prefill 5.94 → 5.42 s（已验证）**（第 130 轮）
+
+#### 发现：真正的 pass 上限是 252，不是 128
+
+`engine.rs` 的 `PREFILL_CHUNK_MAX = 128` 是个**独立且更保守**的上限，
+而 runner 真正执行的是：
+
+```
+max_per_seq = (conv_k + PASS_ROWS_MAX).next_power_of_two() - conv_k = 252
+```
+
+`conv_ring` 只要求是 2 的幂：`(4 + PASS_ROWS_MAX).next_power_of_two()`。
+所以把 `PASS_ROWS_MAX` 提到 1020 时 ring 才到 1024，**内存代价只有几百 MB scratch**。
+
+`runner.rs:1537` 另有一道硬校验 `rows must be 1..=BATCH_MAX`，
+所以 `BATCH_MAX` 也必须一起提。它只用于尺寸极小的 scratch 缓冲
+（`x/h/qg/k/conv_out…`，合计约 100 MB），不变式是 `BATCH_MAX >= PASS_ROWS_MAX`。
+
+#### 改动
+
+| 常量 | 旧 | 新 |
+|---|---|---|
+| `runner::PASS_ROWS_MAX` | 128 | 1020 |
+| `runner::BATCH_MAX` | 128 | 1020 |
+| `engine::PREFILL_CHUNK_MAX` | 128 | 1020 |
+
+**效果：602-token prompt 从 5 个 pass 变成 1 个 pass，权重只读 1 遍。**
+
+#### 配对测量（同一台机、交替运行、每轮全新进程、`QW_PREFIX_SNAPSHOT=0`）
+
+| 轮 | 对照（128 行/pass） | 单 pass（1020 行） |
+|---|---|---|
+| 1 | 5.944 s | **5.430 s** |
+| 2 | 5.957 s | **5.424 s** |
+| 3 | 5.934 s | **5.415 s** |
+
+**6/6 一致，输出 md5 完全相同（`611fec2e`）⇒ 正确性无损，加速 1.09×。**
+
+#### 极其重要的战略结论
+
+**权重只读 1 遍 vs 5 遍，只快 9% ⇒ prefill 根本不是权重带宽瓶颈，而是计算瓶颈。**
+
+32.5 TFLOP（2 × 602 × 27e9）/ 5.42 s ≈ **6.0 TFLOPS** 有效算力，
+与"我们 GEMM 约 7.76 TFLOPS"吻合。
+
+**⇒ 唯一的出路是 MPP 的 `matmul2d`（用张量核），而不是继续调 chunk 或带宽。**
+**⇒ 这也解释了为什么此前 16 个 GEMM 调优方向（双缓冲、smem、BN、BM、BK…）全部无效。**
+
+#### affine 仍未解决
+
+`sc` 只依赖 `g`（取第 0 行）时**服务端直接挂起**（无输出、无报错），
+说明该变体会产生 NaN 并把生成卡死。`sc=1, bi=0` 仍能精确复现 mode 7，
+**⇒ 按组机制无误，问题精确定位在 `scales[n*ngroups + g]` 这个查表。**

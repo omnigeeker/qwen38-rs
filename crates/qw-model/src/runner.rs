@@ -125,11 +125,17 @@ pub const TILE: usize = 4;
 // 11.548, because each weight read is then amortised over four times the tokens.
 // This is the lever the narrow-tile experiment got wrong: what matters is tokens
 // per weight read, not threadgroups on their own.
-pub const PASS_ROWS_MAX: usize = 128;
+pub const PASS_ROWS_MAX: usize = 1020;
 
 /// Widest row tile a single pass can carry.  `TILE` is the speculative-verify
 /// width; a batch-serving pass puts one row per sequence in the same structure.
-pub const BATCH_MAX: usize = 128;
+// 1020, not 128.  This is the cap on rows in ONE pass, and the pass is what
+// amortises a single sweep of all 14.4 GB of weights over every row it carries.
+// At 128 rows a 602-token prompt needs five passes and therefore five weight
+// sweeps; at 1020 it needs one.  The convolution ring is sized as
+// `(conv_k + PASS_ROWS_MAX).next_power_of_two()`, so it stays at 1024 and the
+// extra memory is a few hundred megabytes of scratch.
+pub const BATCH_MAX: usize = 1020;
 
 struct Scratch {
     x: GpuBuffer,
