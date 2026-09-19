@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 173,
+ "round": 174,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4228,9 +4228,40 @@
     ],
     "next": "warm TTFT three-way, then the structural kernel rewrite"
    }
+  },
+  {
+   "round": 174,
+   "title": "Added warm TTFT to the three-way harness - the same prompt twice, the fair second-request comparison since all three engines cache prefixes and it is the common case for a served model with a system prompt - and we win it decisively.  Five-round medians: ours 0.0086 s, llama.cpp 0.1063 s, Ollama 0.1091 s, so we are 12.4x and 12.7x faster, millisecond-scale against their tenths of a second.  otps again beat both at 25.60 against 22.23 and 22.46, while cold TTFT still loses at 6.69 s against 1.60 and 1.64.  The honest standing is that otps is achieved against both baselines, TTFT is achieved against both in the warm prefix-cached case by a factor of twelve, and TTFT is not achieved in the cold-prefill case where we trail by 4.2x - so the goal is only half met and must not be marked complete.  Everything remaining is cold-prefill kernel efficiency: llama.cpp reaches about 26 TFLOPS, 72 percent of the 36 TFLOPS peak, against our 7.8 TFLOPS at 22 percent.  Next: attempt the structural kernel rewrite, dequantising into registers and feeding the MMA without shared staging, or producer/consumer double buffering, then re-measure cold TTFT.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (harness work; no model change)",
+   "evidence": {
+    "three_way": {
+     "ours": {
+      "cold_ttft": 6.691,
+      "warm_ttft": 0.0086,
+      "otps": 25.6
+     },
+     "llama_cpp": {
+      "cold_ttft": 1.602,
+      "warm_ttft": 0.1063,
+      "otps": 22.23
+     },
+     "ollama": {
+      "cold_ttft": 1.643,
+      "warm_ttft": 0.1091,
+      "otps": 22.46
+     }
+    },
+    "otps": "ACHIEVED against both (1.15x / 1.14x)",
+    "warm_ttft": "ACHIEVED against both (12.4x / 12.7x)",
+    "cold_ttft": "NOT achieved - 4.2x behind",
+    "goal_status": "half met; do not mark complete",
+    "next": "structural kernel rewrite for cold prefill"
+   }
   }
  ],
- "next": "Completed the three-way interleaved comparison and it settles the objective's standing.  tools/tri.py keeps all three servers resident and sends the SAME fresh random prompt to each in a rotating order every round, so drift and thermal load are shared rather than charged to whoever ran first.  Over six rounds the medians are: ours cold TTFT 6.821 s and otps 25.35 tok/s, llama.cpp 1.553 s and 22.33, Ollama 1.630 s and 21.89.  So otps beats BOTH baselines - 1.135x over llama.cpp and 1.158x over Ollama, winning all six rounds against each - while cold TTFT loses to both by 4.4x and 4.2x.  Half the objective is achieved and the other half is not.  The efficiency comparison explains why: llama.cpp prefills 592 tokens in 1.55 s, about 381 tok/s or roughly 26 TFLOPS, 72 percent of the 36 TFLOPS peak, whereas we manage 87 tok/s, about 7.8 TFLOPS or 22 percent of peak.  The gap is kernel efficiency, not traffic, which is exactly what the ten excluded explanations pointed to.  Our staging achieves only about 76 GB/s where the GEMV reaches 400, so the remaining routes are a structural rewrite - dequantising into registers and feeding the MMA directly, with no shared staging at all - or producer/consumer double buffering so the memory system is not idle during the MMA phase and vice versa.  Note the warm-TTFT case has been added to the harness as well, since all three engines cache prefixes and that is the common case for a served model.  NEXT: measure warm TTFT three-way, then attempt the structural kernel rewrite.",
+ "next": "Added warm TTFT to the three-way harness - the same prompt sent twice, which is the fair second-request comparison since all three engines cache prefixes and it is the common case for a served model with a system prompt - and we win it decisively.  Medians over five rounds: ours warm TTFT 0.0086 s, llama.cpp 0.1063 s, Ollama 0.1091 s, so we are 12.4x and 12.7x faster, millisecond-scale against their tenth-of-a-second.  otps again beat both, 25.60 against 22.23 and 22.46.  Cold TTFT still loses, 6.69 s against 1.60 and 1.64.  So the honest standing is: otps is achieved against both llama.cpp and Ollama; TTFT is achieved against both in the warm, prefix-cached case by a factor of twelve; and TTFT is NOT achieved in the cold-prefill case, where we trail by 4.2x.  The goal is therefore only half met and must not be marked complete.  All the remaining work is cold-prefill kernel efficiency: llama.cpp reaches about 26 TFLOPS, 72 percent of the 36 TFLOPS peak, while we reach about 7.8 TFLOPS, 22 percent.  NEXT: attempt the structural kernel rewrite - dequantise into registers and feed the MMA without shared staging, or producer/consumer double buffering - and re-measure cold TTFT.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
