@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 172,
+ "round": 173,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4196,9 +4196,41 @@
     },
     "next": "three-way comparison including llama.cpp"
    }
+  },
+  {
+   "round": 173,
+   "title": "Completed the three-way interleaved comparison, which settles the objective's standing.  tools/tri.py keeps all three servers resident and sends the SAME fresh random prompt to each in a rotating order every round, so drift and thermal load are shared rather than attributed to whoever ran first.  Six-round medians: ours cold TTFT 6.821 s with otps 25.35 tok/s, llama.cpp 1.553 s with 22.33, Ollama 1.630 s with 21.89.  otps therefore beats BOTH baselines - 1.135x over llama.cpp and 1.158x over Ollama, winning all six rounds against each - while cold TTFT loses to both, by 4.4x and 4.2x.  Half the objective is achieved and half is not.  The efficiency comparison says why: llama.cpp prefills 592 tokens in 1.55 s, roughly 381 tok/s or about 26 TFLOPS and 72 percent of the 36 TFLOPS peak, while we reach 87 tok/s, about 7.8 TFLOPS or 22 percent of peak.  The gap is kernel efficiency rather than traffic, precisely what the ten excluded explanations indicated.  Our staging achieves only about 76 GB/s against the GEMV's 400, leaving two routes: a structural rewrite that dequantises into registers and feeds the MMA directly with no shared staging, or producer/consumer double buffering so the memory system is not idle during the MMA phase and vice versa.  Warm TTFT has also been added to the harness, since all three engines cache prefixes and that is the common case for a served model.  Next: measure warm TTFT three-way, then attempt the structural kernel rewrite.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (harness work; no model change)",
+   "evidence": {
+    "three_way_medians": {
+     "ours": {
+      "cold_ttft": 6.821,
+      "otps": 25.35
+     },
+     "llama_cpp": {
+      "cold_ttft": 1.553,
+      "otps": 22.33
+     },
+     "ollama": {
+      "cold_ttft": 1.63,
+      "otps": 21.89
+     }
+    },
+    "otps_verdict": "beats BOTH: 1.135x over llama.cpp, 1.158x over Ollama, 6/6 rounds each",
+    "cold_ttft_verdict": "loses to BOTH by 4.4x and 4.2x",
+    "efficiency": "llama.cpp ~381 tok/s prefill = ~26 TFLOPS (72% of peak); ours 87 tok/s = ~7.8 TFLOPS (22%)",
+    "our_staging_bandwidth": "~76 GB/s vs the GEMV's 400",
+    "remaining_routes": [
+     "register-space dequantisation feeding the MMA with no shared staging",
+     "producer/consumer double buffering"
+    ],
+    "next": "warm TTFT three-way, then the structural kernel rewrite"
+   }
   }
  ],
- "next": "Tested BM=64 with BN=32, the configuration the activation-staging arithmetic pointed to, and it is 4.1 per cent slower, so that hypothesis is refuted too.  Doubling BM halves the activation staging - 160 out_f blocks down to 80, total staging 126 MB to 94 - yet five interleaved rounds gave A 5.612/5.830/5.642/5.654/6.643 against B 5.855/6.034/5.896/5.882/7.296, B winning 1 of 6 with the median going 5.742 to 5.965.  Accuracy was bit-identical and the gates passed 19/0.  The staging now has ten explanations excluded - dequantisation, per-step overhead, bank conflicts, global bandwidth, shared capacity, instruction count, parallelism past grid.y = 4, traffic via BN, coalescing, and now activation staging volume - so 61 GB/s is the hard limit of this kernel design and tile parameters have nothing left to give.  THE BIGGER FINDING IS A GAP IN THE WORK: the objective names llama.cpp AND Ollama as the two baselines to beat, but only Ollama had ever been measured.  llama.cpp is installed at /opt/homebrew/bin/llama-server, build 10809 commit 5266f24da, and the GGUF is already on disk as Ollama's own blob at ~/.ollama/models/blobs/sha256-832df740... at 16.8 GB, so nothing needs downloading.  A new tools/llamaduel.py measures it by exactly the same method as tools/duel.py - TTFT at the first non-empty content chunk, token counts from usage.completion_tokens, a fresh random prompt every round - so that all three are comparable.  NEXT: complete the three-way comparison with llama.cpp's numbers.",
+ "next": "Completed the three-way interleaved comparison and it settles the objective's standing.  tools/tri.py keeps all three servers resident and sends the SAME fresh random prompt to each in a rotating order every round, so drift and thermal load are shared rather than charged to whoever ran first.  Over six rounds the medians are: ours cold TTFT 6.821 s and otps 25.35 tok/s, llama.cpp 1.553 s and 22.33, Ollama 1.630 s and 21.89.  So otps beats BOTH baselines - 1.135x over llama.cpp and 1.158x over Ollama, winning all six rounds against each - while cold TTFT loses to both by 4.4x and 4.2x.  Half the objective is achieved and the other half is not.  The efficiency comparison explains why: llama.cpp prefills 592 tokens in 1.55 s, about 381 tok/s or roughly 26 TFLOPS, 72 percent of the 36 TFLOPS peak, whereas we manage 87 tok/s, about 7.8 TFLOPS or 22 percent of peak.  The gap is kernel efficiency, not traffic, which is exactly what the ten excluded explanations pointed to.  Our staging achieves only about 76 GB/s where the GEMV reaches 400, so the remaining routes are a structural rewrite - dequantising into registers and feeding the MMA directly, with no shared staging at all - or producer/consumer double buffering so the memory system is not idle during the MMA phase and vice versa.  Note the warm-TTFT case has been added to the harness as well, since all three engines cache prefixes and that is the common case for a served model.  NEXT: measure warm TTFT three-way, then attempt the structural kernel rewrite.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
