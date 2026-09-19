@@ -208,6 +208,12 @@ impl<'a> QLinear<'a> {
                 if let Err(e) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
                     eprintln!("q4_gemm_tile FAILED TO BUILD ({e:?}); its dispatch is skipped and y stays zero");
                 }
+                // Compile check for the MetalPerformancePrimitives tensor-op path.
+                // Silent when it works; loud if a future edit breaks it, because
+                // that path is the way out of the sixteen refuted staging ideas.
+                if let Err(e) = batch.kernel(msl::MPP, "q4_mpp_probe") {
+                    eprintln!("q4_mpp_probe FAILED TO BUILD: {e}");
+                }
                 if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
                     // Split-K.  With a small out_f the tile grid alone cannot fill
                     // the GPU, so a wide pass leans on grid.y for parallelism and

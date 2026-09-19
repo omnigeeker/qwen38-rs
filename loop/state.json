@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 185,
+ "round": 186,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4585,9 +4585,29 @@
     },
     "next": "a fundamentally different GEMM; tuning this design is exhausted"
    }
+  },
+  {
+   "round": 186,
+   "title": "Found the way out of the sixteen refuted staging ideas: MetalPerformancePrimitives exists on this machine (macOS 26.6.2, SDK 27.0) and its matmul2d type table includes half x uint4b_format -> half/float, which is exactly our quantised linear.  The 4-bit weights go to the tensor units as they sit in memory, with no dequantisation, no threadgroup staging and no hand-built simdgroup_matrix fragments, because the kernel parameters are device tensors and op.run reads them directly.  I added an msl::MPP probe kernel (half x uint4b_format -> float, NT layout, 64x32 tile, four simdgroups) and a compile check in linear.rs that stays silent when it works and shouts when it breaks.  Three namespace traps cost a few iterations: matmul2d_descriptor and matmul2d live in mpp::tensor_ops rather than mpp, while execution_simdgroups is in the global namespace and in neither.  With those fixed the probe reports built OK, so the path compiles for our exact shapes.  What remains is the affine part: w = q*s + b with s and b per 64-weight group, while matmul2d computes only sum A*q, so the plan is to pre-scale the activation by s, run one matmul2d, get the per-group activation sums S[m,g] with a cheap O(rows*K) reduction, and add sum_g b_g * S[m,g] with a second matmul2d whose K is only 96 - about 1.6 per cent extra tensor work, while cutting weight traffic from 57.6 GB to 14.4 GB and removing the staging entirely.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "compile check only - no computation changed; the probe is silent on success",
+   "evidence": {
+    "api": "MetalPerformancePrimitives.framework present (macOS 26.6.2, SDK 27.0)",
+    "type_table": "half x uint4b_format -> half/float; half x int4b_format -> half/float",
+    "kernel_params": "tensor<device T, dextents<int32_t,2>> read directly from device memory",
+    "namespace_traps": [
+     "matmul2d_descriptor is in mpp::tensor_ops",
+     "matmul2d is in mpp::tensor_ops",
+     "execution_simdgroups is global"
+    ],
+    "result": "q4_mpp_probe built OK",
+    "remaining": "affine handling: pre-scale activation by s, matmul2d, per-group sums S[m,g], second matmul2d with K=96",
+    "expected": "weight traffic 57.6 GB -> 14.4 GB, staging eliminated - the ~4x cold TTFT needs"
+   }
   }
  ],
- "next": "Halved the GEMM's weight traffic and it got SLOWER, which overturns the staging-bound model I built last round.  The reasoning was that weight traffic is W * (rows / BN), so raising BN from 32 to 64 should cut 57.6 GB to 28.8 GB; BN=64 had failed before at NT 128, but that put sixteen accumulators in every simdgroup, so this time I used eight simdgroups at NT 256 in a 2x4 arrangement, leaving each simdgroup with the same four accumulators the 32x32 tile already had, and generalised r_off/t_off to sg/(BN/16) and sg%(BN/16).  The gates passed 19/0 with word-for-word identical output, and the A/B came out 1/6 and 2.6 per cent SLOWER, so it was reverted.  That result matters more than the change: last round I used the kernel's diagnostic modes to decompose the GEMM into about 2.36 s of weight staging, 1.1 s of x staging and 1.2 s of MMA, and concluded it was staging-bound - but halving the weight data moved nothing, so that 2.36 s is NOT weight data movement.  The correct reading is that modes 2 and 3 both keep the two barriers per K step and the whole loop skeleton, so the bulk of that time must be barrier and loop overhead rather than memory traffic.  Sixteen GEMM optimisation directions are now refuted, including double buffering, shared-memory aliasing, register prefetching, BN of 8, 64 and 128, BM of 64, BK of 64, 128 and 256, split-K, a K-major layout, x coalescing, uint4 staging and the K-sweep GEMV.  Within the BM=32/BN=32/BK=32/NT=128/simdgroup_matrix design, 7.76 TFLOPS is a hard ceiling, and cold TTFT would need the GEMM roughly four times faster.  Worth noting the comparison is not unkind to us: llama.cpp loads a 16.8 GB GGUF against our 14.4 GB, so it moves more data and is still 3.7 times faster.  otps and warm TTFT are won against both baselines.  NEXT: a fundamentally different GEMM, since tuning this one is exhausted.",
+ "next": "Found the way out of the sixteen refuted staging ideas: MetalPerformancePrimitives exists on this machine (macOS 26.6.2, SDK 27.0) and its matmul2d type table includes half x uint4b_format -> half/float, which is exactly our quantised linear.  The 4-bit weights can go to the tensor units as they sit in memory, with no dequantisation, no threadgroup staging and no hand-built simdgroup_matrix fragments, because the kernel parameters are device tensors and op.run reads them directly.  I added an msl::MPP probe kernel (half x uint4b_format -> float, NT layout, 64x32 tile, four simdgroups) and a compile check in linear.rs that stays silent when it works and shouts when it breaks.  Three namespace traps cost a few iterations and are worth recording: matmul2d_descriptor and matmul2d live in mpp::tensor_ops rather than mpp, while execution_simdgroups is in the global namespace and in neither.  With those fixed the probe reports built OK, so the path compiles for our exact shapes.  What remains is the affine part: our weights are w = q*s + b with s and b per 64-weight group, while matmul2d computes only sum A*q, so the plan is to pre-scale the activation by s, run one matmul2d, get the per-group activation sums S[m,g] with a cheap O(rows*K) reduction, and add sum_g b_g * S[m,g] with a second matmul2d whose K is only 96.  That adds about 1.6 per cent tensor work while cutting weight traffic from 57.6 GB to 14.4 GB and removing the staging entirely, which is the roughly four times the cold TTFT needs.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

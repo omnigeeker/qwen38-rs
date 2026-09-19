@@ -1260,3 +1260,38 @@ kernel void rope_partial(
 pub const K_SILU_MUL: &str = "silu_mul";
 pub const K_ROPE_PARTIAL_ROWS: &str = "rope_partial_rows";
 pub const K_ROPE_PARTIAL: &str = "rope_partial";
+
+/// MetalPerformancePrimitives tensor-op probe.
+///
+/// Everything the simdgroup_matrix GEMM does by hand - dequantise, stage the
+/// weights and the activations through threadgroup memory, feed 8x8 fragments -
+/// this API does directly from `device` memory, and its type table includes
+/// `half x uint4b_format -> half/float`.  That combination is exactly our
+/// quantised linear: the 4-bit weights can go to the tensor units as they sit in
+/// memory, with no staging and no dequantisation.  Sixteen attempts at tuning the
+/// staging loop have failed, so this is the way out.
+///
+/// The probe deliberately computes only `A x q` and ignores the per-group scale
+/// and bias, so its OUTPUT IS WRONG; it exists to prove the kernel compiles and
+/// to measure what the tensor op costs on our shapes.
+pub const MPP: &str = r#"
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace metal;
+using namespace mpp;
+using namespace mpp::tensor_ops;
+
+kernel void q4_mpp_probe(
+    tensor<device half, dextents<int32_t, 2>> A,           // [rows, K]
+    tensor<device uint4b_format, dextents<int32_t, 2>> B,  // [out_f, K]
+    tensor<device float, dextents<int32_t, 2>> C,          // [rows, out_f]
+    uint2 tgid [[threadgroup_position_in_grid]])
+{
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+        64, 32, static_cast<int>(dynamic_extent), false, true, false);
+    mpp::tensor_ops::matmul2d<desc, execution_simdgroups<4>> op;
+    auto mA = A.slice(tgid.y * 64, 0);
+    auto mB = B.slice(tgid.x * 32, 0);
+    auto mC = C.slice(tgid.y * 64, tgid.x * 32);
+    op.run(mA, mB, mC);
+}
+"#;

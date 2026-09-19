@@ -6121,3 +6121,60 @@ split-K、K-major 布局、x 合并、uint4 staging、K-sweep GEMV。
 
 **注意**：llama.cpp 加载的 GGUF 是 **16.8 GB**，比我们的 14.4 GB **更大** ——
 即它搬运的数据更多却仍快 3.7×，所以这个对比对我们并不苛刻。
+
+### 72bj. **突破口：`MetalPerformancePrimitives::matmul2d` 原生支持 4-bit 权重**（第 123 轮）
+
+调优 staging 循环的 16 条路全部走死后，我去查了 Apple 的现代张量 API。
+**`MetalPerformancePrimitives.framework` 在本机存在**（macOS 26.6.2 / SDK 27.0）。
+
+**它的类型表里直接包含我们需要的组合：**
+
+```
+half                   uint4b_format         half
+half                   uint4b_format         float
+half                   int4b_format          float
+```
+
+**⇒ 4-bit 权重可以原样喂给张量核心 —— 不需要反量化，不需要 threadgroup staging，
+不需要 `simdgroup_matrix` 手工拼装。**
+
+**而且内核参数就是 device 张量本身：**
+```metal
+kernel void matMul(tensor<device half,  dextents<int32_t, 2>> A,
+                   tensor<device half,  dextents<int32_t, 2>> B,
+                   tensor<device float, dextents<int32_t, 2>> C, ...)
+{
+    constexpr auto desc = matmul2d_descriptor(64, 32, dynamic_extent, false, false, false);
+    matmul2d<desc, execution_simdgroups<4>> op;
+    auto mA = A.slice(...); auto mB = B.slice(...); auto mC = C.slice(...);
+    op.run(mA, mB, mC);
+}
+```
+**⇒ `op.run` 直接从 device 内存取数，整条 staging 路径消失。**
+
+### 已完成的去风险步骤：内核编译通过
+
+新增 `msl::MPP` 探针内核（`half × uint4b_format → float`，NT 布局，
+tile 64×32，4 个 simdgroup），并在 `linear.rs` 里做**编译检查**（成功时静默，失败时大声报错）。
+
+踩到的三个命名空间坑（记录备查）：
+1. `matmul2d_descriptor` 在 **`mpp::tensor_ops`**，不在 `mpp`；
+2. `matmul2d` 同样在 `mpp::tensor_ops`；
+3. **`execution_simdgroups` 在全局命名空间**（既不在 `mpp` 也不在 `mpp::tensor_ops`）。
+
+**结果：`q4_mpp_probe built OK` —— 编译通过。**
+
+### 还剩的工作（下一轮）
+
+我们的量化是 **affine**：`w = q*s + b`，`s`/`b` 每 64 个权重一组。
+`matmul2d` 算的是 `sum A*q`，所以需要补上 affine：
+
+```
+sum_k A[m,k]*(q_k*s_g + b_g) = sum_k (A[m,k]*s_g) * q_k  +  sum_g b_g * S[m,g]
+```
+其中 `S[m,g] = sum_{k in g} A[m,k]`（每 token 96 个组和，代价 O(rows×K)，可忽略）。
+
+**⇒ 方案：① 把激活按 s 预缩放（便宜）；② 一次 `matmul2d`；③ 一个小 reduction 得 `S`；
+④ 一个 K=96 的小 `matmul2d` 补 bias。总张量工作量增加约 1.6%。**
+
+**如果成功，权重流量从 57.6 GB 降到 14.4 GB，且 staging 归零 —— 这正是冷 TTFT 需要的约 4×。**
