@@ -39,6 +39,16 @@ const PREFILL_CHUNK: usize = qw_model::runner::PASS_ROWS_MAX;
 /// rejected outright.  Asking for more is therefore clamped rather than honoured,
 /// and the clamp is logged so the request is not silently ignored.
 const PREFILL_CHUNK_MAX: usize = 32;
+/// Size the LAST prefill chunk of a request is capped to.
+///
+/// A boundary is persisted for the chunk that ends at the prompt end (ladder
+/// offset 0), and that is the boundary a repeat of the same prompt resumes from,
+/// so the final chunk's size is exactly how much work a prefix-cache hit still
+/// has to redo.  At the default chunk of 32 that is eight weight sweeps, which
+/// measured 317 ms of the 379 ms warm TTFT; at four it is one sweep, about
+/// 40 ms.  The cold path pays almost nothing: 28 rows + 4 rows is still eight
+/// sweeps, only the per-pass dispatch chain is paid twice.
+const PREFILL_TAIL: usize = 4;
 
 /// A prefix cache that needs no storage of its own.
 ///
@@ -907,7 +917,14 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // each one sees the previous ones in the KV cache and in the
                 // convolution ring exactly as it would have if it had been fed on
                 // its own pass.
-                let take = (a.ids.len() - a.pf).min(chunk);
+                let rem0 = a.ids.len() - a.pf;
+                let take = if rem0 > chunk + PREFILL_TAIL {
+                    chunk
+                } else if rem0 > PREFILL_TAIL {
+                    (rem0 - PREFILL_TAIL).min(chunk)
+                } else {
+                    rem0
+                };
                 // Snapshot the recurrent state *before* the final chunk, not at the
                 // end of the prompt.  At the prompt end the state has already consumed
                 // the last token, but the logits for the first generated token exist

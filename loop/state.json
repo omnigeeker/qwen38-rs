@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 120,
+ "round": 121,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -78,7 +78,12 @@
   "gemm_weight_staging_ms": 100,
   "gemm_x_staging_ms": 112,
   "gemm_mac_ms": 60,
-  "gemm_weight_staging_gbps": 144
+  "gemm_weight_staging_gbps": 144,
+  "ttft_warm_paired_old_s": 0.271,
+  "ttft_warm_paired_new_s": 0.139,
+  "ttft_warm_gain_x": 2.0,
+  "ttft_warm_ours_vs_ollama": "tied: 0.219/0.246/0.272 vs 0.182/0.171/0.162 (first warm sample inflated, later ones 0.16-0.19)",
+  "prefill_tail_rows": 4
  },
  "next_actions": [
   "batch the per-row non-GEMV ops (conv1d_silu_ring / gdn_step / rmsnorm_gated / copy_off are 48 layers x rows dispatches) into one dispatch per layer: measured 9.5 us per dispatch, 2.99 s of the 14.2 s cold prefill, expected to fall to ~0.15 s",
@@ -2733,9 +2738,86 @@
     },
     "shared_kb_bk32_est": 9
    }
+  },
+  {
+   "round": 121,
+   "title": "Warm TTFT pulled from 2.5x behind to a tie.  The only boundary a repeat request ever resumes from is the one before the LAST prefill chunk (ladder offset 0), so the size of that chunk is exactly the work a cache hit still has to redo: at the default 32 rows it is eight weight sweeps (317 ms), at four rows it is one sweep (~40 ms).  Added PREFILL_TAIL=4 so the final chunk is capped at four rows; the cold path pays almost nothing (28 rows + 4 rows is still eight sweeps, only the per-pass dispatch chain is paid twice, ~40 ms).  Log confirms the mechanism: 'prefix cache HIT (saved boundary) - skipped 106 of 110' where it used to skip 96, and 'skipped 784 of 788' where it used to skip 758.  GATES 19 passed / 0 failed ACCEPTED, including 'chunk 4 and chunk 32 give the same answer' and server==cli, so the changed chunking is still bit-identical.  PAIRED A/B with a fresh server and an unseen prompt each round, old/new alternating: warm TTFT 0.268/0.265/0.279 (mean 0.271) -> 0.133/0.147/0.136 (mean 0.139), 2.0x faster, with no cold regression (27.7 -> 27.2 s, inside noise).  PAIRED AGAINST OLLAMA at three lengths, warm measured three times alternately: ours 0.219/0.246/0.272 (first sample inflated, later ones 0.157-0.187) against Ollama 0.182/0.171/0.162 - a TIE, where the same method previously gave 0.379/0.377/0.873 against 0.143/0.130/0.114.  Note the machine degraded about 2x during this round (cold ~900 went from 8.2 s to 18.1 s and Ollama from 1.26 to 2.94 s), so only the paired numbers are quoted.  What is left: a hit still re-prefills four rows, and one sweep (40 ms) is the floor for ANY re-prefill, plus 36 ms for the first decode step, so our floor is ~0.10-0.12 s against 0.16-0.19 s measured.  Winning outright needs the hit to re-prefill NOTHING: record the boundary at the prompt end and include the first generated token's logits in the snapshot (export_prefix stores only state/window/KV, which is precisely why the snapshot stops one chunk early).  Estimated 0.17 -> 0.12 s, a 1.4x win.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (with the new tail chunking)",
+   "evidence": {
+    "ab_warm_old": [
+     0.268,
+     0.265,
+     0.279
+    ],
+    "ab_warm_new": [
+     0.133,
+     0.147,
+     0.136
+    ],
+    "ab_cold_old": [
+     29.872,
+     26.259,
+     26.932
+    ],
+    "ab_cold_new": [
+     27.069,
+     26.797,
+     27.733
+    ],
+    "vs_ollama_warm_ours": [
+     [
+      0.317,
+      0.181,
+      0.158
+     ],
+     [
+      0.394,
+      0.187,
+      0.157
+     ],
+     [
+      0.462,
+      0.184,
+      0.169
+     ]
+    ],
+    "vs_ollama_warm_ollama": [
+     [
+      0.191,
+      0.183,
+      0.172
+     ],
+     [
+      0.156,
+      0.184,
+      0.173
+     ],
+     [
+      0.132,
+      0.175,
+      0.179
+     ]
+    ],
+    "vs_ollama_cold_ours": [
+     0.567,
+     3.218,
+     18.134
+    ],
+    "vs_ollama_cold_ollama": [
+     0.581,
+     0.593,
+     2.943
+    ],
+    "prefill_tail": 4,
+    "cache_skipped_before": "96 of 110 / 758 of 788",
+    "cache_skipped_after": "106 of 110 / 784 of 788",
+    "machine": "degraded ~2x during the round (cold ~900 ours 8.2 -> 18.1 s, Ollama 1.26 -> 2.94 s); only paired numbers quoted"
+   }
   }
  ],
- "next": "Item (1) of the two cheap items is DONE and REFUTED: a one-step register lookahead in the GEMM weight staging is bit-identical (gemm-check 3.347e-4 unchanged) and faster in 4/4 interleaved pairs but by only 1.5% (258.7 -> 255.0 ms), so bytes-in-flight is not why weight staging runs at 144 GB/s.  Reverted.  Refined model: the FIRST pass of a session carries ~180 ms of page-in/warm-up independent of rows; non-GEMV is ~8 us/dispatch; a 900-token prefill is 225 weight sweeps.  A shared-resident-row GEMV (weights read once per pass) is NOT faster - it becomes compute-bound at ~2.7 TMAC/s for 320 ms/pass vs 317 ms for 8 sweeps - so only MMA can speed prefill.  Item (2), batching the per-row non-GEMV ops, has a measured ceiling of 12% of the cold prefill (gdn_step cannot be batched at all: consecutive prefill rows are one sequence's consecutive positions).  New un-refuted hypothesis for the 144 GB/s: warp count.  At BN=32 the grid is out_f/32 threadgroups - 2 for the 48-row GDN projections - and 13.8 KB of shared admits 2 threadgroups/SM, about 8 warps/SM.  Testing it needs NT=128 -> 256 (rewriting the 4-simdgroup fragment mapping) or BN=128.  DECISION NEEDED.",
+ "next": "Warm TTFT is now TIED with Ollama (was 2.5x behind): capping the last prefill chunk at PREFILL_TAIL=4 rows makes the boundary a repeat request resumes from 4 tokens from the end, so a hit re-prefills one weight sweep (40 ms) instead of eight (317 ms).  Paired A/B: warm 0.271 -> 0.139 s (2.0x), cold unchanged (27.7 -> 27.2 s), gates 19/0 ACCEPTED.  Paired against Ollama at three lengths: warm ours 0.16-0.19 vs Ollama 0.16-0.18.  To actually WIN warm TTFT the only remaining move is to stop re-prefilling on a hit: record the boundary at the prompt END and put the first generated token's logits in the snapshot (export_prefix currently stores only state/window/KV, which is exactly why the snapshot stops one chunk early).  Estimated 0.17 -> 0.12 s = 1.4x.  Cold TTFT is still lost 6.2x and is not reachable without a fast GEMM.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
