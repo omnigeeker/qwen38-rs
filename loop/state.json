@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 151,
+ "round": 152,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3641,9 +3641,32 @@
     "next": "locate, do not guess: QW_GEMM_MODE=2 to check the x staging, or dump osh/xsh/wsh into y",
     "still_valid": "parallelism is the bottleneck (previous round); split-K remains a valid route"
    }
+  },
+  {
+   "round": 152,
+   "title": "Corrected a misjudgement in the BN=8 failure record and laid out the locating experiment.  I had read the bit-identical output before and after the dispatch fix as possible evidence of a stale build; that was wrong, because changing bn from 32 to 8 only moves grid.y from 2 to 5, and with tok0 = tg.y * BN both variants cover all 40 tokens - bn=32 gives tok0 in {0,32} at eight columns each, covering 0..39, and bn=8 gives tok0 in {0,8,...,32}, likewise 0..39 - so identical output was exactly what should be expected, and the forced rebuild changing the md5 while the result held confirms it.  I then verified every index in the kernel and found them all self-consistent: the weight writes fit (max 1271 of 1280), the weight reads use r_off in {0,8,16,24} against kk in {0,8,16,24}, the x writes fit (max 534 of 544), the x read layout matches the write layout, osh is 256 floats with simdgroup 3 writing 192..255, the y write loop yields r in 0..31 and t in 0..7, the dispatch is (160*128, 5, 1) with a (128,1,1) threadgroup, and shared totals 4672 bytes.  With the layout all lining up, the fault is not at a level readable by inspection.  Next is fixed-point observation: add a mode == 9 that copies xsh, wsh or osh verbatim into y and print it from gemm-check, to establish which level is zero.  If xsh is zero the staging is not writing; if xsh is populated but osh is zero then the MMA or simdgroup_load's leading-dimension rule is implicated, because XLD is now 17 instead of 41 and the smaller odd stride may trip an alignment requirement the larger one did not.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no code change; the shipped binary is the reverted, verified one)",
+   "evidence": {
+    "correction": "identical output was expected, not a stale build: both bn values cover all 40 tokens",
+    "indices_verified": [
+     "weight writes max 1271 < 1280",
+     "weight reads r_off {0,8,16,24} x kk {0,8,16,24}",
+     "x writes max 534 < 544",
+     "x read layout == write layout",
+     "osh 256 floats, sg=3 -> 192..255",
+     "y write r 0..31, t 0..7",
+     "dispatch (160*128,5,1) tg (128,1,1)",
+     "shared 4672 B"
+    ],
+    "verdict": "layout self-consistent; fault not readable by inspection",
+    "next": "mode == 9 fixed-point dump of xsh/wsh/osh into y to find which level is zero",
+    "suspicion": "XLD 41 -> 17 (smaller odd stride) may trip a simdgroup_load alignment rule"
+   }
   }
  ],
- "next": "Implemented the BN=8 design and it produced ALL-ZERO output, so it was reverted in full.  The change was Q4_GEMM_BN 32 -> 8, r_off = sg*8 with t_off = 0 (a 4x1 mapping), the MMA loop collapsed from four accumulations to one keeping only a00, the same for the store, and the dispatch bn changed from 32 to 8 in both places (bench.rs:395 and linear.rs:210).  gemm-check FAILED on all four tensors with rel = 1.000e0 and max_abs of 4.040e1, 2.591e0, 3.306e0 and 3.196e0; rel exactly 1.0 with max_abs equal to max_ref means the GEMM output was all zeros, i.e. it computed nothing rather than computing imprecisely.  The numbers were bit-identical before and after the dispatch fix, which briefly looked like a stale build, so I touched all three sources and forced a rebuild - the md5 changed to ff72c395 but the result did not, confirming a real kernel defect.  Everything is reverted (msl.rs, bench.rs, linear.rs), the binary md5 is back to 35fe8f5f363f352317a379f252f7d83d and gemm-check PASSES again at worst rel 3.347e-4.  NEXT: do not keep guessing at this kernel - locate the fault first, either by stepping through QW_GEMM_MODE (mode 2 skips the MMAs, which shows whether the x staging is being written correctly) or by temporarily dumping osh, xsh and wsh into y for a fixed-point observation.  No further edits to this kernel until it is located.  One important reservation: the previous round's finding that parallelism is the bottleneck is NOT undermined by this failure - only this particular way of exploiting it is - and split-K remains an equally valid route that does not depend on re-tiling the output.",
+ "next": "Corrected a misjudgement in the failure record and prepared the locating experiment.  I had treated the bit-identical output before and after the dispatch fix as evidence of a stale build, but that inference was wrong: changing bn from 32 to 8 only changes grid.y from 2 to 5, and since tok0 = tg.y * BN both variants cover all 40 tokens (bn=32 gives tok0 in {0,32} with 8 columns each, covering 0..39; bn=8 gives tok0 in {0,8,...,32}, also 0..39).  Identical output was therefore the expected result, and the forced rebuild changing the md5 while the result stayed the same confirms it.  I then checked every index in the kernel and they are all self-consistent: weight writes fit (max 1271 < 1280), weight reads use r_off in {0,8,16,24} and kk in {0,8,16,24}, x writes fit (max 534 < 544), the x read layout matches the write layout, osh is 256 floats with sg=3 writing 192..255, the y write loop gives r in 0..31 and t in 0..7, the dispatch is (160*128, 5, 1) with (128,1,1), and shared is 4672 bytes.  Since the layout all lines up, the fault is not at a level I can read off.  NEXT: fixed-point observation - add a mode == 9 to the kernel that copies xsh (or wsh, or osh) verbatim into y, print it from gemm-check, and establish which level is zero.  If xsh is all zeros the x staging is not writing; if xsh has values but osh is zero then the MMA or simdgroup_load's leading-dimension requirement is at fault, since XLD is now 17 rather than 41 and the smaller odd stride may trip an alignment rule the larger one did not.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
