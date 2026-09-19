@@ -3704,7 +3704,7 @@
    "title": "Found that BN=8 had been CORRECT all along and the fault was a third dispatch site in the test harness.  gemm-check has its own dispatch at bench.rs:527, and I had only been editing bench.rs:395, which belongs to the bench subcommand; bench.rs:528 kept bn = 32 while the kernel expected 8, so grid.y was ceil(40/32) = 2 and tok0 = tg.y*8 covered only tokens 0..15, leaving 16..39 unwritten and rel ~ 1.0.  Correcting all four dispatch sites makes gemm-check PASS with bit-identical accuracy against BN=32.  The measurement refutes it regardless: six interleaved rounds, with the machine drifting 13.7 to 18.5, gave BN=32 13.734/14.585/16.209/17.634/17.992/18.060 against BN=8's 14.653/16.510/18.407/18.083/18.465/18.491 - BN=32 won every pair.  The cause is obvious in hindsight: at 32 tokens grid.y = 4 means the weights are read four times, 57.6 GB against 14.4 GB, and the parallelism does not repay four times the traffic.  This re-reads the earlier 32-vs-128-token result correctly: the lever is not a narrower tile but how many tokens each weight read feeds.  BN=32 at 32 tokens reads the weights once at 370 ms per 32 tokens; BN=32 at 128 tokens reads them four times but takes 238 ms per 32 tokens because the re-read amortises over four times the tokens; BN=8 at 32 tokens reads them four times for the same 32 tokens and loses.  Bandwidth rises from 39 to about 60 GB/s once grid.y >= 2, but it only pays when each y-slice carries 32 tokens.  The right direction is therefore widening the prefill pass from 32 rows to 128, which needs BATCH_MAX, PASS_ROWS_MAX and the x, y and conv-ring buffers enlarged.  BN=8 reverted; the loud kernel-build error in linear.rs kept.",
    "tok_s": null,
    "end_to_end": null,
-   "gates": "19 passed / 0 failed, ACCEPTED (BN=8 reverted; the loud kernel-build check kept, md5 8469229c523c7c73421c712657ca0295)",
+   "gates": "19 passed / 0 failed, ACCEPTED (final md5 8469229c523c7c73421c712657ca0295: BN=32 at every site plus the loud kernel-build check)",
    "evidence": {
     "root_cause": "gemm-check's own dispatch at bench.rs:528 kept bn = 32, so grid.y = 2 covered only tokens 0..15",
     "with_all_four_sites_fixed": "gemm-check PASSED, bit-identical accuracy",
@@ -3726,7 +3726,8 @@
     ],
     "verdict": "BN=32 won 6/6 - BN=8 refuted by measurement (4x weight re-read for the same 32 tokens)",
     "reinterpretation": "the lever is tokens per weight read, not tile width: 238 ms per 32 tokens at 128 tokens vs 370 ms at 32",
-    "next": "widen the prefill pass from 32 rows to 128 (BATCH_MAX, PASS_ROWS_MAX and the x/y/conv-ring buffers)"
+    "next": "widen the prefill pass from 32 rows to 128 (BATCH_MAX, PASS_ROWS_MAX and the x/y/conv-ring buffers)",
+    "consistency_fix": "the previous commit left bench.rs/linear.rs at bn=8 while msl.rs was back at Q4_GEMM_BN 32; all sites are now 32 and the md5 is back to 8469229c523c7c73421c712657ca0295, the build the gates verified"
    }
   }
  ],

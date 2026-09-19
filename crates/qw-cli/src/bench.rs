@@ -392,7 +392,7 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                     l.encode(&mut batch, &kernel, x, y);
                 } else if rows == 8 {
                     let bm = 32usize;
-                    let bn = 8usize;
+                    let bn = 32usize;
                     let d = qw_metal::Dispatch::new(
                         &kernel,
                         (((l.out_f + bm - 1) / bm) * 128, (k + bn - 1) / bn, 1),
@@ -525,7 +525,7 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
         let mut batch = qw_metal::CommandBatch::new(&mut dev);
         let kernel = batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMM_TILE)?;
         let bm = 32usize;
-        let bn = 8usize;
+        let bn = 32usize;
         // `dispatch_threads` takes the grid in THREADS, not threadgroups, so the
         // x extent has to be multiplied by the threadgroup size.  Passing the tile
         // count directly launches a couple of threadgroups and silently leaves the

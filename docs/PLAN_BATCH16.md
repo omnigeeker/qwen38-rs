@@ -4917,3 +4917,9 @@ if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
 
 **保留**：`linear.rs` 里 kernel 构建失败的**响亮报错**（md5 从 `35fe8f5f` 变为
 `8469229c`，门禁 19/0 ACCEPTED）。
+
+**（补记，同一轮）** 上一条提交里 `bench.rs`/`linear.rs` 的 `bn` 因一次 python 断言
+中断而**没被改回 32**，与 `msl.rs` 的 `Q4_GEMM_BN 32` 不一致（功能上仍正确，
+因为 `grid.y` 偏大只浪费线程，`tok < k` 守卫生效）。已全部改回 32，
+二进制 md5 复原为 **`8469229c523c7c73421c712657ca0295`** ——
+正是本轮门禁 **19/0 ACCEPTED** 所验证的那个构建。`gemm-check` PASSED。

@@ -210,7 +210,7 @@ impl<'a> QLinear<'a> {
                 }
                 if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
                     const BM: usize = 32;
-                    const BN: usize = 8;
+                    const BN: usize = 32;
                     let d = Dispatch::new(
                         &gk,
                         (self.out_f.div_ceil(BM) * 128, rows.div_ceil(BN), 1),
