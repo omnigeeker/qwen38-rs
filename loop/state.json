@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 161,
+ "round": 162,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3879,9 +3879,36 @@
     "kernel_change": "32x128 tile, 64 8x8 tiles, 16 per simdgroup, r_off=(sg>>1)*16, t_off=(sg&1)*64; shared 27.7 KB",
     "next": "implement BN=128, then split-K"
    }
+  },
+  {
+   "round": 162,
+   "title": "Implemented BN=128 as planned and measured it 73 percent slower, then reverted.  The kernel was correct: gemm-check PASSED with bit-identical max_abs and rel against BN=32 and the gates were 19/0 ACCEPTED.  But four interleaved cold-TTFT rounds after a 300 s cooldown on a shared fresh 672-token prompt gave bn32 5.718/5.771/5.765/5.934 against bn128 9.897/9.954/9.920/10.068, losing every pair by 73 percent.  The previous round's estimate failed in one specific place: I assumed grid.y = 1 would still achieve 39 GB/s, but backing the bandwidth out of the measurement - 14.4 GB of traffic over 9.95 s scaled from 128 to 672 tokens - gives roughly 7.6 GB/s, so dropping to 160 threadgroups collapses bandwidth far below 39 GB/s and swamps the fourfold traffic saving.  So BN=32 with a 128-row pass and grid.y = 4 is already a good local optimum: it trades a fourfold re-read for fourfold parallelism, and parallelism is worth far more than traffic here.  split-K stays the only route that preserves both - one weight read with four-way parallelism - but it needs BN=128, now shown infeasible alone unless split-K brings the threadgroup count back to 640, which is the next thing to test directly.  Note too that bn32 measured 5.7-5.9 s for 672 tokens, about 115 tok/s, better than the previous round's 6.4 s for the same configuration - a 12 percent session-to-session swing, which is precisely why comparisons must be interleaved.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BN=128 reverted; the shipped 128-row/BN=32 build is restored)",
+   "evidence": {
+    "bn32": [
+     5.718,
+     5.771,
+     5.765,
+     5.934
+    ],
+    "bn128": [
+     9.897,
+     9.954,
+     9.92,
+     10.068
+    ],
+    "verdict": "0/4, 73% slower; reverted",
+    "accuracy": "bit-identical, gates 19/0 - the kernel was correct",
+    "estimate_error": "assumed 39 GB/s at grid.y = 1; the measurement implies about 7.6 GB/s",
+    "conclusion": "BN=32 + 128-row pass (grid.y = 4) is a good local optimum: parallelism beats traffic here",
+    "open_question": "split-K needs BN=128, so it must first restore the threadgroup count to 640 - test that directly",
+    "variance": "bn32 measured 5.7-5.9 s now against 6.4 s last round, a 12% swing"
+   }
   }
  ],
- "next": "Corrected the previous round's reasoning before implementing anything, because the traffic algebra shows split-K alone saves nothing.  Each threadgroup (tg.x, tg.y) reads the weights for its BM rows across all of K, and there are (out_f/BM) * (rows/BN) of them, so total weight traffic is out_f * K * (rows/BN) = W * (rows/BN) - it depends only on rows/BN and not at all on how K is cut.  So with grid.y = 4, splitting K four ways makes each (y,z) pair read K/4 of the weights but also makes the number of pairs four times larger, leaving the total at 4W.  The previous round's plan was therefore wrong.  The correct lever is BN itself: raising BN from 32 to 128 - the whole pass width - takes grid.y from 4 to 1 and weight traffic from 4W to 1W, at the cost of parallelism falling from (out_f/BM)*4 to (out_f/BM)*1.  Estimating with the measured bandwidths for out_f = 5120, where out_f/BM is 160 threadgroups: today 4W at 61 GB/s is 944 ms, matching the measured 951; with BN=128 the traffic is W but the bandwidth drops to the 39 GB/s regime, giving 369 ms, or 2.9 ms per token against 7.4, a 2.5x win with no reduction pass; and adding split-K with grid.z = 4 restores the parallelism to 640 threadgroups, so 14.4 GB at about 61 GB/s is 236 ms, 1.8 ms per token, roughly 4x.  So the plan is two steps: BN=128 first, then split-K.  The kernel change for BN=128 is a 32x128 output tile, 64 tiles of 8x8, with each of four simdgroups owning 16 of them - about 32 accumulator registers per thread, which is feasible - using r_off = (sg>>1)*16 and t_off = (sg&1)*64, with xsh at 8768 B, osh at 16384 B and wsh at 2560 B for 27.7 KB total, acceptable since shared capacity was shown to be a weak constraint.  Note this is the same parameter as the failed BN=8 experiment but in the opposite direction: smaller meant more re-reads, larger means fewer.",
+ "next": "Implemented BN=128 exactly as planned and it is 73 percent SLOWER, so it is reverted.  The kernel was correct - gemm-check PASSED with bit-identical max_abs and rel against BN=32, and the gates were 19/0 ACCEPTED - but four interleaved cold-TTFT rounds after a 300 s cooldown on a shared fresh 672-token prompt gave bn32 5.718/5.771/5.765/5.934 against bn128's 9.897/9.954/9.920/10.068, so it lost every pair by 73 percent.  The estimate in the previous round was wrong in one specific way: I assumed grid.y = 1 would still reach 39 GB/s, but backing the bandwidth out of the measurement - 14.4 GB of traffic spread over 9.95 s scaled to 128 of 672 tokens - puts it near 7.6 GB/s, so when parallelism falls to 160 threadgroups the bandwidth collapses far below 39 GB/s and the fourfold traffic saving is more than eaten.  The conclusion is that BN=32 with a 128-row pass, grid.y = 4, is already a good local optimum: it trades a fourfold re-read for fourfold parallelism, and here parallelism is worth much more than traffic.  split-K remains the only route that keeps both - reading the weights once while retaining four-way parallelism - but it requires BN=128, which has now been shown infeasible on its own unless split-K restores the threadgroup count to 640.  That is the question to test directly next.  Also worth recording that bn32 measured 5.7-5.9 s for 672 tokens, about 115 tok/s, better than the 6.4 s of the previous round on the same configuration - a 12 percent swing between sessions, which is exactly why comparisons must be interleaved.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
