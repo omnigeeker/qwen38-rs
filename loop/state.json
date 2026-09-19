@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 145,
+ "round": 146,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3467,9 +3467,27 @@
     "staging_line_closed": "five explanations excluded (dequant, step overhead, bank conflict, global bw, shared capacity); latency is structural",
     "next": "move to a higher-yield direction than staging micro-optimisation"
    }
+  },
+  {
+   "round": 146,
+   "title": "After five memory-side explanations were excluded, counted the instructions per staging iteration and found a hypothesis that explains all of them at once: the staging is instruction-issue bound, not memory bound.  One word (8 weights) costs roughly 33-39 instructions - about 4 for the index division, multiply-subtract and two compares, 3 loads for the word plus sp[g] and bp[g], about 24 for the eight nibble extracts, half conversions and multiply-adds, and 2-8 shared stores.  The model stages 3.6 G words, so 120-140 G instructions in 375 ms, which is 320-370 G instructions per second against 60 G cycles per second of aggregate issue capacity (40 SMs at about 1.5 GHz) - 5.3-6.2 instructions per SM per cycle, above the roughly 4 an Apple GPU can sustain.  This accounts for every earlier exclusion: mode 1 matching mode 0 because the eight conversions and stores remain, BK making no difference, bank conflicts worth 0.8 percent, bandwidth unsaturated, shared capacity irrelevant.  The fix is the GEMV's own trick - one uint4 load per thread covering four words and 32 weights: the index arithmetic amortises 4x, loads fall from twelve to three, and the arithmetic vectorises, cutting about 132 instructions per 32 weights to about 50, a 2.6x reduction.  The 32-way write conflict this introduces is affordable precisely because bank conflicts measured at 0.8 percent.  To implement next round with an interleaved A/B; GROUP_SIZE is 64, eight words, so four words always sit inside one group and one scale and bias read per thread suffices.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no code change)",
+   "evidence": {
+    "instructions_per_word": 35,
+    "words": 3600000000.0,
+    "total_instructions": "120-140 G in 375 ms",
+    "issue_rate": "320-370 G instr/s vs 60 G cycles/s aggregate = 5.3-6.2 per SM per cycle, above the ~4 ceiling",
+    "hypothesis": "instruction-issue bound, not memory bound",
+    "explains": "all five earlier exclusions",
+    "fix": "uint4 per thread (4 words, 32 weights): loads 12 -> 3, ~132 -> ~50 instructions per 32 weights (2.6x)",
+    "write_conflict": "acceptable, bank conflicts measured at 0.8%",
+    "next": "implement the uint4 staging and validate with an interleaved A/B"
+   }
   }
  ],
- "next": "Adopted Q4_GEMM_BK = 32 on six interleaved A/B rounds in which it won EVERY pair: 11.700/11.571/11.702/11.662/11.587/11.792 against BK=64's 11.872/11.869/12.110/12.092/11.990/11.969, medians 11.681 vs 11.980, so 2.6 percent faster.  The earlier four-round run that showed a tie was taken while the machine drifted from 13 to 20 ms; this one held steady at 11.5-12.1 ms with a consistent direction in all six rounds, so it is the trustworthy one.  Accuracy is bit-identical and the gates are 19 passed / 0 failed, ACCEPTED with BK=32 as the default (binary md5 35fe8f5f363f352317a379f252f7d83d).  The probe also answered its real question: halving xsh bought only 2.6 percent, so shared capacity is a WEAK constraint, and that rules out the two bigger occupancy candidates - BN=64 with NT=256, whose shared use would actually rise to 22.7 KB, and split-K, which costs an extra reduction pass.  Both are dropped on cost-benefit grounds.  That closes the weight-staging line: its 37 GB/s is not dequantisation, not per-step overhead, not bank conflicts, not global bandwidth and not shared capacity - five explanations measured and excluded - so what remains is memory latency itself, set by the per-thread dependency chain, which is the structural limit of this kernel.  Cold TTFT stands at 7.4-10.5 s against Ollama's 2.1-2.9 s (3.5-4x behind) while otps and warm TTFT both win comfortably, so the next round should move to a higher-yield direction rather than more two-percent attempts on staging.",
+ "next": "New hypothesis for the weight staging, and it explains all five exclusions at once: the staging is INSTRUCTION-ISSUE bound, not memory bound.  Counting the per-iteration work for one word (8 weights) gives roughly 33-39 instructions - about 4 for the index division, multiply-subtract and two compares, 3 loads (the word plus sp[g] and bp[g]), about 24 for the eight nibble extracts, half conversions and multiply-adds, and 2-8 shared stores.  Across the whole model that is 3.6 G words times ~35 = about 120-140 G instructions in 375 ms, i.e. 320-370 G instructions per second, against 40 SMs at about 1.5 GHz = 60 G cycles per second, which is 5.3-6.2 instructions per SM per cycle and ABOVE the roughly 4 per cycle an Apple GPU can issue.  That single fact explains every earlier exclusion: dequantisation looks free because mode 1 still does the eight conversions and stores, BK does not help, bank conflicts are irrelevant at 0.8 percent, bandwidth is far from saturated, and shared capacity is not the constraint.  THE FIX is the GEMV's own trick - have each thread handle four words via one uint4 load (16 bytes, 32 weights): the index arithmetic amortises 4x, the loads drop from twelve (4 words + 4 scales + 4 biases) to three (one uint4 plus one scale half4 plus one bias half4, since eight words share a group), and the conversion and multiply-add can be vectorised, taking the per-32-weights instruction count from about 132 to about 50, a 2.6x reduction.  The 32-way write conflict that this creates is acceptable because bank conflicts were measured at only 0.8 percent.  Implement and validate with an interleaved A/B.  Note GROUP_SIZE is 64, i.e. eight words, so four words always fall inside one group and the scale and bias need only one read per thread.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
