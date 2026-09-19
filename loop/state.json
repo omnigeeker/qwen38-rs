@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 136,
+ "round": 137,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3214,9 +3214,46 @@
     "proposed_fix": "make XLD % 32 odd (e.g. 65), or transpose the x tile to xsh[t][kk]",
     "risk": "simdgroup_load leading-dimension alignment may reject an odd pad; must be tested"
    }
+  },
+  {
+   "round": 137,
+   "title": "Landed the x-staging fix and it works.  Q4_GEMM_XLD went from Q4_GEMM_BN+8 (40) to Q4_GEMM_BN+9 (41) and the staging loop now hands each lane consecutive K rather than consecutive tokens, so a warp reads a 64-byte contiguous run of x instead of striding 10240 bytes per lane; 41 is coprime with 32 so the shared-write bank (kk*41 + t) % 32 cycles through all 32 banks conflict-free.  That is precisely why the earlier index swap, done with XLD = 40, produced a 4-way conflict and a 40 percent regression.  Correctness is bit-identical: gemm-check reports the same max_abs and rel on all four tensors as before the change (1.097e-2/2.715e-4, 9.508e-4/3.347e-4, 9.441e-4/2.856e-4, 9.847e-4/2.818e-4), which also proves simdgroup_load accepts the odd leading dimension.  Gates: 19 passed / 0 failed, ACCEPTED.  Cold prefill on three fresh 300-word prompts, read from the server's own log, is 7.1 / 6.6 / 6.6 s against 14.52 / 10.62 / 11.31 s before - about 1.7x, which lifts prefill throughput from roughly 46 to roughly 74 tok/s.  Recorded the caveat that this is not an interleaved A/B and the machine state was uncontrolled, though all three runs moved together and far beyond the noise.  Next: interleaved paired cold TTFT against Ollama and repair the harness defect where usage only appears in the final streaming chunk.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED",
+   "evidence": {
+    "xld": {
+     "before": 40,
+     "after": 41
+    },
+    "staging_mapping": "t = idx / BK, kk = idx - t*BK (lanes take consecutive K)",
+    "lane_read_bytes": {
+     "before_stride": 10240,
+     "after_contiguous": 64
+    },
+    "gemm_check_unchanged": "bit-identical max_abs/rel on all four tensors",
+    "cold_prefill_s": {
+     "before": [
+      14.52,
+      10.62,
+      11.31
+     ],
+     "after": [
+      7.1,
+      6.6,
+      6.6
+     ]
+    },
+    "gain_x": 1.7,
+    "prefill_tok_s": {
+     "before": 46,
+     "after": 74
+    },
+    "caveat": "not interleaved, machine state uncontrolled, but all three runs moved together"
+   }
   }
  ],
- "next": "Analysed the x-staging problem without changing code, because the full change-build-measure loop did not fit in this round.  The staging loop makes the 32 lanes of a warp take consecutive TOKENS, so the device addresses stride by K*2 = 10240 bytes - fully uncoalesced - which looks like 64x waste but only costs 112 ms because L2 absorbs it.  The reason the earlier index swap made the kernel 40 percent SLOWER is now explained: after the swap the lanes read along g (coalesced) but write xsh[kk][t] with kk varying, and with XLD = BK + 8 = 72 the bank is (kk*72 + t) % 32, so 8*kk % 32 only ever takes {0,8,16,24} - a 4-way bank conflict on the writes that costs more than the coalescing gains.  The correct fix is to make XLD % 32 odd so kk*XLD cycles through all 32 banks, e.g. XLD = BK + 1 = 65, but simdgroup_load has alignment requirements on its leading dimension (half usually needs 8 elements) so 65 may simply be illegal; the alternatives are a transposed x tile xsh[t][kk] with leading dim BK+pad, or some other odd pad that simdgroup_load accepts.  This must be settled by experiment, not reasoning.  NEXT: run that experiment - change the pad, rebuild, paired-time it, and re-check equivalence - since x staging is 112 ms per pass and the last un-attacked large block on the cold path.",
+ "next": "Implemented the x-staging fix from the previous round's analysis and it is a real win.  Q4_GEMM_XLD changed from Q4_GEMM_BN+8 (40) to Q4_GEMM_BN+9 (41), and the staging loop now gives each lane consecutive K instead of consecutive tokens: t = idx / Q4_GEMM_BK, kk = idx - t*Q4_GEMM_BK.  So a warp reads 64 contiguous bytes of x instead of striding 10240 bytes, and because 41 is coprime with 32 the shared write bank (kk*41 + t) % 32 cycles through every bank with no conflict - which is exactly what went wrong when XLD was 40 and the swap caused a 4-way conflict and a 40 percent regression.  Correctness: gemm-check's four tensors report bit-identical max_abs and rel to before the change, so simdgroup_load accepts the odd leading dimension of 41 and the change only reorders the loads.  Gates 19 passed / 0 failed, ACCEPTED.  Cold prefill on three fresh 300-word prompts read from the server log: 7.1 / 6.6 / 6.6 s against 14.52 / 10.62 / 11.31 s before the change - about 1.7x, taking prefill throughput from roughly 46 to roughly 74 tok/s.  Caveat recorded: that is not an interleaved A/B and machine state was uncontrolled, but all three runs moved together and by far more than the noise.  NEXT: an interleaved paired cold-TTFT re-measurement against Ollama (220-260 tok/s), and fix the harness defect from two rounds ago where usage only appears in the final streaming chunk.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

@@ -4283,3 +4283,35 @@ for (int idx = tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += Q4_GEMM_NT) {
 
 **这是一个需要实测的 kernel 实验，不能凭推理下结论** —— 本轮上下文不足以
 完成「改 + 编译 + 配对计时 + 等价性」的完整闭环，故留到下一轮，先记录分析。
+
+### 72m. **x staging 改成合并读取 + 奇数 pad：冷 prefill 再快约 1.7×**（第 77 轮）
+
+按 §72l 的分析实施：
+
+```c
+#define Q4_GEMM_XLD (Q4_GEMM_BN + 9)   // 41，与 32 互质（原为 BN+8 = 40）
+// staging：lane 取连续 K，而不是连续 token
+const int t = idx / Q4_GEMM_BK;  const int kk = idx - t * Q4_GEMM_BK;
+```
+
+- 读取：同一 warp 的 32 个 lane 读 `x[tok][k0..k0+31]` —— **64 字节连续**，
+  取代原来的 **10240 字节跨步**；
+- 写入：bank = `(kk*41 + t) % 32`，`41` 与 32 互质 ⇒ `kk` 遍历全部 32 个 bank，
+  **无冲突**（这正是当年用 `XLD=40` 交换下标导致 4 路冲突、慢 40% 的原因）。
+
+**正确性**：`gemm-check` 四个张量的 `max_abs`/`rel` 与改动前**逐位相同**
+（1.097e-2/2.715e-4、9.508e-4/3.347e-4、9.441e-4/2.856e-4、9.847e-4/2.818e-4）
+—— 说明 `simdgroup_load` 接受奇数 leading dimension（41），且改动只是换了
+加载顺序、没有改变任何数值。门禁 **19 passed / 0 failed, ACCEPTED**。
+
+**冷 prefill 计时**（300 词全新随机 prompt，服务端 `prompt in after`）：
+
+| | 改动前（§72k） | 改动后 |
+|---|---|---|
+| 冷 prefill | 14.52 / 10.62 / 11.31 s | **7.1 / 6.6 / 6.6 s** |
+
+**⇒ 约 1.7× 提升。** 折合 prefill 吞吐从约 46 tok/s 升到约 **74 tok/s**。
+（注：非交错 A/B，机器状态未受控，但三次一致且幅度远超噪声。）
+
+**下一轮**：与 Ollama 做**交错配对**的冷 TTFT 复测（Ollama 侧 220–260 tok/s），
+并把 §72k 的 harness 缺陷（usage 只在最后一个 chunk）修掉。

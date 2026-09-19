@@ -695,7 +695,12 @@ Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
 // rows land on banks 0, 4, 8, ... 28.  Same idea for the activation tile.
 #define Q4_GEMM_NT  128
 #define Q4_GEMM_WLD (Q4_GEMM_BK + 8)
-#define Q4_GEMM_XLD (Q4_GEMM_BN + 8)
+// Odd pad on purpose.  The x tile is written one column at a time, so with an
+// even pad the bank index (kk*XLD + t) % 32 collapses to four values and the
+// writes take a 4-way conflict - that is what made the earlier attempt to
+// coalesce the x reads 40 per cent slower.  41 is coprime with 32, so kk*41
+// cycles through every bank while the reads stay coalesced.
+#define Q4_GEMM_XLD (Q4_GEMM_BN + 9)
 
 kernel void q4_gemm_tile(
     device const uint*   w      [[buffer(0)]],
@@ -783,8 +788,11 @@ kernel void q4_gemm_tile(
             // costs almost nothing, while the coalesced form makes the shared-memory
             // writes conflict instead.  Left as measured, not as it looks.
             for (int idx = (int)tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += Q4_GEMM_NT) {
-                const int kk  = idx / Q4_GEMM_BN;
-                const int t   = idx - kk * Q4_GEMM_BN;
+                // Lanes take consecutive K (not consecutive tokens), so the device
+                // read is a 64-byte run instead of a 10240-byte stride; the odd XLD
+                // keeps the shared write conflict-free.
+                const int t   = idx / Q4_GEMM_BK;
+                const int kk  = idx - t * Q4_GEMM_BK;
                 const int g   = k0 + kk;
                 const int tok = tok0 + t;
                 xsh[kk * Q4_GEMM_XLD + t] = (g < K && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
