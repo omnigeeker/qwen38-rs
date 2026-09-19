@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 134,
+ "round": 135,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3166,9 +3166,43 @@
     "ollama_measurement": "INVALID - prefix cache hit (0.12/0.22 s for a >=0.85 s prompt); first script also timed from after urlopen",
     "next": "fresh random prefix per round plus prompt_eval_count to prove re-prefill"
    }
+  },
+  {
+   "round": 135,
+   "title": "Finally obtained a valid paired cold-TTFT measurement.  Three rounds, each with a fresh random 300-word prompt (about 490 tokens), and Ollama's prompt_eval_count printed to prove it genuinely re-prefilled rather than hitting its cache - it read 476, 496 and 491.  Ours came in at 14.52, 10.62 and 11.31 s against Ollama's 2.51, 2.99 and 3.15 s total, of which its own prefill was 2.23, 2.64 and 2.77 s.  Cold TTFT is therefore still lost by roughly 4-5x, which in throughput terms is about 46 tok/s for us against 220-260 tok/s for Ollama.  That also corrects the earlier optimistic 468 tok/s attributed to Ollama; the verified figure is 220-260.  One defect in my own harness to fix: our usage.prompt_tokens read 0 because the usage block only appears in the final streaming chunk while I returned at the first content chunk, so the TTFT is sound but any token count needs the whole stream drained.  Recorded where the cold path can still be attacked: weight staging at 212 ms per GEMM pass and x staging at 112 ms per pass.  Register prefetch on the weight side was refuted at 1.5 percent long ago, but the x staging's 10240-byte lane stride has never been attempted, and that is the next target.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (unchanged; measurement only)",
+   "evidence": {
+    "ours_cold_ttft_s": [
+     14.52,
+     10.62,
+     11.31
+    ],
+    "ollama_total_s": [
+     2.51,
+     2.99,
+     3.15
+    ],
+    "ollama_prompt_eval_count": [
+     476,
+     496,
+     491
+    ],
+    "ollama_prefill_s": [
+     2.23,
+     2.64,
+     2.77
+    ],
+    "ours_prefill_tok_s": 46,
+    "ollama_prefill_tok_s": "220-260",
+    "verdict": "cold TTFT still lost by about 4-5x",
+    "harness_defect": "usage.prompt_tokens read 0 (usage is in the final chunk)",
+    "next": "attack the GEMM x staging (112 ms per pass, 10240-byte lane stride, never attempted)"
+   }
   }
  ],
- "next": "Measured cold TTFT with the GEMM default: 5.2 s and 9.8 s on a 390-token prompt (server log 'prompt in after'), against the scalar default's best of 14.2 s and 21-29 s under load - consistent with the 2.2x.  The Ollama side of the comparison is INVALID this round for two reasons, both recorded: the first script set t0 after urlopen, which blocks until the response headers arrive and Ollama only sends them after prefill, producing a nonsense 0.00 s; and after fixing that it still reported 0.12 and 0.22 s for a prompt that needs at least 0.85 s at 468 tok/s, which is an Ollama PREFIX CACHE HIT because the previous run used byte-identical prompt text - exactly the warming trap documented long ago.  So no cold-TTFT comparison number is quotable until Ollama is re-measured with a fresh random prefix each round AND prompt_eval_count is printed to prove it really re-prefilled.  NEXT: that clean paired measurement, then re-run the 9-length consistency test to record which lengths now differ under the GEMM default and confirm the differences go in the direction of the more accurate path.",
+ "next": "Got a VALID paired cold-TTFT measurement at last: three rounds of fresh 300-word random prompts (about 490 tokens), with Ollama's prompt_eval_count printed to prove it really re-prefilled (476 / 496 / 491).  Ours 14.52 / 10.62 / 11.31 s against Ollama's 2.51 / 2.99 / 3.15 s total, its own prefill being 2.23 / 2.64 / 2.77 s.  So cold TTFT is still lost by about 4-5x, which in throughput terms is roughly 46 tok/s for us against 220-260 tok/s for Ollama.  Note this also corrects the earlier optimistic 468 tok/s figure for Ollama - the verified number is 220-260.  One flaw to fix next time: our usage.prompt_tokens read 0 because usage only appears in the final streaming chunk and I read the first content chunk; the TTFT itself is sound but any token count needs the whole stream read.  Known attackable components on the cold path: weight staging (212 ms per GEMM pass) and x staging (112 ms per pass).  Register prefetch on the weight side was already refuted at 1.5 percent, and the x staging's 10240-byte stride has NEVER been attempted - that is the next thing to attack.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

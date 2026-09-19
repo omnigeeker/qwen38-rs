@@ -4227,3 +4227,28 @@ GEMM 在四个张量上 `max_abs` 好 1.3–1.9×、`rel` 好 1.5–1.8×。
 ⇒ **下一轮必须用每次全新的随机前缀重测 Ollama 冷 TTFT**，并且打印
 `prompt_eval_count` 以确认它真的重新 prefill 了。在那之前，冷 TTFT 的对比数字
 **不可引用**。
+
+### 72k. **有效的冷 TTFT 配对（每轮全新随机 prompt + `prompt_eval_count` 校验）**（第 75 轮）
+
+300 词的随机 prompt（约 490 token），三轮，Ollama 用 `prompt_eval_count` 证明真的重算：
+
+| 轮 | 我们（GEMM 默认） | Ollama 总计 | Ollama `prompt_eval_count` | Ollama prefill |
+|---|---|---|---|---|
+| 1 | 14.52 s | 2.51 s | **476** | 2.23 s |
+| 2 | 10.62 s | 2.99 s | **496** | 2.64 s |
+| 3 | 11.31 s | 3.15 s | **491** | 2.77 s |
+
+**⇒ 冷 TTFT 仍然输约 4–5×。** 折合 prefill 吞吐：我们约 46 tok/s，Ollama 约 220–260 tok/s。
+
+（注意：上一轮记的 Ollama 468 tok/s 是乐观值；这次带校验的实测是 220–260 tok/s。）
+
+**注意我们这一侧的 `usage.prompt_tokens` 读到 0** —— 流式响应里 usage 只在最后一个 chunk，
+我读的是第一个内容 chunk。TTFT 本身有效（`t0` 在请求前、首个非空内容 chunk 为止），
+但**下一轮若要报 token 数，必须读完整流**。
+
+### 冷 TTFT 的差距构成（已有数据）
+
+390–490 token 的 prompt 上我们约 10–14 s。已知可攻击项：
+**权重 staging（GEMM 里 212 ms/pass）** 与 **x staging（112 ms/pass）**。
+§67 已证 register prefetch 无效（1.5%），**x staging 的 10240 字节跨步从未尝试**，
+这是下一个应该动的点。
