@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 119,
+ "round": 120,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -2684,9 +2684,45 @@
     "machine": "load 4.2-4.6, GPU 90-94% (GUI), swap 4 GB; Ollama's own baseline drifted 11.06 -> 14.88 tok/s between the two sessions, so only paired ratios are quoted",
     "ollama_invocation": "/api/generate with raw:true, model qwen38-27b:bench, temperature 0, num_ctx 8192"
    }
+  },
+  {
+   "round": 120,
+   "title": "Did the first of the two cheap items and refuted it. (1) A one-step REGISTER lookahead in the GEMM weight staging - issue the next K-step's two words before this step's shared stores and barrier, two register sets, no extra shared, arithmetic and shared layout untouched - is bit-identical (gemm-check worst rel unchanged at 3.347e-4) and faster in 4/4 interleaved pairs, but by only 1.5% (258.7 -> 255.0 ms). So the 80 KB vs 238 KB bytes-in-flight gap is NOT why weight staging runs at 144 GB/s; the compiler was already keeping the two independent loads in flight. Reverted - 1.5% does not justify 40 lines of macro in a kernel that is not on any shipped path. ALSO CORRECTED MY OWN ARITHMETIC: the 61 us/dispatch I reported for the non-GEMV chain was contaminated by a one-time first-pass cost. Separating it out, the first pass of a session carries ~170-180 ms of page-in/warm-up regardless of row count (full 10-token pass 341 ms first vs 171 ms after; non-GEMV-only 195 ms vs 17 ms; non-GEMV-only 32-row 239 ms vs 65-103 ms), and the steady-state non-GEMV cost is ~8 us per dispatch. A 900-token prefill is 225 weight sweeps, which is where the 14.2 s comes from. RULED OUT a tempting scalar fix: a threadgroup holding one output row's weights in shared memory (2.5 KB) and looping over the 32 tokens reads the weights once per pass, but 27e9 params x 32 rows = 864 GMAC at the measured 2.7 TMAC/s scalar rate is 320 ms/pass against 317 ms for the eight k=4 sweeps - no gain. Once the weights are read once, the scalar MAC rate (~5.4 TFLOPS) is the binding constraint, so only MMA can make prefill faster. SCOPED item (2): of the 10657 non-GEMV dispatches in a 32-row pass, 6144 (58%) are the per-row families copy_off / conv1d_silu_ring / rmsnorm_gated / gdn_step at 48 x rows each, and gdn_step CANNOT be batched because consecutive prefill rows are consecutive positions of one sequence with a serial recurrence. Batching the other three takes a pass from 85 ms to ~36 ms, i.e. 2.99 s to ~1.25 s over 29 passes - 12% of the cold prefill, ~5% of short-prompt TTFT - for three kernels plus the runner's row mapping. NEW HYPOTHESIS, not yet tested and the only one left standing for the 144 GB/s: warp count, not occupancy. At BN=32 the GEMM grid is out_f/32 threadgroups - 160 for a 5120-wide linear but TWO for the 48-row GDN projections - and 13.8 KB of shared admits only 2 threadgroups/SM, about 8 warps per SM against 40+ slots. This differs from the BM=16 / BK=128 occupancy tests of section 58 because both of those also changed the work per threadgroup. Testing it needs NT 128 -> 256, which means rewriting the four-simdgroup fragment mapping (sg>>1, sg&1), or BN 32 -> 128. No engine code changed (the experiment was reverted); gates unchanged at 19 passed / 0 failed.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (unchanged; the kernel experiment was reverted)",
+   "evidence": {
+    "prefetch_ab_ms": {
+     "old": [
+      257.67,
+      259.01,
+      259.92,
+      258.06
+     ],
+     "new": [
+      253.41,
+      255.81,
+      254.92,
+      255.92
+     ],
+     "old_mean": 258.7,
+     "new_mean": 255.0,
+     "gain_pct": 1.5,
+     "pairs_new_faster": "4/4"
+    },
+    "gemm_check_worst_rel": 0.0003347,
+    "first_pass_extra_ms": 180,
+    "non_gemv_us_per_dispatch": 8,
+    "prefill_weight_sweeps_900tok": 225,
+    "scalar_row_resident_gemv_ms_per_pass": 320,
+    "eight_k4_sweeps_ms_per_pass": 317,
+    "batchable_per_row_dispatches_of_10657": 6144,
+    "item2_ceiling": "cold prefill 2.99 s -> ~1.25 s (12%), short-prompt TTFT ~5%",
+    "new_hypothesis": "warp count: grid out_f/32 threadgroups (2 for out_f=48), 2 threadgroups/SM at 13.8 KB shared => ~8 warps/SM"
+   }
   }
  ],
- "next": "otps is won on both paths and warm TTFT is level; TTFT loses at EVERY prompt length (short 0.394 vs 0.323 cold, 0.379 vs 0.143 warm; mid 2.43 vs 0.51; long 14.5 vs 2.39).  Cold prefill = GEMV 11.2 s + non-GEMV 3.0 s.  The GEMM's cost is staging, not maths: weight staging 100 ms (144 GB/s, a 3x bytes-in-flight shortfall), x staging 112 ms, MAC 60 ms at 36 TFLOPS - faster than Ollama's effective 24.5 TFLOPS.  Reaching Ollama's 1.98 s needs four things at once (register multi-stage prefetch in the weight staging; x staging; BN 32 -> 128; non-GEMV 3.0 s -> 0.5 s) and the best case is a TIE, because MAC alone at BN=128 is ~1.7 s.  Three of the four are the GEMM line that already failed eleven rounds.  DECISION NEEDED from the user before more rounds go into it.",
+ "next": "Item (1) of the two cheap items is DONE and REFUTED: a one-step register lookahead in the GEMM weight staging is bit-identical (gemm-check 3.347e-4 unchanged) and faster in 4/4 interleaved pairs but by only 1.5% (258.7 -> 255.0 ms), so bytes-in-flight is not why weight staging runs at 144 GB/s.  Reverted.  Refined model: the FIRST pass of a session carries ~180 ms of page-in/warm-up independent of rows; non-GEMV is ~8 us/dispatch; a 900-token prefill is 225 weight sweeps.  A shared-resident-row GEMV (weights read once per pass) is NOT faster - it becomes compute-bound at ~2.7 TMAC/s for 320 ms/pass vs 317 ms for 8 sweeps - so only MMA can speed prefill.  Item (2), batching the per-row non-GEMV ops, has a measured ceiling of 12% of the cold prefill (gdn_step cannot be batched at all: consecutive prefill rows are one sequence's consecutive positions).  New un-refuted hypothesis for the 144 GB/s: warp count.  At BN=32 the grid is out_f/32 threadgroups - 2 for the 48-row GDN projections - and 13.8 KB of shared admits 2 threadgroups/SM, about 8 warps/SM.  Testing it needs NT=128 -> 256 (rewriting the 4-simdgroup fragment mapping) or BN=128.  DECISION NEEDED.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
