@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 169,
+ "round": 170,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4098,9 +4098,39 @@
     "blocker": "the measurement environment; asked the user rather than killing their application",
     "next": "get a quiet window, then re-decide split-K and re-measure the objective"
    }
+  },
+  {
+   "round": 170,
+   "title": "Fixed the head-to-head harness and found that our otps figure had been wrong all along.  The old script computed (chunks-1)/(last-first) - chunks per second - while Ollama's side used eval_count/eval_duration, which genuinely is tokens per second, so the two were on different scales and the recorded 1.377x was meaningless.  The new tools/duel.py uses the streaming request only for TTFT, stopping on the first non-empty content chunk because the server emits a role-only chunk about 60 ms in and stopping there gives a bogus 0.06 s, and takes the token count from a second non-streaming request's usage.completion_tokens, since stream_options.include_usage does nothing here but the non-streaming path does return usage; otps is (completion_tokens-1)/(last-first).  Ollama keeps eval_count/eval_duration plus a chunk-rate cross-check.  This also closes a long-standing gap: usage.prompt_tokens works on the non-streaming response - 565 in validation - so a real cold prefill need not be inferred from logs.  A one-round validation at gen=64 gave ours cold TTFT 6.102 s and otps 26.27 against Ollama's 2.338 s and 24.99: otps still wins but by 1.05x rather than the recorded 1.377x, Ollama's chunk-rate 24.60 matching its 24.99 and confirming both sides now share a scale, with cold TTFT 2.6x behind.  The corrected picture is that the otps edge is 5 percent, not 38, and even that was measured with the GPU 84-99 percent busy, so the decisive measurement waits on the quiet window the user agreed to provide.  Next: run tools/duel.py and the paired A/B in that window and re-establish the true standing.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (harness work; no model change)",
+   "evidence": {
+    "old_bug": "ours counted SSE chunks as tokens while Ollama used eval_count/eval_duration - different scales",
+    "fix": "streaming for TTFT only (first non-empty chunk); tokens from a non-streaming request's usage.completion_tokens",
+    "prompt_tokens_now_available": "565 via the non-streaming response - closes the cold-prefill proof gap",
+    "validation": {
+     "ours": {
+      "ttft": 6.102,
+      "otps": 26.27,
+      "pt": 565,
+      "ct": 64
+     },
+     "ollama": {
+      "ttft": 2.338,
+      "otps": 24.99,
+      "pt": 565,
+      "ct": 64,
+      "chunk_rate": 24.6
+     }
+    },
+    "corrected_otps_ratio": "1.05x, not the recorded 1.377x",
+    "cold_ttft": "2.6x behind",
+    "next": "decisive measurement in the quiet window"
+   }
   }
  ],
- "next": "Ran an eight-round paired A/B with per-round GPU sampling and the result is that split-K buys nothing - and, more importantly, that this machine cannot currently be measured.  The paired differences (B minus A) were -0.201, +0.121, -0.064, -0.574, +0.274, -5.781, +0.041 and -0.346, so split-K won 5 of 8 with a median difference of -0.133 s, about one percent.  Its effect is zero, which matches the earlier finding that the GEMM is not traffic-bound: cutting traffic from 4W to W gains nothing, so the 5x the theory predicted never appeared and the eighteen-times-traffic analysis, while arithmetically right, is not why we are slow.  The real cause is still unknown.  The bigger discovery is about the measurement environment.  GPU utilisation was 84 to 99 percent for the whole run with no qwen38 process alive - only the very first sample read 0 - so an external process, almost certainly the DSH Desktop web GUI, holds the GPU continuously.  Within a single run the timings drifted by a factor of 2.4, from a stable 12.4-13.0 s across rounds one to five to 22.8-30.4 s in rounds six to eight.  The machine also shows load 3.99, spotlightknowledged at 99.4 percent CPU and 3.7 GB of swap in use.  In that environment no absolute cold-TTFT figure is trustworthy and a one-percent difference cannot be resolved at all.  This also re-explains the history: the same configuration measured 3.0 s, 6.0 s, 12.9 s and 30.4 s for 672 tokens on the same day, a tenfold spread, which is a property of the environment and not of the kernel.  Resolving the measurement environment has to come before any further performance judgement, and since the likely consumer is the user's own application I have asked rather than killed it.  NEXT: get a quiet measurement window, then re-decide split-K and re-measure the objective.",
+ "next": "Fixed the head-to-head harness and in doing so discovered that our otps figure had been wrong all along: the old script computed (chunks-1)/(last-first), which is chunks per second, while Ollama's side used its own eval_count/eval_duration, which really is tokens per second, so the two were measured on different scales and the recorded 1.377x advantage was not meaningful.  The new tools/duel.py uses the streaming request only for TTFT - stopping on the first NON-EMPTY content chunk, because the server emits a role-only chunk about 60 ms in and stopping there yields a bogus 0.06 s - and takes the token count from a second non-streaming request's usage.completion_tokens, since stream_options.include_usage does nothing on this server but the non-streaming path does return usage; otps is then (completion_tokens-1)/(last-first).  Ollama keeps eval_count/eval_duration and also prints a chunk-rate cross-check.  This incidentally closes a long-standing gap: usage.prompt_tokens is available on the non-streaming response - 565 in the validation run - so a genuine cold prefill no longer has to be inferred from server logs.  A one-round validation at gen=64 gave ours cold TTFT 6.102 s and otps 26.27 against Ollama's 2.338 s and 24.99, so otps still wins but by only 1.05x rather than the 1.377x on record, Ollama's chunk-rate of 24.60 closely matching its 24.99 and confirming the two sides are now on the same scale, while cold TTFT remains 2.6x behind.  The corrected conclusion is that the otps advantage is far smaller than recorded - 5 percent, not 38 - and that even this was measured with the GPU 84-99 percent busy, so the decisive measurement waits on the quiet window the user has agreed to provide.  NEXT: run tools/duel.py and the paired A/B in a quiet window and re-establish the objective's true standing.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
