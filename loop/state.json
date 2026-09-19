@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 135,
+ "round": 136,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3200,9 +3200,23 @@
     "harness_defect": "usage.prompt_tokens read 0 (usage is in the final chunk)",
     "next": "attack the GEMM x staging (112 ms per pass, 10240-byte lane stride, never attempted)"
    }
+  },
+  {
+   "round": 136,
+   "title": "Analysed the x staging in q4_gemm_tile and explained a 40 percent regression that had been recorded as unexplained.  The staging loop gives the 32 lanes of a warp consecutive TOKENS, so device addresses stride by K*2 = 10240 bytes, fully uncoalesced - which looks like 64x waste but costs only 112 ms per pass because the activation tile is L2 resident.  The earlier attempt to fix it by swapping the two indices made the kernel 40 percent slower, and the reason is now clear: after the swap the lanes read along g (coalesced) but write xsh[kk][t] with kk varying, and since XLD = BK + 8 = 72 the bank index is (kk*72 + t) % 32, so 8*kk % 32 only takes the four values 0, 8, 16 and 24 - a 4-way bank conflict on the writes that costs more than the coalescing buys.  The fix is to make XLD % 32 odd so that kk*XLD cycles through all 32 banks, for instance XLD = BK + 1 = 65, except that simdgroup_load constrains its leading dimension's alignment (half typically needs 8 elements), so 65 may be illegal; the alternatives are a transposed x tile xsh[t][kk] with leading dimension BK+pad, or another odd pad that simdgroup_load accepts.  That has to be settled by experiment rather than by reasoning, and this round did not have the context budget for the change-build-paired-time-recheck-equivalence loop, so it is recorded as the next action.  x staging is 112 ms per pass and the last large un-attacked block on the cold path.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no code change this round)",
+   "evidence": {
+    "x_staging_cost_ms_per_pass": 112,
+    "lane_stride_bytes": 10240,
+    "why_swap_was_slower": "XLD=72 -> 8*kk%32 in {0,8,16,24} -> 4-way bank conflict on the shared writes",
+    "proposed_fix": "make XLD % 32 odd (e.g. 65), or transpose the x tile to xsh[t][kk]",
+    "risk": "simdgroup_load leading-dimension alignment may reject an odd pad; must be tested"
+   }
   }
  ],
- "next": "Got a VALID paired cold-TTFT measurement at last: three rounds of fresh 300-word random prompts (about 490 tokens), with Ollama's prompt_eval_count printed to prove it really re-prefilled (476 / 496 / 491).  Ours 14.52 / 10.62 / 11.31 s against Ollama's 2.51 / 2.99 / 3.15 s total, its own prefill being 2.23 / 2.64 / 2.77 s.  So cold TTFT is still lost by about 4-5x, which in throughput terms is roughly 46 tok/s for us against 220-260 tok/s for Ollama.  Note this also corrects the earlier optimistic 468 tok/s figure for Ollama - the verified number is 220-260.  One flaw to fix next time: our usage.prompt_tokens read 0 because usage only appears in the final streaming chunk and I read the first content chunk; the TTFT itself is sound but any token count needs the whole stream read.  Known attackable components on the cold path: weight staging (212 ms per GEMM pass) and x staging (112 ms per pass).  Register prefetch on the weight side was already refuted at 1.5 percent, and the x staging's 10240-byte stride has NEVER been attempted - that is the next thing to attack.",
+ "next": "Analysed the x-staging problem without changing code, because the full change-build-measure loop did not fit in this round.  The staging loop makes the 32 lanes of a warp take consecutive TOKENS, so the device addresses stride by K*2 = 10240 bytes - fully uncoalesced - which looks like 64x waste but only costs 112 ms because L2 absorbs it.  The reason the earlier index swap made the kernel 40 percent SLOWER is now explained: after the swap the lanes read along g (coalesced) but write xsh[kk][t] with kk varying, and with XLD = BK + 8 = 72 the bank is (kk*72 + t) % 32, so 8*kk % 32 only ever takes {0,8,16,24} - a 4-way bank conflict on the writes that costs more than the coalescing gains.  The correct fix is to make XLD % 32 odd so kk*XLD cycles through all 32 banks, e.g. XLD = BK + 1 = 65, but simdgroup_load has alignment requirements on its leading dimension (half usually needs 8 elements) so 65 may simply be illegal; the alternatives are a transposed x tile xsh[t][kk] with leading dim BK+pad, or some other odd pad that simdgroup_load accepts.  This must be settled by experiment, not reasoning.  NEXT: run that experiment - change the pad, rebuild, paired-time it, and re-check equivalence - since x staging is 112 ms per pass and the last un-attacked large block on the cold path.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

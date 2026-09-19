@@ -4252,3 +4252,34 @@ GEMM 在四个张量上 `max_abs` 好 1.3–1.9×、`rel` 好 1.5–1.8×。
 **权重 staging（GEMM 里 212 ms/pass）** 与 **x staging（112 ms/pass）**。
 §67 已证 register prefetch 无效（1.5%），**x staging 的 10240 字节跨步从未尝试**，
 这是下一个应该动的点。
+
+### 72l. x staging：为什么那次「交换下标」会慢 40%，以及正确的修法（第 76 轮）
+
+`msl.rs:785-791` 的 x staging：
+
+```c
+for (int idx = tid; idx < Q4_GEMM_BK * Q4_GEMM_BN; idx += Q4_GEMM_NT) {
+    const int kk = idx / Q4_GEMM_BN;  const int t = idx - kk * Q4_GEMM_BN;
+    xsh[kk * Q4_GEMM_XLD + t] = (g < K && tok < k) ? x[tok * K + g] : 0;
+}
+```
+
+`BN = 32`，所以**同一 warp 的 32 个 lane 拿到连续的 `t`（token）**，设备地址
+`tok*K + g` 的跨步是 `K*2 = 10240` 字节 —— 完全非合并。
+（这解释了为什么它看起来「浪费 64×」而实测只占 112 ms：L2 命中救了它。）
+
+**那次交换下标为什么慢 40%**：交换后 lane 沿 `g` 连续（设备读合并 ✓），
+但写入变成 `xsh[kk][t]` 里 `kk` 变化、`t` 固定。bank = `(kk*XLD + t) % 32`，
+而 `XLD = BK + 8 = 72`，`72 % 32 = 8` ⇒ `8*kk % 32` 只取 `{0,8,16,24}`
+⇒ **4 路 bank conflict**。写入冲突的代价超过了读取合并的收益。
+
+**正确的修法**：让 `XLD % 32` 为奇数（例如 `XLD = BK + 1 = 65`），
+则 `kk*XLD % 32` 随 `kk` 遍历全部 32 个 bank，写入无冲突，同时读取合并。
+**但 `simdgroup_load(x0, xsh + kk*XLD + t_off, XLD)` 对 leading dimension 有
+对齐要求**（half 类型通常要求 8 元素对齐），`65` 很可能不合法 ——
+所以要么改 `BK` 使 `BK+8` 为奇数（不可能，都是偶数），要么把 x tile 改成
+**转置布局** `xsh[t][kk]`（leading dim = `BK+pad`，读取按 `t` 连续），
+要么用 `BK + 8` 之外的其他奇数 pad 并实测 `simdgroup_load` 是否接受。
+
+**这是一个需要实测的 kernel 实验，不能凭推理下结论** —— 本轮上下文不足以
+完成「改 + 编译 + 配对计时 + 等价性」的完整闭环，故留到下一轮，先记录分析。
