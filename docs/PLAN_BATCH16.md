@@ -5554,3 +5554,35 @@ x 常驻 L2 所以 DRAM 压力不大，**但它消耗的是 shared 写入 + barr
 但那是在别的组合下测的，没有留下数据，值得在这个明确的动机下重测。）
 
 **已回退**，md5 复原，`gemm-check` PASSED。
+
+### 72av. `BM=64` 也被否（+4.1%）；**并且发现：llama.cpp 一直没测过**（第 112 轮）
+
+按 §72au 的动机测 `BM=64 / BN=32`（把 x staging 减半，总 staging 126 → 94 MB）：
+
+| 轮 | A（现役 BM=32） | B（BM=64） |
+|---|---|---|
+| 1 | **5.612** | 5.855 |
+| 2 | **5.830** | 6.034 |
+| 3 | **5.642** | 5.896 |
+| 4 | **5.654** | 5.882 |
+| 5 | **6.643** | 7.296 |
+
+**1/6，中位数 5.742 → 5.965（+4.1%）。** 精度逐位一致，门禁 19/0。
+**⇒ x staging 的体积假设也被否。** 把激活 staging 减半反而更慢。
+
+**staging 至此已排除 10 个解释**：反量化 · 每步固定开销 · bank 冲突 · 全局带宽 ·
+shared 容量 · 指令发射数 · 并行度（`grid.y>4` 饱和）· 流量/`BN` · 合并访存 ·
+**激活 staging 体积**。**⇒ 61 GB/s 是这个 kernel 结构的硬限制，tile 参数已无路可走。**
+
+### ⚠️ 重大缺口：**llama.cpp 从来没测过**
+
+目标原文是「用 llama.cpp **和** Ollama 来部署」——**两个基线**。
+但历史记录里只有 Ollama 的对比。这次确认：
+
+- `/opt/homebrew/bin/llama-server` 存在（build 10809, commit 5266f24da）
+- GGUF 已在本地：`~/.ollama/models/blobs/sha256-832df740...`（**16.8 GB，无需下载**）
+- 新增 `tools/llamaduel.py`，用**与 `tools/duel.py` 完全相同的方法**
+  （首个非空 content 块算 TTFT、`usage.completion_tokens` 算 token 数、每轮换新 prompt）
+  测 llama.cpp，使三者可比。
+
+**下一轮据此补全三方对比。**
