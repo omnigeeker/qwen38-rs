@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 160,
+ "round": 161,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3860,9 +3860,28 @@
     "stable_value": "pass128 ~ 6.4 s for 672 tokens (~105 tok/s)",
     "next_lever": "split-K: grid.y = 4 re-reads the weights four times (57.6 GB); splitting K four ways returns traffic to 14.4 GB -> 1.9 ms/token vs 7.4, about 5x, for one reduction pass"
    }
+  },
+  {
+   "round": 161,
+   "title": "Corrected the previous round's split-K reasoning before writing any code, because the traffic algebra shows split-K alone saves nothing.  Each threadgroup (tg.x, tg.y) reads the weights for its BM rows across the whole of K and there are (out_f/BM)*(rows/BN) threadgroups, so total weight traffic is out_f*K*(rows/BN) = W*(rows/BN): it depends only on rows/BN and not on how K is divided.  With grid.y = 4, cutting K four ways makes every (y,z) pair read K/4 of the weights but also quadruples the number of pairs, so the total stays 4W.  The plan from the previous round was wrong.  The correct lever is BN itself: raising it from 32 to 128, the full pass width, takes grid.y from 4 to 1 and traffic from 4W to 1W, paying with parallelism falling from (out_f/BM)*4 to (out_f/BM)*1.  Using the measured bandwidths at out_f = 5120, where out_f/BM is 160 threadgroups: today 4W at 61 GB/s is 944 ms, which matches the measured 951; with BN=128 the traffic is W but bandwidth drops into the 39 GB/s regime, giving 369 ms or 2.9 ms per token against 7.4, a 2.5x win with no reduction pass; adding split-K at grid.z = 4 restores parallelism to 640 threadgroups, so 14.4 GB at about 61 GB/s is 236 ms, 1.8 ms per token, roughly 4x.  Hence two steps: BN=128 first, then split-K.  The kernel work for BN=128 is a 32x128 output tile - 64 tiles of 8x8, sixteen per simdgroup, about 32 accumulator registers per thread, feasible - with r_off = (sg>>1)*16 and t_off = (sg&1)*64, xsh 8768 B, osh 16384 B and wsh 2560 B for 27.7 KB, acceptable given that shared capacity proved to be a weak constraint.  This is the same parameter as the failed BN=8 experiment but in the opposite direction: smaller meant more re-reads, larger means fewer.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (analysis only; no code change)",
+   "evidence": {
+    "traffic_formula": "W * (rows/BN) - independent of how K is split",
+    "refuted": "split-K alone saves no traffic; at grid.y = 4 the total stays 4W",
+    "lever": "BN 32 -> 128 takes grid.y 4 -> 1 and traffic 4W -> 1W",
+    "estimates_at_out_f_5120": {
+     "today": "4W/61 GB/s = 944 ms (measured 951) - 7.4 ms/token",
+     "BN128": "W/39 GB/s = 369 ms - 2.9 ms/token, 2.5x",
+     "BN128_splitK4": "14.4 GB/61 GB/s = 236 ms - 1.8 ms/token, ~4x"
+    },
+    "kernel_change": "32x128 tile, 64 8x8 tiles, 16 per simdgroup, r_off=(sg>>1)*16, t_off=(sg&1)*64; shared 27.7 KB",
+    "next": "implement BN=128, then split-K"
+   }
   }
  ],
- "next": "Built a 256-row variant and did not adopt it.  Against 128 rows, interleaved after a 300 s cooldown on a shared fresh 672-token prompt, it gave pass128 6.423/6.400/6.575/6.815 against pass256's 6.189/6.175/6.586/6.583 - medians 6.499 versus 6.386, only 1.7 percent better, and it won 3 of 4.  That is within noise while BATCH_MAX doubling takes conv_ring from 256 to 512 and doubles the x and y buffers, so the cost is clear and the benefit is not; by discipline it is not adopted and the tree is back at 128.  A useful side observation: both sides held steady at 6.4-6.8 s for 672 tokens, about 105 tok/s, far better than the 9-15 s seen in earlier rounds, which shows how much cooldown and background load move the readings on this machine and establishes pass128 ~ 6.4 s as the reproducible value.  The important conclusion is where the next big lever is.  With a 128-row pass grid.y is 4, so the weights are re-read four times - 57.6 GB, 951 ms per pass - and the bandwidth itself has hit a wall near 61 GB/s, since 256 rows bought only 1.7 percent more.  The real waste is those four re-reads.  Splitting K four ways so each slice reads a quarter of the weights returns total weight traffic to 14.4 GB, which at the same 61 GB/s is 240 ms per 128 tokens, 1.9 ms per token against today's 7.4 - about 5x - at the cost of one reduction pass.  NEXT: implement split-K.",
+ "next": "Corrected the previous round's reasoning before implementing anything, because the traffic algebra shows split-K alone saves nothing.  Each threadgroup (tg.x, tg.y) reads the weights for its BM rows across all of K, and there are (out_f/BM) * (rows/BN) of them, so total weight traffic is out_f * K * (rows/BN) = W * (rows/BN) - it depends only on rows/BN and not at all on how K is cut.  So with grid.y = 4, splitting K four ways makes each (y,z) pair read K/4 of the weights but also makes the number of pairs four times larger, leaving the total at 4W.  The previous round's plan was therefore wrong.  The correct lever is BN itself: raising BN from 32 to 128 - the whole pass width - takes grid.y from 4 to 1 and weight traffic from 4W to 1W, at the cost of parallelism falling from (out_f/BM)*4 to (out_f/BM)*1.  Estimating with the measured bandwidths for out_f = 5120, where out_f/BM is 160 threadgroups: today 4W at 61 GB/s is 944 ms, matching the measured 951; with BN=128 the traffic is W but the bandwidth drops to the 39 GB/s regime, giving 369 ms, or 2.9 ms per token against 7.4, a 2.5x win with no reduction pass; and adding split-K with grid.z = 4 restores the parallelism to 640 threadgroups, so 14.4 GB at about 61 GB/s is 236 ms, 1.8 ms per token, roughly 4x.  So the plan is two steps: BN=128 first, then split-K.  The kernel change for BN=128 is a 32x128 output tile, 64 tiles of 8x8, with each of four simdgroups owning 16 of them - about 32 accumulator registers per thread, which is feasible - using r_off = (sg>>1)*16 and t_off = (sg&1)*64, with xsh at 8768 B, osh at 16384 B and wsh at 2560 B for 27.7 KB total, acceptable since shared capacity was shown to be a weak constraint.  Note this is the same parameter as the failed BN=8 experiment but in the opposite direction: smaller meant more re-reads, larger means fewer.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
