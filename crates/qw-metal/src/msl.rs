@@ -1338,6 +1338,8 @@ kernel void q4_mpp_affine_v2(
     device const float* gsum [[buffer(4)]],                // [rows, ngroups]
     tensor<device float, dextents<int32_t, 2>> C [[buffer(5)]],          // [rows, out_f]
     constant int& ngroups [[buffer(6)]],
+    constant int& outf [[buffer(7)]],
+    device float* cw [[buffer(8)]],
     uint2 tgid [[threadgroup_position_in_grid]])
 {
     constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
@@ -1386,13 +1388,20 @@ kernel void q4_mpp_affine_v2(
             }
         }
     }
+    // Write the accumulator straight to device memory.  cT.store(mC) proved to be
+    // a silent no-op here - setting every element of cT to a constant immediately
+    // before the store left the model output completely unchanged - so the store
+    // path is bypassed entirely and the coordinates come from the same layout
+    // accessor the accumulation already uses.
 #pragma clang loop unroll(full)
-    for (uint16_t i = 0; i < cT.get_capacity(); ++i) cT.set(i, acc[i]);
-    // Explicit extents here too.  Plain slice() keeps the full [rows, out_f]
-    // extent, which does not match the [64, 32] cooperative tensor, and store()
-    // silently wrote nothing - the accumulator never reached cacc.
-    auto mC = C.slice<64, 32>(tgid.y * 64, tgid.x * 32);
-    cT.store(mC);
+    for (uint16_t i = 0; i < cT.get_capacity(); ++i) {
+        if (cT.is_valid_element(i)) {
+            auto ids = cT.get_multidimensional_index(i);
+            int m = tgid.y * 64 + (int)ids[0];
+            int n = tgid.x * 32 + (int)ids[1];
+            cw[(size_t)m * outf + n] = acc[i];
+        }
+    }
 }
 
 // The tensor op accumulates in float and its store requires a matching element
