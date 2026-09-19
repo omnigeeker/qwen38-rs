@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 127,
+ "round": 128,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3002,9 +3002,23 @@
     "missing_measurement": "GEMM vs scalar k=4 kernel on the same input (to be added to gemm_check)",
     "possible_fix": "weight split whi + wlo with two MMAs, about 2x MMA work and more shared memory"
    }
+  },
+  {
+   "round": 128,
+   "title": "Found that the 'missing measurement' I proposed last round already existed, and corrected the record.  gemm_check's QW_GEMM_CHECK_ALL branch (bench.rs:558-584) takes the engine's own K_Q4_GEMV_K4_U4HX four-row kernel as its reference - the comment says so explicitly - so the 497-tensor sweep from two rounds ago was already the direct GEMM-versus-shipped-scalar comparison, with max_abs normalised by the GEMV's max|y|.  Its worst value, 9.662e-4, therefore reads: on the same input the GEMM differs from the shipped kernel by up to about 1e-3 relative, exactly the magnitude that flips an argmax, which is fully consistent with the 1-of-9 prompt divergence measured earlier.  The default four-tensor run's 3.347e-4 is against the CPU reference instead; confusing those two references is the mistake I made in the previous round's write-up.  Consequence: no further measurement is needed to characterise the gap - go straight at the precision.  Plan recorded: split each dequantised weight into whi + wlo with two MMAs, which should drive the error to roughly 2.4e-7 relative and make the GEMM more accurate than the scalar path, at twice the MMA work and a doubled weight tile (shared memory 13.8 to about 22 KB, occupancy possibly dropping from two threadgroups per SM to one).  After that change both the 497-tensor sweep and the 9-length equivalence test have to be re-run, and the performance re-measured, before the GEMM's default can be reconsidered.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no engine change this round)",
+   "evidence": {
+    "gemm_vs_gemv_497_tensors_worst_rel": 0.0009662,
+    "gemm_vs_cpu_4_tensors_worst_rel": 0.0003347,
+    "reference_in_gpu_only_mode": "K_Q4_GEMV_K4_U4HX, bench.rs:561",
+    "correction": "the direct GEMM-vs-scalar measurement already existed; last round's claim that it was missing was wrong",
+    "next_fix": "weight split whi + wlo with two MMAs (~2.4e-7 expected error, 2x MMA, weight tile doubled)"
+   }
   }
  ],
- "next": "Checked the '8 f16 MMA steps inside BK=64' suspicion: it is WRONG.  q4_gemm_tile's accumulator is simdgroup_matrix<float,8,8> (msl.rs:725), i.e. f32, and the scalar k=4 GEMV also accumulates in float (msl.rs:622) with half weights - both paths are f16 operands plus f32 accumulation, so f16 accumulation is not the difference.  ALSO CORRECTED MY OWN METHODOLOGICAL ERROR from the previous round: I compared gemm-check's rel = max_abs/max_ref against check's norm_err = max_abs/rms_ref and concluded the GEMM is not less accurate than the shipped GEMV.  Those have different denominators and cannot be compared that way; only max_abs is comparable, and it says GEMV 5.0e-4-1.6e-3 against GEMM 1.95e-3 worst, i.e. same order but the GEMM is somewhat worse - not 'not worse'.  The missing measurement is the direct one: the difference between the GEMM and the scalar k=4 kernel on the SAME input, which neither existing number provides (both are against the CPU reference with different normalisations).  NEXT: add that to gemm_check() - run K_Q4_GEMV_K4_U4HX and the GEMM on the same tensor and report their difference - and only then judge whether the GEMM's error can be brought down to the scalar path's level and at what cost (e.g. splitting the weight into whi + wlo with two MMAs).  The GEMM's default stays OFF until then.",
+ "next": "CORRECTED myself again: the 'missing measurement' from last round already exists.  gemm_check's QW_GEMM_CHECK_ALL branch (bench.rs:558-584) uses the engine's own K_Q4_GEMV_K4_U4HX four-row kernel as the reference, so the 497-tensor sweep I ran two rounds ago WAS the direct GEMM-vs-shipped-scalar comparison, normalised by the GEMV's max|y|.  Its result, worst rel 9.662e-4, therefore means: on the same input the GEMM differs from the shipped kernel by up to ~1e-3 relative, which is exactly the magnitude that flips an argmax and is fully consistent with the 1-of-9 prompt divergence.  (The default 4-tensor run's 3.347e-4 is against the CPU reference instead - two different references, which is the distinction I got wrong.)  So no further measurement is needed; go straight at the precision.  NEXT: split each weight into whi + wlo (whi = (half)w, wlo = (half)(w - whi)) and do two MMAs, which should push the error to ~2.4e-7 relative and make the GEMM MORE accurate than the scalar path, at 2x the MMA work and a doubled weight tile (shared 13.8 -> ~22 KB, occupancy possibly 2 -> 1 threadgroup/SM).  After the change, re-run BOTH QW_GEMM_CHECK_ALL=1 gemm-check and the 9-length equivalence test.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

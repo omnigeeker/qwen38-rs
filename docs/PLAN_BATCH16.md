@@ -4052,3 +4052,30 @@ f32 累加）应当把误差压到只剩输出 f16 舍入，从而与标量路�
 有了它才能判断「把 GEMM 的误差压到标量水平」是否可能、以及需要多大代价
 （例如权重拆成 `w = whi + wlo` 两次 MMA 的补偿方案，代价约 2× MMA 与更多 shared）。
 **在此之前不动 GEMM 的默认值。**
+
+### 72d. 纠正 §72c：**那个「缺失的测量」其实早就存在**，而且结果就是 9.662e-4（第 68 轮）
+
+读 `gemm_check()`（`bench.rs:558-584`）发现：`QW_GEMM_CHECK_ALL` 走的是 `gpu_only`
+分支，**参考值就是引擎实际使用的 `K_Q4_GEMV_K4_U4HX` 四行 kernel**（`while off < tokens`
+循环，k=4），代码注释写得很清楚：「the reference is the GEMV tile kernel the engine
+actually uses … if the GEMM disagrees with this, the engine's answer changes, which is
+exactly what the end-to-end test showed」。
+
+所以：
+
+| 命令 | 参考 | 结果 |
+|---|---|---|
+| `gemm-check`（默认，4 张量） | **CPU** 参考 | worst rel 3.347e-4 |
+| `QW_GEMM_CHECK_ALL=1 gemm-check`（497 张量） | **出厂 k=4 GEMV kernel** | **worst rel 9.662e-4** |
+
+**§72c 里说的「缺少 GEMM 与标量 kernel 同输入的直接比较」是错的 —— 上一轮跑的
+497 张量扫描就是这个比较**，归一化分母正是 GEMV 的 `max|y|`。
+
+⇒ **结论明确：GEMM 与出厂 kernel 在同一输入上的相对差最大约 1e-3**，这正是会翻转
+argmax 的量级，与 §72b 的 1/9 分叉完全自洽。
+
+⇒ **下一步不需要再补测量，直接改精度**：把权重拆成 `w = whi + wlo`
+（`whi = (half)w`，`wlo = (half)(w - whi)`）做两次 MMA，理论上把误差压到
+~2.4e-7 相对量级，**比标量路径更准**。代价是 2× MMA 与权重 tile 翻倍
+（shared 13.8 KB → 约 22 KB，占用率可能从 2 threadgroup/SM 降到 1），
+**改完必须同时复测 `QW_GEMM_CHECK_ALL=1 gemm-check` 与 §72b 那 9 个长度的等价性**。
