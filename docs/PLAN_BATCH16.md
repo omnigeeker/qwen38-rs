@@ -5675,3 +5675,56 @@ prompt in after 6.3s (TTFT, 602 tokens)
 2. **把每 token 的非 GEMM 算子批量化**（现在 27%，约 1.7 s）。
 
 **⇒ 单靠 GEMM 一条线不可能达成目标**，这是本轮最重要的判断。
+
+### 72az. **重大发现：一次 128-token prefill pass 要发 41,874 个 dispatch**（第 114 轮续）
+
+用 `QW_DISPATCH_HIST=1` 抓 prefill 阶段的 per-kernel dispatch 直方图：
+
+```
+--- 128-token prefill pass: 41,874 dispatches ---
+    copy_off                6144  (15%)      <- 128 token × 48 GDN 层
+    conv1d_silu_ring        6144  (15%)      <- 同上
+    gdn_step                6144  (15%)      <- 同上
+    rmsnorm_gated           6144  (15%)      <- 同上
+    rmsnorm_s               4096  (10%)      <- 128 × 32（16 attn 层 × 2）
+    rope_partial            4096  (10%)      <- 同上
+    ...
+```
+
+对照 **decode** 的直方图（1234 dispatches）：
+
+```
+    q4_gemv_hx               497  (40%)      <- 497 个线性层，一次一批
+    rmsnorm                  129  (10%)
+    ewise_add                128  (10%)
+    ...
+```
+
+**⇒ 关键对比**：
+- **decode 一步**（1 token）只需 **1,234** 个 dispatch；
+- **prefill 一个 pass**（128 token）要 **41,874** 个 —— **34 倍**。
+
+**⇒ 每 token 327 个 dispatch。** 这些**逐 token 的小算子**
+（`copy_off` / `conv1d_silu_ring` / `gdn_step` / `rmsnorm_gated` /
+`rmsnorm_s` / `rope_partial`）**没有沿 token 维批量化**，而是每个 token 单独发一次。
+
+**⇒ 这就解释了那 27% 的非 GEMM 时间**：每 pass 0.35 s ÷ 41,874 ≈ **8.4 µs/dispatch**，
+纯粹是启动开销 —— **GPU 在空转等下一次启动**。
+
+### 可批量化比例
+
+| 算子 | 每 pass | 能否沿 token 批量化 |
+|---|---|---|
+| `copy_off` | 6144 | ✅ 纯数据搬运 |
+| `conv1d_silu_ring` | 6144 | ✅ 卷积，与 token 无关 |
+| `rmsnorm_gated` | 6144 | ✅ 逐元素 + 归一化 |
+| `rmsnorm_s` | 4096 | ✅ |
+| `rope_partial` | 4096 | ✅ 每个 token 独立 |
+| `gdn_step` | 6144 | ❌ **线性递推，token 间有依赖** |
+
+**⇒ 可批量化 26,624 / 41,874 = 64%**；`gdn_step` 那 15% 需要分块并行扫描
+（chunked scan）才能批量化，属于算法级改动。
+
+**⇒ 下一轮：把 `copy_off` / `conv1d_silu_ring` / `rmsnorm_gated` /
+`rmsnorm_s` / `rope_partial` 改成沿 token 维一次 dispatch。**
+这是「非 GEMM 27%」的正面攻击，也是本轮找到的最有价值的线索。

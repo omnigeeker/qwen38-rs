@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 175,
+ "round": 176,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4279,9 +4279,34 @@
     "flops": "ours ~7.1 TFLOPS vs llama.cpp ~27",
     "next": "structural GEMM speedup plus batching conv1d/norms/gating"
    }
+  },
+  {
+   "round": 176,
+   "title": "Pulled the per-kernel dispatch histogram for prefill and found the structural difference between us and llama.cpp: one 128-token prefill pass issues 41,874 dispatches, whereas a decode step issues 1,234.  The prefill histogram is dominated by per-token operators - copy_off 6144, conv1d_silu_ring 6144, gdn_step 6144 and rmsnorm_gated 6144, each exactly 128 tokens times 48 GDN layers, plus rmsnorm_s 4096 and rope_partial 4096 at 128 times 32 - giving 327 dispatches per token, none batched along the token dimension.  That accounts precisely for the 27 per cent non-GEMM share: 0.35 s per pass divided by 41,874 is 8.4 microseconds per dispatch, pure launch overhead with the GPU idling in between.  Of those, 26,624 or 64 per cent are trivially batchable - copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s and rope_partial are elementwise, convolutional or per-token independent - while gdn_step's 6144 form a linear recurrence across tokens needing a chunked parallel scan, an algorithmic change.  This is the most valuable lead in many rounds and attacks the non-GEMM 27 per cent head on, so next is converting those five operators to one dispatch over the whole 128-token pass.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (measurement only; no code change)",
+   "evidence": {
+    "prefill_pass_dispatches": 41874,
+    "decode_step_dispatches": 1234,
+    "per_token": 327,
+    "top_ops": {
+     "copy_off": 6144,
+     "conv1d_silu_ring": 6144,
+     "gdn_step": 6144,
+     "rmsnorm_gated": 6144,
+     "rmsnorm_s": 4096,
+     "rope_partial": 4096
+    },
+    "interpretation": "128 tokens x 48 GDN layers for the first four; 128 x 32 for the last two - none batched along tokens",
+    "dispatch_cost": "8.4 us each = 0.35 s per pass, matching the 27% non-GEMM share",
+    "batchable": "26,624 of 41,874 = 64% (all but gdn_step)",
+    "gdn_step": "linear recurrence across tokens - needs a chunked parallel scan",
+    "next": "batch copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s and rope_partial over the 128-token pass"
+   }
   }
  ],
- "next": "Measured the cold prefill's internal breakdown with QW_PREFIX_TIME and it changes the plan.  A 602-token cold prefill logs 256/602 after 2.6 s, 512/602 after 5.2 s and prompt in after 6.3 s, so each 256 tokens costs exactly 2.6 s - 10.2 ms per token, linear and well behaved.  Against the GEMM microbenchmark, where a 128-token pass is 0.95 s and 256 tokens is therefore 1.90 s, the GEMM is 73 per cent of the cold prefill and everything else - conv1d, norms, gating, attention - is 27 per cent, about 1.7 s for 602 tokens.  That non-GEMM share is more than twice the 12 per cent estimated earlier.  The ceiling arithmetic matters more than the split.  If the GEMM became instantaneous the cold prefill would still be 1.70 s against llama.cpp's 1.60, so we would only draw level; a fourfold faster GEMM gives 2.85 s and still loses by 1.8x; and a fourfold faster GEMM with the non-GEMM work halved gives 2.0 s, still 1.25x behind.  The conclusion is that the GEMM alone cannot reach the objective - it must be paired with batching the per-token non-GEMM operators.  That is the most important judgement of this round and it redirects the work: instead of one more GEMM tile experiment, the next steps are a structural GEMM speedup (we run at about 7.1 TFLOPS against llama.cpp's 27) together with batching conv1d, the norms and the gating so they stop costing a per-token dispatch.",
+ "next": "Pulled the per-kernel dispatch histogram for the prefill and found the structural difference: a single 128-token prefill pass issues 41,874 dispatches, while a decode step issues 1,234.  The prefill histogram is dominated by per-token operators - copy_off 6144, conv1d_silu_ring 6144, gdn_step 6144 and rmsnorm_gated 6144, each exactly 128 tokens times the 48 GDN layers, plus rmsnorm_s 4096 and rope_partial 4096 at 128 times 32 - so 327 dispatches per token, and none of them are batched along the token dimension.  That explains the 27 per cent non-GEMM share exactly: 0.35 s per pass divided by 41,874 is 8.4 microseconds per dispatch, pure launch overhead with the GPU idling between launches.  Of those dispatches 26,624, or 64 per cent, are trivially batchable - copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s and rope_partial are all elementwise, convolutional or per-token independent - while gdn_step's 6144 are a linear recurrence across tokens and would need a chunked parallel scan, an algorithmic change.  This is the most valuable lead in many rounds and it attacks the non-GEMM 27 per cent head on, so next is to convert copy_off, conv1d_silu_ring, rmsnorm_gated, rmsnorm_s and rope_partial to a single dispatch over the whole 128-token pass.  NEXT: implement batched prefill for those five operators.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
