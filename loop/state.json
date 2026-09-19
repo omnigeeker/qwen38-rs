@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 139,
+ "round": 140,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3315,9 +3315,22 @@
     "write_side_hazard": "four consecutive words per thread -> bank (32L)%32 = 0 -> 32-way conflict; needs a new mapping or wsh layout",
     "next": "vectorise staging + read scale/bias once per group"
    }
+  },
+  {
+   "round": 140,
+   "title": "Did the arithmetic before touching the kernel, and it argues against the bank-conflict explanation for the staging's 37 GB/s that the previous round proposed.  The conflict is real: each thread writes eight consecutive halves for one word at wsh[r*WLD + wd*8 + i] with WLD = 72, and with consecutive lanes' wd the value 8*wd % 32 takes only four distinct values, so every i-th store is an 8-way conflict.  But the aggregates do not support it being the bottleneck - the model does about 28.8 G half stores in 391 ms, roughly 0.02 cycles per store, far below the shared-memory ceiling, and 3.6 G four-byte global loads in the same window, about 0.15 loads per SM per cycle across 40 SMs, also far below capability.  So 37 GB/s looks latency- or occupancy-bound, not bandwidth- or conflict-bound; mode 1 matching mode 0 only shows dequantisation is free and cannot tell those apart.  Recorded the discriminating experiment to run first, before any kernel edit: vary Q4_GEMM_BK across 32, 64 and 128 and see whether staging time tracks the number of k0 steps or the amount of data.  If it tracks steps, the per-step fixed cost and the two threadgroup barriers dominate and a larger BK is the answer - and BK=128, refuted long ago, deserves a re-test because that measurement predates the x-staging fix.  If it tracks data, it is memory efficiency, and only then is vectorisation plus removing the redundant scale and bias reads the right move.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no code change)",
+   "evidence": {
+    "conflict_real": "8-way on each i-th store (8*wd % 32 has 4 values)",
+    "but_aggregate": "28.8 G half stores in 391 ms = ~0.02 cycles/store; 3.6 G 4-byte loads = ~0.15 loads/SM/cycle",
+    "verdict": "more likely latency/occupancy-bound than bandwidth- or conflict-bound",
+    "next": "vary BK across 32/64/128 to see whether staging tracks k0 steps or data (re-test BK=128 after the x fix)"
+   }
   }
  ],
- "next": "Re-measured the GEMM cost breakdown with bench --rows 8 --tokens 32 and the answer changed the picture: full 12.228 ms/token (391 ms per pass), mode 1 with constant weights 12.220 (so dequantisation is completely free), and mode 2 skipping the MMAs 10.891 (348 ms) - staging is 348 of the 391 ms, 89 percent, and the MAC is only 43 ms.  Effective bandwidth is 14.412 GB / 0.391 s = 36.8 GB/s, whereas the GEMV reaches 362-417 GB/s reading the same weights.  So the cold-prefill bottleneck is NOT arithmetic, it is weight-staging memory efficiency, and it is a 10x deficit.  Note the whole pass reads 391 ms here against the 272 ms recorded earlier, which may be machine state, but the composition is stable and mode 1 equalling mode 0 proves dequantisation costs nothing.  Suspected causes to test: the GEMV reads weights as uint4 (16 bytes) while staging reads a single uint (4 bytes) per iteration, and sp[g]/bp[g] are re-read for every word although eight words share one group, so scale and bias are read eight times redundantly (about 2.7 KB extra per row).  NEXT: vectorise the staging to a uint4 load per thread and read scale/bias once per group - but the write side must be redesigned first, because a thread handling four consecutive words writes at offset wd*8, giving bank (32L) % 32 = 0, a 32-way conflict; that needs a different mapping or a different wsh layout, not a direct edit.",
+ "next": "Did the arithmetic before touching the kernel again, and it argues AGAINST the bank-conflict explanation for the staging's 37 GB/s.  The conflict is real - each thread writes eight consecutive halves for one word at wsh[r*WLD + wd*8 + i] with WLD = 72, and consecutive lanes' wd gives 8*wd % 32 only four distinct values, so every i-th store is an 8-way conflict - but the aggregate numbers do not support it being the bottleneck: the whole model performs about 28.8 G half stores in 391 ms, roughly 0.02 cycles per store, far below the hardware's shared-memory ceiling, and the global side does 3.6 G four-byte loads in the same 391 ms, about 0.15 loads per SM per cycle on 40 SMs, also far below capability.  So 37 GB/s looks latency- or occupancy-bound rather than bandwidth- or conflict-bound, and mode 1 equalling mode 0 only proves dequantisation is free, which does not distinguish those.  NEXT, and before any kernel edit: the discriminating experiment is to vary Q4_GEMM_BK across 32, 64 and 128 and see whether staging time tracks the number of k0 steps or the amount of data.  If it tracks the steps, the per-step fixed cost and the two threadgroup_barriers dominate and the answer is a larger BK - and BK=128, refuted long ago, is worth re-testing because that measurement predates the x-staging fix.  If it tracks the data, it is memory efficiency and only then does vectorisation plus removing the redundant scale/bias reads make sense, with the write-side 32-way-conflict trap in mind.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
