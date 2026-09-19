@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 1,
+ "round": 119,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -24,7 +24,7 @@
  "gates": {
   "G1_build": "pass",
   "G2_correctness": "pass_token_for_token",
-  "G3_performance": "not_quotable_this_round",
+  "G3_performance": "pass_paired_ratios",
   "G4_publish": "pass"
  },
  "metrics": {
@@ -53,12 +53,25 @@
   "k2_specialised_tok_s": 69.8,
   "k3_specialised_tok_s": 92.8,
   "k4_specialised_tok_s": 104.1,
-  "k2_effective_gbps": 503
+  "k2_effective_gbps": 503,
+  "server_otps_plain_vs_ollama_paired": 1.377,
+  "server_otps_spec_vs_ollama_paired": 1.647,
+  "server_otps_plain_tok_s": 15.23,
+  "server_otps_spec_tok_s": 24.52,
+  "server_otps_ollama_tok_s_same_session": 11.06,
+  "spec_accept_tokens_per_step": 2.64,
+  "ttft_cold_ours_s": 14.225,
+  "ttft_cold_ollama_s": 1.984,
+  "ttft_warm_ours_s": 0.044,
+  "ttft_warm_ollama_s": 0.082,
+  "cold_prefill_gemv_s": 11.2,
+  "cold_prefill_non_gemv_s": 2.99,
+  "non_gemv_us_per_dispatch": 9.5
  },
  "next_actions": [
-  "build forward2: row-wrap the per-row segments, projections via encode_k(..., TILE) with K_Q4_GEMV_K2, GDN branch left per-row (window layout), lm_head k=2 for both rows",
-  "add row-stride to rmsnorm/rmsnorm_ws/silu_mul/ewise_add/gate_mul and two query positions to attn_scores/attn_out - this is what removes the second dispatch per op",
-  "MTP head: quantise bf16 mtp.* (MLX affine group 64), mtp.fc + one decoder layer"
+  "batch the per-row non-GEMV ops (conv1d_silu_ring / gdn_step / rmsnorm_gated / copy_off are 48 layers x rows dispatches) into one dispatch per layer: measured 9.5 us per dispatch, 2.99 s of the 14.2 s cold prefill, expected to fall to ~0.15 s",
+  "GEMM weight staging: multi-stage REGISTER prefetch of the next K-step (2 words/thread now => 80 KB in flight vs the ~238 KB needed for 477 GB/s); double buffering grows shared and is already refuted",
+  "GEMM x staging (92 ms/sweep) needs the activation tile stored [token][k] so consecutive lanes read contiguous k, with a transposed fragment load"
  ],
  "history": [
   {
@@ -2596,9 +2609,72 @@
     "G4_publish": "pass"
    },
    "evidence": "correctness: gen spec==plain byte-identical over 300 tokens (batch=1 unchanged); server spec == CLI over the position pin's 64-token answer; usage 64/64 and 256/256 on both paths; accept.sh 19 passed / 0 failed / ACCEPTED.  Localisation: QW_SPEC=1 diverged @char 36, QW_SPEC=1 QW_NO_ACCEPT=1 matched exactly.  Strides measured with QW_STRIDE_DEBUG=1: state_stride 3145728, snap_stride 12582912, snap/TILE 3145728 at both batch 1 and 16, old state/2 1572864 (batch 1) and 25165824 (batch 16).  Throughput NOT quotable: the machine's Metal throughput collapsed mid-round (gen 26.65 -> 0.90 tok/s, a 12-token prefill 0.615s -> 14.4s, GPU utilisation reporting 0%, no thermal warning, memory 93% free); the plain path is equally slow and is untouched by this change, so it is environmental.  Paired ratios before and during the collapse agree spec is faster on the server: 3.30 -> 2.87s at 64 tokens (1.15x), 296.65 -> 215.14s at 128 tokens (1.38x).  Re-measure on a quiet machine."
+  },
+  {
+   "round": 119,
+   "title": "Re-measured last round's claims on a single server (two servers plus Ollama had left only 60 MB free, which is what broke the speculative number) and in doing so refuted three of my own measurements. (1) QW_PREFIX_DISK is a PATH, not a flag: QW_PREFIX_DISK=0 opened a disk prefix cache in ./0/ and every 'cold' number taken with it was a cache hit ('prefix cache HIT (disk prefix) - skipped 896 of 900'). Unset is off. The stray 0/ directory in the repo was this and is deleted. (2) Counting SSE chunks as tokens understated the speculative path 2.6x, because one multi-token step emits one chunk; reading usage.completion_tokens shows the round-32 spec win is real. (3) gen never uses the wide prefill path at all - 897 tokens ran as 899 single-row batches of 1186 dispatches, 38.3 s, against the server's 14.2 s. RESULT otps, interleaved paired single-server: plain 15.23 tok/s vs Ollama 11.06 = 1.377x; spec 24.52 vs 14.88 = 1.647x; spec accepts 2.64 tokens/step; plain and spec text byte-identical. TTFT, content-chunk timed: true cold (fresh server, fresh 900-token prompt, no disk cache) ours 14.225 s vs Ollama 1.984 s = 7.2x behind; warm ours 0.044 s vs Ollama 0.082 s, level. NEW DECOMPOSITION of the cold prefill, measured by dropping all GEMV dispatches with QW_SKIP_KERNEL=q4_gemv: full pass 14633 dispatches / 435-500 ms, non-GEMV-only 10657 / 65-103 ms, so GEMV 11.2 s (79%) and non-GEMV 2.99 s (21%). The non-GEMV cost is linear in DISPATCH COUNT, not rows - chunk=32 309k dispatches 2.99 s, chunk=1 663k dispatches 6.18 s, both 9.3-9.7 us per dispatch - so it is launch latency on tiny kernels, and the per-row ops (conv1d_silu_ring, gdn_step, rmsnorm_gated, copy_off at 48 layers x rows each) should collapse to one dispatch per layer. QW_NO_ENC_SPLIT=1 (one encoder per pass, unsafe) is SLOWER, 20.95 s vs 14.2 s, so the 600-3100 encoders per pass are not the cost and merging encoders is not a lever. This overturns the 4.4 s floor of sections 48/60, which assumed non-GEMV 3.4 s was irreducible: with it at ~0.15 s the floor is ~1.2 s, below Ollama's 1.98 s. Separately, section 51's refutation of the bytes-in-flight hypothesis used 16 staging iterations; the current BM=32/BK=64 geometry has exactly 2 (2 x 4 B per thread, 128 threads, 80 concurrent threadgroups = 80 KB in flight against the ~238 KB needed for 477 GB/s, a 3x shortfall that matches 120 vs 400 GB/s). No engine code changed this round; the gates stand at 19 passed / 0 failed, ACCEPTED.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (unchanged: no engine code touched this round)",
+   "evidence": {
+    "otps_paired_plain": [
+     [
+      16.15,
+      12.84
+     ],
+     [
+      15.25,
+      9.18
+     ],
+     [
+      14.29,
+      11.16
+     ]
+    ],
+    "otps_paired_spec": [
+     [
+      27.78,
+      14.8
+     ],
+     [
+      20.86,
+      15.36
+     ],
+     [
+      24.91,
+      14.48
+     ]
+    ],
+    "ttft_cold_ours_s": 14.225,
+    "ttft_cold_ollama_s": 1.984,
+    "ttft_warm_ours_s": 0.044,
+    "ttft_warm_ollama_s": 0.082,
+    "cold_pass_dispatches": 14633,
+    "cold_pass_ms": [
+     435,
+     556
+    ],
+    "non_gemv_only_s": 2.99,
+    "gemv_s": 11.2,
+    "non_gemv_chunk32": {
+     "passes": 29,
+     "dispatches": 309000,
+     "s": 2.99,
+     "us_per_dispatch": 9.7
+    },
+    "non_gemv_chunk1": {
+     "passes": 900,
+     "dispatches": 663000,
+     "s": 6.18,
+     "us_per_dispatch": 9.3
+    },
+    "no_enc_split_ttft_s": 20.95,
+    "machine": "load 4.2-4.6, GPU 90-94% (GUI), swap 4 GB; Ollama's own baseline drifted 11.06 -> 14.88 tok/s between the two sessions, so only paired ratios are quoted",
+    "ollama_invocation": "/api/generate with raw:true, model qwen38-27b:bench, temperature 0, num_ctx 8192"
+   }
   }
  ],
- "next": "re-measure the server's otps with QW_SPEC=1 on a quiet machine and set it against the +10-12% Ollama baseline; the commit_row fix means the server's speculative path is now correct, so that number is the +64%-class win the objective is after",
+ "next": "attack cold prefill in the order the new decomposition says: (1) batch the per-row non-GEMV ops - 2.99 s measured, dispatch-latency bound at 9.5 us/dispatch, expected ~0.15 s; (2) register multi-stage prefetch in the GEMM weight staging to lift 120 GB/s toward 400; (3) the GEMM x staging. The old 4.4 s floor assumed non-GEMV was irreducible; it is not, so 14.2 s -> ~2-3 s is now the target against Ollama's 1.98 s cold TTFT. otps is won on both paths (paired 1.377x plain, 1.647x spec) and warm TTFT is level.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
