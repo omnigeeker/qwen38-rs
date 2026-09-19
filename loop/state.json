@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 149,
+ "round": 150,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3601,9 +3601,34 @@
     ],
     "next": "split-K, eight interleaved rounds"
    }
+  },
+  {
+   "round": 150,
+   "title": "Designed the parallelism fix, and in the process corrected my own reading of the previous round's numbers.  In bandwidth terms: at 32 tokens the pass moves 14.4 GB in 370 ms, 39 GB/s, and at 128 tokens it moves 57.6 GB - because each y-slice re-reads the whole weight matrix - in 951 ms, 61 GB/s.  Extra threadgroups therefore do lift achieved bandwidth from 39 to 61 GB/s, but not for free: the weights get re-read four times.  The inference that matters is that grid.y = tokens/BN, so dropping BN from 32 to 8 yields grid.y = 4 at the SAME 32 tokens - the identical parallelism and bandwidth of the 128-token case, with the prefill still 32 rows wide.  Expect 11.548 -> 7.427 ms per token and 370 -> 238 ms per pass, a 36 percent faster prefill, and unlike split-K it needs no reduction pass, no extra buffer and no atomics.  The change is concrete: Q4_GEMM_BN 32 -> 8, the simdgroup map becomes r_off = sg*8 with t_off = 0 (4x1 rather than 2x2), the MMA loop collapses from four accumulate calls to one because each simdgroup now owns a single 8x8 tile, XLD becomes 17, xsh drops to 1088 B and osh to 1024 B so shared falls from 9.3 KB to 4.7 KB and occupancy improves for free, the x staging covers 256 elements and the y write uses t < 8.  Weight staging is untouched.  Next round implements it, verifies gemm-check is bit-identical, runs the gates, and does eight interleaved rounds against BN=32.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (design only; no code change)",
+   "evidence": {
+    "achieved_bandwidth": {
+     "32_tokens": "39 GB/s (14.4 GB / 370 ms)",
+     "128_tokens": "61 GB/s (57.6 GB / 951 ms)"
+    },
+    "insight": "grid.y = tokens/BN, so BN 32 -> 8 gives grid.y = 4 at 32 tokens",
+    "expected": {
+     "ms_per_token": "11.548 -> 7.427",
+     "pass_ms": "370 -> 238",
+     "gain": "36%"
+    },
+    "better_than_split_k": "no reduction pass, no extra buffer, no atomics",
+    "shared_bytes": {
+     "before": 9300,
+     "after": 4700
+    },
+    "next": "implement BN=8, bit-identical gemm-check, gates, eight interleaved rounds"
+   }
   }
  ],
- "next": "DECISIVE: parallelism is the bottleneck.  Changing nothing but bench --rows 8 --tokens N, which sets grid.y = N/32 and therefore the threadgroup count, gives 11.548 ms per token at 32 tokens (grid.y 1, 370 ms per pass), 7.941 at 64, 7.427 at 128 (grid.y 4, 951 ms per pass) and 8.086 at 256 - a 36 percent improvement from 32 to 128 tokens, with 256 slightly worse, so saturation is near 128.  That confirms the parallelism and latency-hiding hypothesis: at 32 tokens the GEMM has only out_f/32 threadgroups (160 for a 5120-row tensor), about two waves on 40 SMs, which is not enough to hide the staging latency, and quadrupling the threadgroup count overlaps it properly.  The important consequence is that PREFILL SITS EXACTLY AT THE WORST POINT: PASS_ROWS_MAX is 32, so grid.y is 1 and every prefill pass pays the 11.548 ms per token case.  Two fixes capture the same 36 percent: split-K, cutting K into four and adding the four partial sums in a second pass, which leaves the chunk structure alone and is the lower-risk option; or widening the prefill pass from 32 rows to 128, which needs BATCH_MAX, PASS_ROWS_MAX and the x/y/conv-ring buffers all enlarged and changes the behaviour of every existing path.  NEXT: split-K, confined to the GEMM kernel plus one reduction, validated with eight interleaved rounds.",
+ "next": "Designed the fix and, in doing so, corrected my own reading of the previous round's data.  Converting it to achieved bandwidth: at 32 tokens the pass moves 14.4 GB in 370 ms = 39 GB/s, and at 128 tokens it moves 57.6 GB (each y-slice re-reads all the weights) in 951 ms = 61 GB/s.  So extra threadgroups do raise achieved bandwidth, from 39 to 61 GB/s, but not for free - the price is re-reading the weights four times.  The key inference is that grid.y = tokens/BN, so simply dropping BN from 32 to 8 gives grid.y = 4 AT THE SAME 32 TOKENS, i.e. exactly the parallelism and bandwidth of the 128-token case while the prefill stays 32 rows wide.  Expected: 11.548 -> 7.427 ms per token, 370 -> 238 ms per pass, a 36 percent faster prefill.  This is better than split-K - no reduction pass, no extra buffer, no atomics.  Concrete change: Q4_GEMM_BN 32 -> 8; the simdgroup map becomes r_off = sg*8 with t_off = 0 (4x1 instead of 2x2); the MMA loop collapses from four simdgroup_multiply_accumulate calls to one, since each simdgroup now owns a single 8x8 tile; XLD becomes BN+9 = 17; xsh falls to 1088 B and osh to 1024 B, so shared drops from 9.3 KB to 4.7 KB and occupancy improves as a side effect; the x staging covers 256 elements and the y write has t < 8.  The weight staging is untouched.  Verify gemm-check is bit-identical (only the tile split changes, so the numbers should be), gates 19/0, then eight interleaved rounds against BN=32.  grid.y at 32 tokens becomes 4, far inside Metal's 65535 limit.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
