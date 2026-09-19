@@ -610,6 +610,55 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
             let ggot: Vec<f16> = gbuf.to_vec(0, tokens * l.out_f);
             let mut g_abs = 0.0f64;
             let mut g_ref = 0.0f64;
+            // Third path: the MPP affine kernel, against the SAME CPU reference.
+            // The engine can only be told apart from the reference by its tokens, so
+            // a number here is the only way to see whether the per-group scale is
+            // being applied at all.
+            let ng = l.in_f / 64;
+            let gsum = dev.buffer(tokens * ng * 4);
+            let cacc = dev.buffer(tokens * l.out_f * 4);
+            let mbuf = dev.buffer_from_bytes(&vec![f16::from_f32(0.0); tokens * l.out_f]);
+            let mut mb = qw_metal::CommandBatch::new(&mut dev);
+            {
+                let gs = mb.kernel(qw_metal::msl::MPP, "q4_group_sums")?;
+                mb.encode(
+                    qw_metal::Dispatch::new(&gs, (tokens * ng, 1, 1), (256, 1, 1))
+                        .buf(0, &xbuf)
+                        .buf(1, &gsum)
+                        .scalar(2, l.in_f as i32)
+                        .scalar(3, ng as i32),
+                );
+                mb.barrier();
+                let ak = mb.kernel(qw_metal::msl::MPP, "q4_mpp_affine_v2")?;
+                mb.encode(
+                    qw_metal::Dispatch::new(
+                        &ak,
+                        (l.out_f.div_ceil(32) * 128, tokens.div_ceil(64), 1),
+                        (128, 1, 1),
+                    )
+                    .buf(0, &xbuf)
+                    .buf_offset(1, l.weight.buf, l.weight.offset)
+                    .buf_offset(2, l.scales.buf, l.scales.offset)
+                    .buf_offset(3, l.biases.buf, l.biases.offset)
+                    .buf(4, &gsum)
+                    .buf(5, &cacc)
+                    .scalar(6, ng as i32)
+                    .scalar(7, l.out_f as i32)
+                    .buf(8, &cacc),
+                );
+                mb.barrier();
+                let shk = mb.kernel(qw_metal::msl::MPP, "q4_store_half")?;
+                mb.encode(
+                    qw_metal::Dispatch::new(&shk, (tokens * l.out_f, 1, 1), (256, 1, 1))
+                        .buf(0, &cacc)
+                        .buf(1, &mbuf)
+                        .scalar(2, (tokens * l.out_f) as i32),
+                );
+            }
+            mb.finish(true);
+            let mgot: Vec<f16> = mbuf.to_vec(0, tokens * l.out_f);
+            let mut m_abs = 0.0f64;
+            let mut m_ref = 0.0f64;
             for t in 0..tokens {
                 let xr: Vec<f16> = xv[t * l.in_f..(t + 1) * l.in_f].to_vec();
                 let want = l.cpu_reference(&xr)?;
@@ -621,14 +670,19 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
                     let g = ggot[t * l.out_f + r].to_f32() as f64;
                     g_abs = g_abs.max((g - b).abs());
                     g_ref = g_ref.max(b.abs());
+                    let mm = mgot[t * l.out_f + r].to_f32() as f64;
+                    m_abs = m_abs.max((mm - b).abs());
+                    m_ref = m_ref.max(b.abs());
                 }
             }
             println!(
-                "      gemm max_abs {:.3e} rel {:.3e}   |   gemv max_abs {:.3e} rel {:.3e}   (same CPU ref, {} tokens)",
+                "      gemm max_abs {:.3e} rel {:.3e}   |   gemv max_abs {:.3e} rel {:.3e}   |   MPP max_abs {:.3e} rel {:.3e}   (same CPU ref, {} tokens)",
                 max_abs,
                 if max_ref > 0.0 { max_abs / max_ref } else { max_abs },
                 g_abs,
                 if g_ref > 0.0 { g_abs / g_ref } else { g_abs },
+                m_abs,
+                if m_ref > 0.0 { m_abs / m_ref } else { m_abs },
                 tokens
             );
         }

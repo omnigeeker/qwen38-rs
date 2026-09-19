@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 193,
+ "round": 194,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4771,9 +4771,43 @@
     "affine_status": "sc depending only on g hangs the server (NaN); sc=1 bi=0 still reproduces mode 7 exactly, so the fault is the scales[n*ngroups+g] lookup",
     "default_untouched": "default path is the one that got faster"
    }
+  },
+  {
+   "round": 194,
+   "title": "Built a 10-second numeric measurement bench for the MPP path and proved the cooperative-tensor read path is dead on this toolchain.  The MPP affine path is now wired into gemm-check and measured against the same CPU reference as the GEMM and GEMV, so a 40-second yes/no md5 became a relative-error number in ten seconds.  Baseline: gemm rel 2.7e-4 to 3.3e-4 and gemv 4.5e-4 to 5.3e-4 pass, MPP 1.5 to 3.2.  Isolation: real sc and bi give 2.391/3.187/1.521/2.760; sc=1 with bi=0 gives exactly 1.000 on all four (output all zeros); real sc with bi=0 gives the identical 1.000, so sc has no effect; sc=1 with real bi reproduces the first row bit for bit, so bi is the only contributor.  Hence part.get(i) is always zero.  Hoisting part out of the loop, swapping coordinate order, dynamic_extent K, and deleting the loop so op.run runs once all leave it intact - one op.run still reads back zero.  Ruled out: slice without explicit extents, buffer index collisions, cT/part sharing storage, array overflow, static vs dynamic K, where part is created, and the documented coordinate order.  What works: op.run into a device tensor (mode 7 probe) is fully effective and 3.2x faster than the hand-written GEMM, and cT.set/get work on a cooperative tensor op.run never touched, which is how the bias term reaches the output.  cT.store is a silent no-op, reconfirmed.  Next: accumulate per-group results in device memory while applying s[n,g], via an alpha/beta overload if one exists or device scratch plus a cheap narrowing kernel.  The descriptor's sixth argument is relaxed_precision, not accumulate.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "default path verified word-for-word against baseline md5 5b5f6e93 len 182; gemm-check PASSED",
+   "evidence": {
+    "new_tool": "gemm-check now prints MPP rel against the same CPU reference; 40s yes/no -> 10s number",
+    "baseline": {
+     "gemm_rel": "2.7e-4..3.3e-4",
+     "gemv_rel": "4.5e-4..5.3e-4",
+     "mpp_rel": "1.5..3.2"
+    },
+    "sc_has_no_effect": "real sc vs sc=1 give identical results (both rel 1.000 when bi=0)",
+    "bi_is_the_only_contributor": "sc=1 with real bi reproduces the full real-sc run bit for bit",
+    "root_cause": "part.get(i) is always zero; even a single op.run(mA,mB,part) with no loop reads back zero",
+    "ruled_out": [
+     "slice without explicit extents",
+     "implicit vs explicit buffer indices",
+     "cT and part sharing thread storage",
+     "array overflow",
+     "static vs dynamic K",
+     "part created inside vs outside the loop",
+     "coordinate order from Apple's docs"
+    ],
+    "what_works": [
+     "op.run into a device tensor (mode 7 probe), 3.2x faster than the hand-written GEMM",
+     "cT.set/get on a cooperative tensor op.run never touched"
+    ],
+    "store_is_noop": "cT.store(mC) reconfirmed as a silent no-op",
+    "descriptor_arg6": "relaxed_precision, not accumulate",
+    "default_untouched": "yes"
+   }
   }
  ],
- "next": "Shipped a verified single-pass prefill: a 602-token prompt now runs in one pass instead of five, 5.94 s down to 5.42 s, 6/6 paired with byte-identical output.  The real per-pass limit was never 128 - engine.rs PREFILL_CHUNK_MAX was a separate, more conservative cap, while the runner enforces max_per_seq = (conv_k + PASS_ROWS_MAX).next_power_of_two() - conv_k = 252, and conv_ring only has to be a power of two, so raising PASS_ROWS_MAX to 1020 costs a few hundred megabytes of scratch and no more.  runner.rs line 1537 also has a hard rows must be 1..=BATCH_MAX check, so BATCH_MAX had to rise with it; BATCH_MAX only sizes small scratch buffers (x, h, qg, k, conv_out and friends, about 100 MB total) and the invariant is BATCH_MAX >= PASS_ROWS_MAX.  The decisive strategic result is that reading the weights once instead of five times bought only 9 percent, so prefill is NOT weight-bandwidth-bound but compute-bound: 32.5 TFLOP over 5.42 s is about 6.0 TFLOPS effective, matching the measured 7.76 TFLOPS GEMM.  That is why sixteen earlier GEMM tuning directions (double buffering, smem aliasing, register prefetch, BN, BM, BK, split-K, K-major, coalescing) all failed, and it means the MPP matmul2d tensor-core path is the only route that can close the gap.  The affine scale lookup is still unresolved: making sc depend only on g (reading row 0) hangs the server outright with no output and no error, so that variant produces NaN and stalls generation, while sc=1 with bi=0 still reproduces mode 7 exactly, which pins the fault precisely on the scales[n*ngroups + g] lookup rather than on any of the group machinery.",
+ "next": "Built a 10-second numeric measurement bench for the MPP path and proved the cooperative-tensor read path is dead on this toolchain.  The bench matters most: the MPP affine path is now wired into gemm-check and measured against the same CPU reference the GEMM and GEMV are measured against, so instead of a 40-second end-to-end md5 that only says yes or no, there is a relative-error number in about ten seconds.  Baseline: gemm rel 2.7e-4 to 3.3e-4 and gemv rel 4.5e-4 to 5.3e-4 both pass, while MPP sits at rel 1.5 to 3.2.  Isolation with that bench: real sc and real bi give 2.391/3.187/1.521/2.760; sc=1 with bi=0 gives exactly 1.000 on all four, meaning the output is all zeros; real sc with bi=0 gives the identical 1.000, so sc has no effect at all; sc=1 with real bi reproduces the first row bit for bit, so bi is the only contributor.  Therefore part.get(i) is always zero.  Hoisting part out of the loop, swapping the coordinate order in both places, switching the descriptor K to dynamic_extent, and even deleting the group loop so op.run is called exactly once all leave that conclusion intact - a single op.run(mA, mB, part) still reads back zero.  Ruled out along the way: slice without explicit extents, implicit versus explicit buffer index collisions, cT and part sharing thread storage, array overflow, static versus dynamic K, where part is created, and the coordinate order from Apple's documentation.  What does work: op.run into a device tensor (the mode 7 probe) is fully effective and 3.2x faster than the hand-written GEMM, and cT.set/get work on a cooperative tensor that op.run never touched, which is how the bias term reaches the output.  cT.store is a silent no-op, reconfirmed.  Next: find a way to accumulate per-group results in device memory while applying s[n,g], either via an alpha/beta accumulation overload if one exists or by landing each group's result in device scratch and letting a cheap narrowing kernel do acc[m,n] += s[n,g]*T_g[m,n].  Note the descriptor's sixth argument is relaxed_precision, not accumulate.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

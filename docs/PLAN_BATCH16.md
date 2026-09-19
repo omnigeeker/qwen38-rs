@@ -6506,3 +6506,64 @@ max_per_seq = (conv_k + PASS_ROWS_MAX).next_power_of_two() - conv_k = 252
 `sc` 只依赖 `g`（取第 0 行）时**服务端直接挂起**（无输出、无报错），
 说明该变体会产生 NaN 并把生成卡死。`sc=1, bi=0` 仍能精确复现 mode 7，
 **⇒ 按组机制无误，问题精确定位在 `scales[n*ngroups + g]` 这个查表。**
+
+### 72br. **建立 10 秒级 MPP 数值测量台；cooperative tensor 读取路径确证失效**（第 131 轮）
+
+#### 最重要的资产：把 MPP 接入 `gemm-check`
+
+此前判断 affine 对错只能靠"跑端到端、看模型输出 md5"（40 秒且只能得到"对不对"），
+这一轮把 MPP affine 路径接进 `gemm-check`，对**同一个 CPU 真值**直接打印相对误差，
+**测量时间降到约 10 秒，而且得到的是数字而不是布尔值**。
+
+`bench.rs` 的 `else` 分支（用 `l.cpu_reference()` 作真值）现在打印三列：
+
+```
+gemm max_abs ... rel ...   |   gemv max_abs ... rel ...   |   MPP max_abs ... rel ...
+```
+
+基线：`gemm rel 2.7e-4 ~ 3.3e-4`、`gemv rel 4.5e-4 ~ 5.3e-4`（都 PASS），
+而 **MPP `rel 1.5 ~ 3.2`（完全错误）**。
+
+#### 用这个测量台做的隔离实验（每一步都是数字）
+
+| 测试 | MPP rel | 结论 |
+|---|---|---|
+| 真实 `sc` + 真实 `bi` | 2.391 / 3.187 / 1.521 / 2.760 | 错误 |
+| `sc=1, bi=0` | **1.000（四例全同）** | **输出全零** |
+| 真实 `sc, bi=0` | **1.000（与上一行完全相同）** | **`sc` 完全无效** |
+| `sc=1` + 真实 `bi` | 2.391 / 3.187 / 1.521 / 2.760 | **与第一行逐位相同** |
+| 把 `part` 提升到循环外 | 与第一行相同 | 无关 |
+| 交换坐标顺序（两处一致） | 1.384 / 3.265 / 2.740 / 2.965 | 只影响 bias 项 |
+| descriptor 改 `dynamic_extent` K | 2.391 / 3.187 / 2.779 / 2.944 | 前两例不变 |
+| **去掉循环，只做一次 `op.run`** | **1.000** | **单次调用也是零** |
+
+**⇒ 结论一：`sc` 对结果毫无影响，`bi` 是唯一贡献者 ⇒ `part.get(i)` 恒为 0。**
+**⇒ 结论二：即使去掉组循环、只调用一次 `op.run(mA, mB, part)`，
+`part.get(i)` 仍然恒为 0 ⇒ 本工具链上 `op.run` 写入 cooperative tensor 后读不回来。**
+
+#### 已排除的解释（都不是原因）
+
+- `slice` 未指定 extent（已用 `slice<64,64>` / `slice<32,64>`）；
+- tensor 参数隐式/显式 buffer 索引冲突（A/B/C 都已显式 `[[buffer(n)]]`）；
+- `cT` 与 `part` 共享 thread 存储（曾改用普通 `thread float acc[]`）；
+- 数组越界（改回累加进 `cT`，结果完全相同）；
+- descriptor 的 K 用静态还是 `dynamic_extent`；
+- `part` 在循环内还是循环外创建；
+- `get_multidimensional_index` 的坐标顺序（按 Apple 文档交换后只影响 bias 项）。
+
+#### 与之对照的**有效**事实
+
+- `op.run(mA, mB, mC)` 写入 **device tensor**（mode 7 probe）**完全有效**，
+  且比手写 GEMM 快 3.2×（6.0 s → 1.9 s）—— 这是整个 MPP 路线的立足点；
+- `cT.set(i, v)` / `cT.get(i)` 在**没有被 `op.run` 写过**的 cooperative tensor 上有效
+  （bias 项就是这样传出到输出的）；
+- `cT.store(mC)` 是静默空操作（上一轮结论，本轮再次印证）。
+
+#### 下一步
+
+`op.run` 到 device tensor 可行、到 cooperative tensor 不可行，
+所以必须找到一种**在 device 内存里按组累加并施加 `s[n,g]`** 的结构。
+候选：确认是否存在 alpha/beta 形式的累加重载；
+或让每个 group 的结果落进 device scratch 后由一个便宜的收窄内核
+做 `acc[m,n] += s[n,g]*T_g[m,n]`（需评估 dispatches 与带宽）。
+**注意 descriptor 第 6 参数是 `relaxed_precision`，不是 accumulate。**
