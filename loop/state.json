@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 150,
+ "round": 151,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3626,9 +3626,24 @@
     },
     "next": "implement BN=8, bit-identical gemm-check, gates, eight interleaved rounds"
    }
+  },
+  {
+   "round": 151,
+   "title": "Implemented the BN=8 design from the previous round and it produced all-zero output, so it was reverted in full.  The change set Q4_GEMM_BN to 8, made the simdgroup map r_off = sg*8 with t_off = 0 (4x1), collapsed the MMA loop from four accumulations to a single a00 chain, did the same for the store, and moved the dispatch bn from 32 to 8 in both bench.rs and linear.rs.  gemm-check then FAILED on all four tensors with rel = 1.000e0 and max_abs of 4.040e1, 2.591e0, 3.306e0 and 3.196e0.  Since rel was exactly 1.0 with max_abs equal to max_ref, the GEMM output was all zeros - it computed nothing rather than computing imprecisely.  The figures were bit-identical before and after the dispatch fix, which briefly suggested a stale build, so I touched all three sources and forced a rebuild; the md5 changed to ff72c395 but the result did not, confirming a real kernel defect rather than a build problem.  All three files are reverted, the binary md5 is back to 35fe8f5f363f352317a379f252f7d83d, and gemm-check passes again at worst rel 3.347e-4.  Next round should locate the fault rather than keep guessing: step through QW_GEMM_MODE, where mode 2 skips the MMAs and so reveals whether the x staging is written correctly, or temporarily dump osh, xsh and wsh into y for a fixed-point observation.  No further edits to this kernel until it is found.  Worth recording that the previous round's finding stands - parallelism is still the bottleneck; only this way of exploiting it failed - and split-K remains an equally valid route that does not require re-tiling the output.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BN=8 reverted; the shipped binary is restored and gemm-check PASSES at worst rel 3.347e-4)",
+   "evidence": {
+    "symptom": "gemm-check FAILED, rel = 1.000e0, max_abs 4.040e1 / 2.591e0 / 3.306e0 / 3.196e0",
+    "diagnosis": "rel == 1.0 with max_abs == max_ref means all-zero output - nothing computed, not imprecision",
+    "stale_build_ruled_out": "touched all sources; md5 changed to ff72c395 but the failure was identical",
+    "reverted": "msl.rs, bench.rs, linear.rs; md5 restored to 35fe8f5f363f352317a379f252f7d83d",
+    "next": "locate, do not guess: QW_GEMM_MODE=2 to check the x staging, or dump osh/xsh/wsh into y",
+    "still_valid": "parallelism is the bottleneck (previous round); split-K remains a valid route"
+   }
   }
  ],
- "next": "Designed the fix and, in doing so, corrected my own reading of the previous round's data.  Converting it to achieved bandwidth: at 32 tokens the pass moves 14.4 GB in 370 ms = 39 GB/s, and at 128 tokens it moves 57.6 GB (each y-slice re-reads all the weights) in 951 ms = 61 GB/s.  So extra threadgroups do raise achieved bandwidth, from 39 to 61 GB/s, but not for free - the price is re-reading the weights four times.  The key inference is that grid.y = tokens/BN, so simply dropping BN from 32 to 8 gives grid.y = 4 AT THE SAME 32 TOKENS, i.e. exactly the parallelism and bandwidth of the 128-token case while the prefill stays 32 rows wide.  Expected: 11.548 -> 7.427 ms per token, 370 -> 238 ms per pass, a 36 percent faster prefill.  This is better than split-K - no reduction pass, no extra buffer, no atomics.  Concrete change: Q4_GEMM_BN 32 -> 8; the simdgroup map becomes r_off = sg*8 with t_off = 0 (4x1 instead of 2x2); the MMA loop collapses from four simdgroup_multiply_accumulate calls to one, since each simdgroup now owns a single 8x8 tile; XLD becomes BN+9 = 17; xsh falls to 1088 B and osh to 1024 B, so shared drops from 9.3 KB to 4.7 KB and occupancy improves as a side effect; the x staging covers 256 elements and the y write has t < 8.  The weight staging is untouched.  Verify gemm-check is bit-identical (only the tile split changes, so the numbers should be), gates 19/0, then eight interleaved rounds against BN=32.  grid.y at 32 tokens becomes 4, far inside Metal's 65535 limit.",
+ "next": "Implemented the BN=8 design and it produced ALL-ZERO output, so it was reverted in full.  The change was Q4_GEMM_BN 32 -> 8, r_off = sg*8 with t_off = 0 (a 4x1 mapping), the MMA loop collapsed from four accumulations to one keeping only a00, the same for the store, and the dispatch bn changed from 32 to 8 in both places (bench.rs:395 and linear.rs:210).  gemm-check FAILED on all four tensors with rel = 1.000e0 and max_abs of 4.040e1, 2.591e0, 3.306e0 and 3.196e0; rel exactly 1.0 with max_abs equal to max_ref means the GEMM output was all zeros, i.e. it computed nothing rather than computing imprecisely.  The numbers were bit-identical before and after the dispatch fix, which briefly looked like a stale build, so I touched all three sources and forced a rebuild - the md5 changed to ff72c395 but the result did not, confirming a real kernel defect.  Everything is reverted (msl.rs, bench.rs, linear.rs), the binary md5 is back to 35fe8f5f363f352317a379f252f7d83d and gemm-check PASSES again at worst rel 3.347e-4.  NEXT: do not keep guessing at this kernel - locate the fault first, either by stepping through QW_GEMM_MODE (mode 2 skips the MMAs, which shows whether the x staging is being written correctly) or by temporarily dumping osh, xsh and wsh into y for a fixed-point observation.  No further edits to this kernel until it is located.  One important reservation: the previous round's finding that parallelism is the bottleneck is NOT undermined by this failure - only this particular way of exploiting it is - and split-K remains an equally valid route that does not depend on re-tiling the output.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
