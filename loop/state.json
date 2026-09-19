@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 195,
+ "round": 196,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4827,9 +4827,40 @@
     },
     "default_untouched": "yes"
    }
+  },
+  {
+   "round": 196,
+   "title": "Corrected last round's reasoning and found the real bottleneck.  Cold TTFT on 602 tokens, interleaved: default 6.705/6.468 s, MPP probe 1.725/1.730 s (3.8x, very stable), skip-MACs 4.663/4.105 s.  The 32.5 TFLOP of MACs is only about 2.1 s (15.5 TFLOPS) while 4.4 s is staging and dispatch - MPP wins by bypassing threadgroup staging entirely, which explains why all sixteen earlier GEMM tuning directions failed.  MPP ceiling 1.73 s vs llama.cpp's 1.60 s.  Then the overturning find: cooperative_tensor::get() is 'return is_valid_element(idx) ? (*this)[idx] : value_type()', so it returns zero for an invalid index, meaning every earlier 'part.get(i) is always zero' observation was equally consistent with the mask being false - those experiments never separated 'not written' from 'invalid index', so last round's conclusion needed correcting.  Direct measurement of the mask (capacity and valid-count dumped from the kernel) gives capacity=16 valid=16: 16 per thread times 128 threads is exactly the 2048 elements of the 64x32 tile and the mask is true for all of them, so the mask is fine.  Removing the guard and using operator[] as Apple's example does still gives rel 1.000e0, bit for bit identical to the guarded version.  Source confirms the cooperative implementation is selected: MPPTensorOpsMatMul2dImpl.h:9129 matches half/uint4b_format/float with both operands in device and calls __tensorops_impl_matmul2d_op_run_cooperative_dv_f16_dv_ui4_f32_v2, and 128 threads is the four SIMD groups execution_simdgroups<4> requires.  So op.run into a device tensor works while op.run into a cooperative tensor yields no data on this machine - a driver-level issue, no longer worth probing from MSL.  Next: the device-scratch route - per-threadgroup 64x32 tile, 96 group calls into per-group device scratch slices, then y[m,n] = sum_g s[n,g]*scratch[g,m,n] + b[n,g]*G[m,g], tiled over out_f at 4096 columns.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "working tree reverted to committed state; default path and gemm-check to be re-verified",
+   "evidence": {
+    "cold_ttft_602": {
+     "default": [
+      "6.705",
+      "6.468"
+     ],
+     "mpp_probe": [
+      "1.725",
+      "1.730"
+     ],
+     "skip_macs": [
+      "4.663",
+      "4.105"
+     ]
+    },
+    "real_bottleneck": "MACs only ~2.1 s (15.5 TFLOPS); 4.4 s is staging/dispatch. MPP wins by bypassing staging, not by computing faster.",
+    "mpp_ceiling": "1.73 s vs llama.cpp 1.60 s (8% away)",
+    "get_semantics": "cooperative_tensor::get() returns value_type() when is_valid_element is false, so 'get() == 0' cannot distinguish 'not written' from 'invalid index'; last round's conclusion corrected",
+    "mask_measured": "capacity=16 valid=16 (128 threads x 16 = 2048 = 64x32), mask is correct",
+    "operator_bracket_also_zero": "guard removed + operator[] gives rel 1.000e0, bit-identical to guarded",
+    "symbol_confirmed": "MPPTensorOpsMatMul2dImpl.h:9129 selects __tensorops_impl_matmul2d_op_run_cooperative_dv_f16_dv_ui4_f32_v2 for our exact config",
+    "conclusion": "op.run into a cooperative tensor produces no data on this machine despite the symbol existing and all preconditions holding - driver-level, stop probing from MSL",
+    "default_untouched": "yes, reverted"
+   }
   }
  ],
- "next": "Eliminated the two remaining alternative routes to the affine with documented evidence, leaving exactly one viable structure.  Route one: the MPP matmul does support hardware block scales - the __impl run symbols carry leftScaleDataType, leftScaleBlockSize0/1 and the matching right-side parameters, and the public layer exposes them through metal::tensor_plane_scales - but it hard-asserts that the scale type is metal_fp8_ue8m0_format with blockSize0 equal to 32 and blockSize1 equal to 1, and that the left tensor is not transposed.  fp8_ue8m0 carries only an 8-bit exponent, so the scales would be rounded to powers of two, giving up to a factor of two of error per group, far outside the 2e-3 gemm-check tolerance that the current 3.3e-4 gemm meets.  Route two: a q4_mpp_affine_v3 that accumulated each group in threadgroup memory failed to compile because tensor<threadgroup T, ...> is rejected outright - metal_tensor asserts that a tensor_handle element type must be device or constant qualified - so explicit threadgroup accumulation is closed at the type level.  I also verified the store constraints exactly: is_same_v of element_type and value_type plus get_rank() <= E::rank(); cT is float, mC is a device float tensor, both rank 2, and slice() does place its tensor_offset in Tags, so every constraint is satisfied and store is still a no-op, which closes that path.  The one structure left standing is the one whose primitive is proven: op.run into a device tensor is the only destination that works, so each threadgroup must own a 64x32 output tile, loop the 96 groups calling op.run into a device scratch slice per group, and let a second cheap narrowing kernel compute y[m,n] = sum_g s[n,g]*scratch[g,m,n] + b[n,g]*gsum[m,g].  That scratch is 96 * rows * out_f * 4 bytes, which for lm_head at out_f 248320 is tens of gigabytes, so it has to be tiled over out_f - 4096 columns per tile is about 100 MB - and that tiling is the next thing to implement.  Enum values recorded for later: float32 0x10000000|32, float16 0x10000000|16, bfloat16 0x80000000|0x10000000|16, uint4 4, invalid 0.",
+ "next": "Two things this round.  First, the real cold-TTFT decomposition on a 602-token prompt, measured interleaved and paired: default mode 0 is 6.705/6.468 s, the MPP probe (mode 7) is 1.725/1.730 s - 3.8x and remarkably stable across runs - and skip-MACs (QW_GEMM_MODE=2, which skips only the multiply-accumulate but still does all the staging) is 4.663/4.105 s.  So the 32.5 TFLOP of MACs is worth only about 2.1 s, roughly 15.5 TFLOPS, while 4.4 s is staging and dispatch overhead.  MPP is fast not because it computes faster but because it never goes through threadgroup staging - it feeds the weights straight to the tensor units.  That explains why all sixteen earlier GEMM tuning directions failed: they optimised the 32% that was not the problem.  The MPP ceiling is 1.73 s against llama.cpp's 1.60 s, only 8% away, so the route is worth finishing.  Second, and overturning, I read the actual implementation of cooperative_tensor::get(): it is 'return is_valid_element(idx) ? (*this)[idx] : value_type();' - it returns zero for an invalid index.  Every earlier observation that part.get(i) was always zero is therefore equally consistent with is_valid_element(i) always being false, so those experiments never distinguished 'op.run did not write' from 'the index is invalid', and last round's conclusion from them has to be corrected.  I then measured the mask directly by dumping capacity and the number of valid elements from the kernel: capacity=16 and valid=16.  Sixteen elements per thread times 128 threads is 2048, exactly the 64x32 tile, and the mask is true for all sixteen, so the mask is fine and the loop does run.  Removing the is_valid_element guard entirely and using operator[] the way Apple's example does - which dereferences without a validity check - still gives rel 1.000e0 on all four linears, bit for bit the same as with the guard, so it is not get()'s semantics, not the mask, and not set/get versus operator[].  I also confirmed from the source that our exact configuration does select the cooperative implementation: at MPPTensorOpsMatMul2dImpl.h:9129 the chain matches half left, uint4b_format right, float destination with both operands in device and calls __tensorops_impl_matmul2d_op_run_cooperative_dv_f16_dv_ui4_f32_v2, and the 128 dispatched threads equal four SIMD groups as execution_simdgroups<4> requires.  Conclusion: op.run into a device tensor works (mode 7, 3.8x) while op.run into a cooperative tensor produces no data on this machine even though the symbol exists, the conditions match, the mask is correct and the capacity is correct - that is a driver-level issue and I am done probing it from the MSL side.  Next round: the device-scratch route, the only one built on a proven primitive.  Each threadgroup owns a 64x32 output tile, loops the 96 groups calling op.run into the g-th slice of a device scratch, and a cheap kernel then computes y[m,n] = sum_g s[n,g]*scratch[g,m,n] + b[n,g]*G[m,g], tiled over out_f at about 4096 columns to keep lm_head's scratch near 100 MB.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

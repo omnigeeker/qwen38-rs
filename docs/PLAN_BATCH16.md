@@ -6638,3 +6638,85 @@ store(tensor<T, E, tensor_handle, Tags...> t) thread const;
 **代价**：scratch = 96 × rows × out_f × 4 字节，对 `lm_head`（out_f 248320）是几十 GB，
 **必须按 out_f 分块**（例如 4096 列一块 ⇒ 约 100 MB）。
 **⇒ 这是下一轮要实现的唯一路线。**
+
+### 72bt. **推翻此前推理：`get()` 的语义使「读到 0」无法区分「没写」和「索引无效」**（第 133 轮）
+
+#### 首先：冷 TTFT 的真实分解（602 token，交替配对）
+
+| 配置 | 冷 TTFT | 含义 |
+|---|---|---|
+| mode 0（默认，单 pass） | 6.705 / 6.468 s | 有波动 |
+| **MPP probe（mode 7）** | **1.725 / 1.730 s** | **3.8×，且两次几乎完全一致** |
+| skip-MACs（`QW_GEMM_MODE=2`） | 4.663 / 4.105 s | 只跳过 MAC，仍做全部 staging |
+
+**⇒ 关键结论：32.5 TFLOP 的 MAC 本身只值约 2.1 s（≈15.5 TFLOPS），
+另外 4.4 s 全是 staging/发射开销。MPP 之所以快 3.8×，不是算得快，而是
+它根本不经过 threadgroup staging —— 直接把权重喂给张量单元。**
+
+**⇒ 这解释了此前 16 个 GEMM 调优方向为何全部失败：它们都在优化只占 32% 的部分。**
+**⇒ MPP 上限 1.73 s，距 llama.cpp 的 1.60 s 只差 8%。这条路值得走完。**
+
+#### 推翻性发现：`cooperative_tensor::get()` 的实现
+
+```cpp
+METAL_FUNC value_type get(thread_index_type idx) thread const
+{
+  return is_valid_element(idx) ? (*this)[idx] : value_type();   // 无效 ⇒ 返回 0
+}
+```
+
+**⇒ 此前所有「`part.get(i)` 恒为 0」的观测，都与「`is_valid_element(i)` 恒为 false」
+完全兼容 —— 也就是说，那些实验**根本没有区分**「`op.run` 没写」和「索引无效」。**
+**⇒ 上一轮基于这些观测得出的结论必须修正。**
+
+#### 用直接测量排除「掩码失效」
+
+在内核里 dump 掩码统计（`dbg[0]=capacity`, `dbg[1]=通过 is_valid_element 的个数`）：
+
+```
+[dbg] capacity=16 valid=16
+```
+
+**⇒ 每个线程拥有 16 个元素、128 线程 × 16 = 2048 = 64×32，与 tile 完全吻合；
+且掩码对全部 16 个元素都为真。掩码没有问题，循环确实执行。**
+
+#### 去掉守卫、直接用 `operator[]`（Apple 示例的写法）后仍是零
+
+按 Apple 官方示例改用 `cT[i]`（`operator[]` 不做有效性检查，直接解引用）
+并把 `is_valid_element` 守卫整个去掉，逐元素无条件写出：
+
+```
+MPP max_abs 4.040e1 rel 1.000e0    (×4，与加守卫时逐位相同)
+```
+
+**⇒ 输出仍全零。所以既不是 `get()` 的语义，也不是掩码，也不是 `set`/`get` 与
+`operator[]` 的区别。**
+
+#### 已从源码确认：我们的配置确实选中了 cooperative 实现
+
+在 `__impl/MPPTensorOpsMatMul2dImpl.h:9129` 读到分派链：
+
+```cpp
+else if constexpr (is_same_v<leftValueType, half> &&
+                   is_same_v<rightValueType, metal::uint4b_format> &&
+                   is_same_v<destinationValueType, float>) {
+  if constexpr (is_device_addrspace_v<leftPtrType> && is_device_addrspace_v<rightPtrType>)
+    __tensorops_impl_matmul2d_op_run_cooperative_dv_f16_dv_ui4_f32_v2(
+        desc, left, ..., right, ..., destination, threads);
+```
+
+**⇒ 符号存在、条件匹配、参数正确（device half × device uint4b → cooperative float，
+threads = scope().size()），而 dispatch 的 128 线程 = 4 个 SIMD group 也与
+`execution_simdgroups<4>` 一致。**
+
+#### 结论
+
+**`op.run` 写 device 张量有效（mode 7，3.8×），写 cooperative 张量在本机
+（macOS 26.6.2 / SDK 27.0）不产生数据，尽管符号存在、条件匹配、掩码正确、
+capacity 正确。** 这已是驱动层面的问题，不再从 MSL 侧继续投入。
+
+**⇒ 下一轮：走 device-scratch 方案**（唯一使用已验证原语的路线）：
+每 threadgroup 负责 64×32 输出块，内部按组循环调用 `op.run` 写入
+**device scratch 的第 g 个切片**，再用一个便宜内核做
+`y[m,n] = Σ_g s[n,g]·scratch[g,m,n] + b[n,g]·G[m,g]`，并按 out_f 分块
+（4096 列 ≈ 100 MB）以避免 `lm_head` 的几十 GB scratch。
