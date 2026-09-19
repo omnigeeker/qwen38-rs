@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 126,
+ "round": 127,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -2980,9 +2980,31 @@
     "decision": "keep QW_GEMM_MIN_ROWS opt-in (off by default)",
     "next_hypothesis": "q4_gemm_tile accumulates 8 f16 MMA steps inside BK=64 (~1e-3 total); BK=8 should reduce the error to output rounding"
    }
+  },
+  {
+   "round": 127,
+   "title": "Investigated the f16-accumulation hypothesis from the previous round and REFUTED it: q4_gemm_tile's accumulator is simdgroup_matrix<float,8,8> (msl.rs:725), so it accumulates in f32, and the scalar k=4 GEMV also uses float acc[NK] (msl.rs:622) with half weights - both are f16 operands with f32 accumulation, so the difference is not f16 accumulation.  More importantly I found and corrected a METHODOLOGICAL ERROR of my own from the round before: I had compared gemm-check's rel = max_abs/max_ref with check's norm_err = max_abs/rms_ref and concluded the GEMM is not less accurate than the shipped GEMV.  Different denominators, so that comparison was invalid; only max_abs is comparable and it reads GEMV 5.0e-4 to 1.6e-3 against GEMM 1.95e-3 worst - the same order but the GEMM is somewhat worse, not equal.  Combined with the 1-of-9 divergence measured last round, the honest position is that the GEMM is measurably less accurate than the shipped path.  Identified the measurement that is actually missing and that everything now hinges on: the direct difference between the GEMM and the scalar k=4 kernel on the SAME input.  Both existing numbers are against the CPU reference with different normalisations, so neither answers 'how far apart are the two paths'.  Added that to the plan for next round, together with the possible fix (splitting each weight into whi + wlo and doing two MMAs, which would make the GEMM more accurate than the scalar path at about twice the MMA work and more shared memory).  The GEMM stays off by default until that measurement exists.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no engine change this round; the GEMM stays opt-in)",
+   "evidence": {
+    "gemm_accumulator": "simdgroup_matrix<float,8,8> at msl.rs:725 (f32, not f16)",
+    "gemv_accumulator": "float acc[NK] at msl.rs:622 (f32), weights rounded to half",
+    "hypothesis_refuted": "f16 accumulation is not the source of the difference",
+    "methodology_correction": "rel=max_abs/max_ref vs norm_err=max_abs/rms_ref are not comparable; only max_abs is",
+    "comparable_numbers": {
+     "gemv_max_abs": [
+      0.0005,
+      0.0016
+     ],
+     "gemm_worst_max_abs": 0.00195
+    },
+    "missing_measurement": "GEMM vs scalar k=4 kernel on the same input (to be added to gemm_check)",
+    "possible_fix": "weight split whi + wlo with two MMAs, about 2x MMA work and more shared memory"
+   }
   }
  ],
- "next": "GEMM prefill is 2.2x faster but NOT byte-equivalent, so it stays opt-in.  Equivalence test over 9 prompt lengths (8-200 words, 48 generated tokens): 8 of 9 byte-identical, but the 35-token case diverges at character 64 (about generated token 14) and the two texts are then completely different.  That is the two paths' different f16 rounding amplified at an argmax boundary, and its consequence is real: shipping the GEMM as default would make the server diverge from the CLI and the oracle on some prompts, breaking the token-for-token guarantee (server==cli, spec==plain) we have kept all along.  Decision: keep QW_GEMM_MIN_ROWS opt-in, because 2.2x on cold prefill is not worth giving up bit-equivalence.  NEXT: align the GEMM's accumulation with the scalar path - the suspicion is that q4_gemm_tile accumulates 8 f16 MMA steps inside BK=64 (about one f16 epsilon each, ~1e-3 total), so BK=8 would leave one MMA per BK with f32 accumulation across K-steps and should reduce the error to output rounding only; measure whether it is still faster than the scalar path.",
+ "next": "Checked the '8 f16 MMA steps inside BK=64' suspicion: it is WRONG.  q4_gemm_tile's accumulator is simdgroup_matrix<float,8,8> (msl.rs:725), i.e. f32, and the scalar k=4 GEMV also accumulates in float (msl.rs:622) with half weights - both paths are f16 operands plus f32 accumulation, so f16 accumulation is not the difference.  ALSO CORRECTED MY OWN METHODOLOGICAL ERROR from the previous round: I compared gemm-check's rel = max_abs/max_ref against check's norm_err = max_abs/rms_ref and concluded the GEMM is not less accurate than the shipped GEMV.  Those have different denominators and cannot be compared that way; only max_abs is comparable, and it says GEMV 5.0e-4-1.6e-3 against GEMM 1.95e-3 worst, i.e. same order but the GEMM is somewhat worse - not 'not worse'.  The missing measurement is the direct one: the difference between the GEMM and the scalar k=4 kernel on the SAME input, which neither existing number provides (both are against the CPU reference with different normalisations).  NEXT: add that to gemm_check() - run K_Q4_GEMV_K4_U4HX and the GEMM on the same tensor and report their difference - and only then judge whether the GEMM's error can be brought down to the scalar path's level and at what cost (e.g. splitting the weight into whi + wlo with two MMAs).  The GEMM's default stays OFF until then.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
