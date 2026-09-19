@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 186,
+ "round": 187,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4605,9 +4605,37 @@
     "remaining": "affine handling: pre-scale activation by s, matmul2d, per-group sums S[m,g], second matmul2d with K=96",
     "expected": "weight traffic 57.6 GB -> 14.4 GB, staging eliminated - the ~4x cold TTFT needs"
    }
+  },
+  {
+   "round": 187,
+   "title": "Dispatched the MetalPerformancePrimitives probe for real under QW_GEMM_MODE=7 and measured a 602-token cold prefill at 1.9 s against q4_gemm_tile's 6.0 s - a 3.2x jump, the largest single win in the project.  Sweeping the tile showed 64x32 is already best (64x128 and 128x128 both 2.1 s); the effective weight bandwidth is about 218 GB/s against the hand-written staging loop's 60, which explains why four rounds of tuning that loop never helped - the problem was never how the loop was written, it is that simdgroup_matrix must go through threadgroup memory and matmul2d does not.  The probe is not shippable because it computes only A x q and ignores the affine, and the affine is genuinely hard to fold in: our scales and biases have shape [out_f, K/64], so s depends on the output column n and cannot be pre-multiplied into the activation ([m,k], n-independent) nor folded into the 4-bit weights without losing precision.  An exact affine needs per-group accumulation in registers, which needs element access to cooperative_tensor - not in the MPP headers but a Metal compiler builtin, so its API needs a round of its own.  Even with a free affine we would be at about 2.0 s against llama.cpp's 1.60 s, so after MPP the bottleneck moves to the non-GEMM side at roughly 1.24 s or 63 per cent, whose remaining dispatch hotspot is attn_scores_softmax plus attn_out at 4,096 launches, needing a causal mask.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "default path (mode 0) unchanged and verified word-for-word against the baseline; mode 7 is an opt-in probe with deliberately wrong output",
+   "evidence": {
+    "cold_prefill": {
+     "mode0_hand_written_gemm": "6.0 s",
+     "mode7_mpp_matmul2d": "1.9 s",
+     "speedup": "3.2x"
+    },
+    "tile_sweep": {
+     "64x32": "1.9 s",
+     "64x128": "2.1 s",
+     "128x128": "2.1 s"
+    },
+    "effective_weight_bandwidth": {
+     "staging_loop": "60 GB/s",
+     "matmul2d": "~218 GB/s"
+    },
+    "why_tuning_failed": "simdgroup_matrix must go through threadgroup memory; matmul2d reads device tensors directly",
+    "blocker": "affine: s,b are [out_f, K/64] so s depends on n; cannot fold into the activation or the 4-bit weights",
+    "needed": "per-group register accumulation, i.e. element access to cooperative_tensor (a Metal builtin, not in the MPP headers)",
+    "strategic_read": "even with a free affine, ~2.0 s vs llama.cpp's 1.60 s; the bottleneck then moves to the non-GEMM side at ~1.24 s (63%)",
+    "next": "solve the affine, then attn_scores_softmax + attn_out (4,096 launches, causal mask)"
+   }
   }
  ],
- "next": "Found the way out of the sixteen refuted staging ideas: MetalPerformancePrimitives exists on this machine (macOS 26.6.2, SDK 27.0) and its matmul2d type table includes half x uint4b_format -> half/float, which is exactly our quantised linear.  The 4-bit weights can go to the tensor units as they sit in memory, with no dequantisation, no threadgroup staging and no hand-built simdgroup_matrix fragments, because the kernel parameters are device tensors and op.run reads them directly.  I added an msl::MPP probe kernel (half x uint4b_format -> float, NT layout, 64x32 tile, four simdgroups) and a compile check in linear.rs that stays silent when it works and shouts when it breaks.  Three namespace traps cost a few iterations and are worth recording: matmul2d_descriptor and matmul2d live in mpp::tensor_ops rather than mpp, while execution_simdgroups is in the global namespace and in neither.  With those fixed the probe reports built OK, so the path compiles for our exact shapes.  What remains is the affine part: our weights are w = q*s + b with s and b per 64-weight group, while matmul2d computes only sum A*q, so the plan is to pre-scale the activation by s, run one matmul2d, get the per-group activation sums S[m,g] with a cheap O(rows*K) reduction, and add sum_g b_g * S[m,g] with a second matmul2d whose K is only 96.  That adds about 1.6 per cent tensor work while cutting weight traffic from 57.6 GB to 14.4 GB and removing the staging entirely, which is the roughly four times the cold TTFT needs.",
+ "next": "Dispatched the MetalPerformancePrimitives probe for real under QW_GEMM_MODE=7 and measured a 602-token cold prefill at 1.9 s against the existing q4_gemm_tile's 6.0 s - a 3.2 times jump, the largest single win in the project.  Sweeping the tile size showed 64x32 is already best (64x128 and 128x128 both gave 2.1 s), and the effective weight bandwidth works out at about 218 GB/s against the hand-written staging loop's 60, which explains why four rounds of tuning that loop never helped: the problem was never how the loop was written, it is that simdgroup_matrix must go through threadgroup memory and matmul2d does not.  The probe is NOT shippable because it computes only A x q and ignores the affine, and the affine turns out to be genuinely hard to fold in: our scales and biases have shape [out_f, K/64], so s depends on the output column n, which means it cannot be pre-multiplied into the activation (that is [m,k] and n-independent) and cannot be folded into the 4-bit weights without losing precision.  An exact affine therefore needs per-group accumulation in registers, which needs element access to cooperative_tensor - and that type is not in the MPP headers, it is a Metal compiler builtin, so its API needs a round of its own to pin down.  The honest strategic read: even with a free affine we would be at about 2.0 s against llama.cpp's 1.60 s, so after MPP the bottleneck moves to the non-GEMM side at roughly 1.24 s or 63 per cent of the time, whose remaining dispatch hotspot is attn_scores_softmax plus attn_out at 4,096 launches and needs a causal mask.  NEXT: solve the affine for the MPP path, then attack the non-GEMM.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

@@ -214,6 +214,30 @@ impl<'a> QLinear<'a> {
                 if let Err(e) = batch.kernel(msl::MPP, "q4_mpp_probe") {
                     eprintln!("q4_mpp_probe FAILED TO BUILD: {e}");
                 }
+                // mode 7: run the MetalPerformancePrimitives probe instead of the
+                // hand-written tile kernel.  Its output is WRONG - it computes
+                // `A x q` and ignores the per-group scale and bias - so this exists
+                // purely to measure what the tensor op costs on our shapes before
+                // investing in the affine epilogue.  The lm_head is skipped because
+                // its float output tile would be 127 MB.
+                if std::env::var("QW_GEMM_MODE").ok().and_then(|v| v.parse::<i32>().ok())
+                    == Some(7)
+                    && self.out_f <= 17408
+                {
+                    if let Ok(pk) = batch.kernel(msl::MPP, "q4_mpp_probe") {
+                        batch.encode(
+                            Dispatch::new(
+                                &pk,
+                                (self.out_f.div_ceil(32) * 128, rows.div_ceil(64), 1),
+                                (128, 1, 1),
+                            )
+                            .buf(0, x)
+                            .buf_offset(1, self.weight.buf, self.weight.offset)
+                            .buf(2, y),
+                        );
+                        return;
+                    }
+                }
                 if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
                     // Split-K.  With a small out_f the tile grid alone cannot fill
                     // the GPU, so a wide pass leans on grid.y for parallelism and

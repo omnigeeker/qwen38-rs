@@ -6178,3 +6178,51 @@ sum_k A[m,k]*(q_k*s_g + b_g) = sum_k (A[m,k]*s_g) * q_k  +  sum_g b_g * S[m,g]
 ④ 一个 K=96 的小 `matmul2d` 补 bias。总张量工作量增加约 1.6%。**
 
 **如果成功，权重流量从 57.6 GB 降到 14.4 GB，且 staging 归零 —— 这正是冷 TTFT 需要的约 4×。**
+
+### 72bk. **MPP 实测：冷 prefill 6.0 s → 1.9 s（3.2×）—— 项目最大跃升**（第 124 轮）
+
+把 `matmul2d` 探针真正派发起来（`QW_GEMM_MODE=7`），用 602-token 冷 prefill 计时：
+
+| 配置 | 冷 prefill |
+|---|---|
+| mode 0（现有 `q4_gemm_tile`） | **6.0 s** |
+| **mode 7（MPP `matmul2d`，int4 权重直喂）** | **1.9 s** |
+
+**⇒ 3.2× —— 单次改动里最大的一次。**
+
+**tile 尺寸扫描**（都跳过 lm_head）：
+
+| m × n | 冷 prefill |
+|---|---|
+| **64 × 32** | **1.9 s** |
+| 64 × 128 | 2.1 s |
+| 128 × 128 | 2.1 s |
+
+**⇒ 64×32 已是最佳。** 有效权重带宽 ≈ `14.4 GB × 2（grid.y=2）÷ (0.66 s/5 passes)` ≈ **218 GB/s**，
+是现有 GEMM staging 的 60 GB/s 的 **3.6×**。
+
+**⇒ 这也解释了为什么调优 staging 循环永远没用**：问题不在循环怎么写，
+而在于 `simdgroup_matrix` **必须**经过 threadgroup 内存，而 `matmul2d` 不需要。
+
+### 尚未解决：affine 无法折进单次 matmul
+
+我们的量化是 `w = q*s + b`，其中 **`s`、`b` 的形状是 `[out_f, K/64]`，即依赖输出通道 n**：
+
+```
+y[m,n] = Σ_k A[m,k]·q[k,n]·s[n,g] + Σ_k A[m,k]·b[n,g]
+```
+
+**因为 `s[n,g]` 依赖 n，不能把 s 预乘进激活**（激活是 `[m,k]`，与 n 无关）。
+也**不能**把 s 折进 4-bit 权重（会损失精度）。
+
+**⇒ 精确的 affine 必须按组做、在寄存器里累加，这需要 `cooperative_tensor` 的逐元素访问 ——
+而它不在 MPP 头文件里（属 Metal 编译器内建），API 未知，需要专门一轮探索。**
+
+### 诚实的战略判断
+
+即使 affine 完全免费，`1.9 s（含 lm_head 约 2.0 s）` 仍**慢于 llama.cpp 的 1.60 s**。
+**⇒ MPP 之后，瓶颈会从 GEMM 转到非 GEMM（约 1.24 s，占 63%）。**
+剩余的非 GEMM dispatch 热点是 `attn_scores_softmax` + `attn_out`（4,096 个，需因果掩码）。
+
+**注意**：mode 7 的输出是**错的**（不含 affine），所以**不能发布**，它只是探针。
+默认路径（mode 0）完全未变。

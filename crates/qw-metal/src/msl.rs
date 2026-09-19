@@ -1283,7 +1283,7 @@ using namespace mpp::tensor_ops;
 kernel void q4_mpp_probe(
     tensor<device half, dextents<int32_t, 2>> A,           // [rows, K]
     tensor<device uint4b_format, dextents<int32_t, 2>> B,  // [out_f, K]
-    tensor<device float, dextents<int32_t, 2>> C,          // [rows, out_f]
+    tensor<device half, dextents<int32_t, 2>> C,           // [rows, out_f]
     uint2 tgid [[threadgroup_position_in_grid]])
 {
     constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
