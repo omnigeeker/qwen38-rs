@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 152,
+ "round": 153,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3664,9 +3664,28 @@
     "next": "mode == 9 fixed-point dump of xsh/wsh/osh into y to find which level is zero",
     "suspicion": "XLD 41 -> 17 (smaller odd stride) may trip a simdgroup_load alignment rule"
    }
+  },
+  {
+   "round": 153,
+   "title": "Added the mode == 9 fixed-point probe - copying xsh into y after the first barrier and returning early - and it produced output BIT-IDENTICAL to mode 0, both reading gemm max_abs 4.040e1 with rel 1.000e0.  Switching to a branch that writes and returns changed the kernel's behaviour not at all.  Worth recording as a trap: rel = 1.0 alone cannot distinguish an all-zero output from a successful dump, because max_abs is max|a-b| and a = 0 makes max_abs = max|b| = max_ref, giving rel = 1.0, while dumped activations could reach the same maximum by coincidence - only bit-identical output is meaningful.  Bit-identical output leaves two explanations: xsh is all zeros, so the x staging is not writing, or the kernel never runs at all (invalid dispatch, compile failure, silently dropped) and y simply keeps its initial value, which makes every mode return the same all-zero result.  The second fits better, and the two cannot be separated while y is zero either way.  The way to break the tie is an unconditional constant store - always write 1.0f - since then y stops being zero the moment the kernel executes regardless of any dispatch fault.  Everything is reverted, the md5 is back to 35fe8f5f363f352317a379f252f7d83d and gemm-check passes.  BN=8 has now gone three rounds without converging, so it is paused by discipline and the cold-path effort should move to split-K, which does not require re-tiling the output, or to evaluating a wider prefill pass.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BN=8 reverted again; the shipped binary is restored and gemm-check PASSES)",
+   "evidence": {
+    "mode9_output": "gemm max_abs 4.040e1 rel 1.000e0",
+    "mode0_output": "gemm max_abs 4.040e1 rel 1.000e0",
+    "verdict": "bit-identical -> the early-returning branch changed nothing",
+    "two_explanations": [
+     "xsh is all zeros (x staging not writing)",
+     "the kernel never executes (y keeps its initial zeros)"
+    ],
+    "trap": "rel = 1.0 cannot distinguish zeros from a dump; only bit-identical output is a signal",
+    "next": "unconditional 1.0f store to prove the kernel runs at all",
+    "decision": "BN=8 paused after three non-converging rounds; move to split-K or a wider prefill pass"
+   }
   }
  ],
- "next": "Corrected a misjudgement in the failure record and prepared the locating experiment.  I had treated the bit-identical output before and after the dispatch fix as evidence of a stale build, but that inference was wrong: changing bn from 32 to 8 only changes grid.y from 2 to 5, and since tok0 = tg.y * BN both variants cover all 40 tokens (bn=32 gives tok0 in {0,32} with 8 columns each, covering 0..39; bn=8 gives tok0 in {0,8,...,32}, also 0..39).  Identical output was therefore the expected result, and the forced rebuild changing the md5 while the result stayed the same confirms it.  I then checked every index in the kernel and they are all self-consistent: weight writes fit (max 1271 < 1280), weight reads use r_off in {0,8,16,24} and kk in {0,8,16,24}, x writes fit (max 534 < 544), the x read layout matches the write layout, osh is 256 floats with sg=3 writing 192..255, the y write loop gives r in 0..31 and t in 0..7, the dispatch is (160*128, 5, 1) with (128,1,1), and shared is 4672 bytes.  Since the layout all lines up, the fault is not at a level I can read off.  NEXT: fixed-point observation - add a mode == 9 to the kernel that copies xsh (or wsh, or osh) verbatim into y, print it from gemm-check, and establish which level is zero.  If xsh is all zeros the x staging is not writing; if xsh has values but osh is zero then the MMA or simdgroup_load's leading-dimension requirement is at fault, since XLD is now 17 rather than 41 and the smaller odd stride may trip an alignment rule the larger one did not.",
+ "next": "Ran the mode == 9 fixed-point probe and it came back BIT-IDENTICAL to mode 0 (gemm max_abs 4.040e1, rel 1.000e0 in both), which means switching to a branch that writes xsh into y and returns early changed the kernel's behaviour not at all.  First, a trap to record: rel = 1.0 by itself cannot distinguish an all-zero output from a successful dump, because max_abs is max|a-b| and a = 0 gives max_abs = max|b| = max_ref, i.e. rel = 1.0 - and dumped activations could coincidentally reach the same maximum.  Only bit-identical output is a valid signal.  Bit-identical output across modes leaves two possibilities: xsh is all zeros so the x staging is not writing, or the kernel never executes at all (invalid dispatch, compile failure, silently dropped), leaving y at its initial value so every mode yields the same all-zero result.  The second explains bit-identical output better, and the two cannot be told apart while y is zero either way.  To break the ambiguity the kernel must write an unconditional constant - always store 1.0f - because then y stops being zero the moment the kernel runs, whatever is wrong with the dispatch.  Everything is reverted (msl.rs, bench.rs, linear.rs), the md5 is back to 35fe8f5f363f352317a379f252f7d83d and gemm-check PASSES.  BN=8 has now failed to converge for three rounds, so by discipline it is paused: the cold-path gains should go to split-K, which does not depend on re-tiling the output, or to an explicit evaluation of widening the prefill pass.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

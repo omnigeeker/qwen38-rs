@@ -4807,3 +4807,36 @@ kernel 缺陷。
 若 `xsh` 全零 ⇒ x staging 没写；若 `xsh` 有值而 `osh` 全零 ⇒ MMA 或
 `simdgroup_load` 的 leading-dimension 约束有问题（`XLD = 17` 与旧的 41 都是奇数，
 但 17 更小，可能触发了某个对齐要求）。
+
+### 72ac. `mode == 9` 定点观测：**结果与 mode 0 逐位相同** ⇒ kernel 可能根本没执行（第 93 轮）
+
+按 §72ab 的方案加了 `mode == 9`：在第一道 barrier 之后把 `xsh[0..543]` 原样写进 `y`
+然后 `return`。用 `QW_GEMM_MODE=9` 跑 `gemm-check`：
+
+```
+mode 9: gemm max_abs 4.040e1 rel 1.000e0
+mode 0: gemm max_abs 4.040e1 rel 1.000e0   ← 逐位相同
+```
+
+**先排除一个陷阱**：`rel = 1.0` 本身**不能**区分「输出全零」与「dump 出了激活值」——
+因为 `max_abs = max|a-b|`，若 `a = 0` 则 `max_abs = max|b| = max_ref` ⇒ `rel = 1.0`；
+而 dump 出的激活值与参考值之差也可能刚好达到同一个最大值。**所以只有「逐位相同」
+才是有效信号。**
+
+**⇒ mode 9 与 mode 0 输出逐位相同**，意味着**换了一个会提前 `return` 的分支，
+kernel 的行为完全没有变化**。两种可能：
+
+1. `xsh` 全零（x staging 没写）；
+2. **kernel 根本没执行**（dispatch 无效/编译失败/被静默丢弃），
+   `y` 保持初始值 ⇒ 任何 mode 都得到同一个全零结果。
+
+**第 2 种更能解释「逐位相同」** —— 若是第 1 种，mode 9 至少会把 `xsh` 的零写进
+`y[0..543]`，而那与「什么都不写」在 `y` 全零的前提下同样无法区分。
+**要打破这个歧义，必须让 kernel 无条件写一个常量**（例如永远写 `1.0f`）：
+无论 dispatch 如何出错，只要 kernel 跑了，`y` 就不再是零。
+
+**已全部回退**（`msl.rs`/`bench.rs`/`linear.rs`），md5 复原
+`35fe8f5f363f352317a379f252f7d83d`，`gemm-check` 重新 PASSED。
+
+**结论**：BN=8 这条路线**连续三轮没有收敛**，按纪律暂停 —— 冷路径的收益
+应转向**不依赖 tile 重划分**的 split-K，或直接评估「加宽 prefill pass」。
