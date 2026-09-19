@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 183,
+ "round": 184,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4532,9 +4532,40 @@
     },
     "next": "memory-level parallelism: the weight staging issues one uint load per thread per step"
    }
+  },
+  {
+   "round": 184,
+   "title": "Tested register prefetching in the GEMM weight staging, carrying the next K step's word, scale and bias in three registers across the dequantisation, the activation staging, a barrier and the MMAs with no extra shared memory, and it came out a tie: gates 19/0 with word-for-word identical output, but 2/6 and plus 0.2 per cent in the A/B, so it was reverted.  That is the third refutation of the staging bottleneck in two rounds, after double buffering (halved the barrier count but doubled shared memory and lost 9.5 per cent, 0/6) and aliasing the accumulator staging to cut shared memory 44 per cent (a tie at 1/6), so it is not intra-threadgroup stalls, not shared-memory residency and not memory-level parallelism.  I also killed the obvious alternative design: the GEMV path sweeps weights at 481 GB/s while the GEMM's staging moves them at about 24 GB/s, so a K-token GEMV would read each weight once per K tokens.  bench --tokens measures that path and it floors at about 20.5 ms per token from k=4 onward, so 128 tokens would take 16 sweeps of 166.8 ms at k=8, which is 2.67 s against the GEMM's 0.95 s - the GEMM is 2.8 times faster and the K-sweep idea is dead.  The staging puzzle is narrowed to something that is neither bandwidth, latency, buffering nor residency, with fourteen explanations excluded; within the BM=32/BN=32/BK=32/NT=128/simdgroup_matrix design, 7.76 TFLOPS looks like a hard ceiling, and beating llama.cpp on cold TTFT would need the GEMM roughly four times faster.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (register prefetch reverted - a tie, not a win)",
+   "evidence": {
+    "register_prefetch": "2/6, +0.2% - tie, reverted",
+    "staging_refutations": [
+     "double buffering -9.5% (0/6)",
+     "smem aliasing tie (1/6)",
+     "register prefetch tie (2/6)"
+    ],
+    "k_sweep_gemv_refuted": {
+     "bench_tokens": {
+      "1": "29.9 ms, 481 GB/s",
+      "2": "25.8 ms",
+      "4": "20.5 ms",
+      "8": "20.9 ms"
+     },
+     "128_tokens": {
+      "gemm": "0.95 s",
+      "gemv_k8": "2.67 s"
+     },
+     "verdict": "GEMM is 2.8x faster; the K-sweep idea is dead"
+    },
+    "excluded_count": 14,
+    "conclusion": "7.76 TFLOPS looks like a hard ceiling for this design; cold TTFT would need the GEMM ~4x faster",
+    "next": "MetalPerformancePrimitives tensor ops, or consolidate the two metrics that are already won"
+   }
   }
  ],
- "next": "Re-measured the cold prefill and found the GEMM's share has RISEN to 79 per cent - 0.95 s of each 1.2 s 128-token pass - because the dispatch work cut the non-GEMM side down to 0.25 s; even zeroing the non-GEMM would leave 4.75 s, so the GEMM is now the whole game.  Rather than guess further, I used the diagnostic modes the kernel already had, QW_GEMM_MODE, which is plumbed through the real linear.rs path and not just the bench, to decompose a 602-token cold prefill: mode 0 full is 5.9 s, mode 1 with constant weights and no dequantisation is 6.4 s and therefore NOT faster, which kills dequantisation as a target, mode 2 with the MACs skipped is 4.7 s, and mode 3 with the x staging skipped is 4.8 s.  With the non-GEMM at about 1.24 s and the GEMM at about 4.66 s, that decomposes into roughly 2.4 s of weight staging (global read plus dequant plus shared write), 1.1 s of x staging and only 1.2 s of MMA - so the GEMM is staging-bound at 26 per cent MMA, and its 7.76 TFLOPS is a data-movement ceiling, not a tensor-pipe one.  I then tested two fixes and both were refuted with the gates passing 19/0 and the output word-for-word identical, so both were reverted: double buffering the tiles, which halved the barrier count but doubled shared memory from 9,280 to 14,464 bytes, came out 0/6 and 9.5 per cent SLOWER, and aliasing the accumulator staging onto the dead tiles to cut shared memory 44 per cent to 5,184 bytes came out 1/6 at plus 1.1 per cent, a tie.  So it is neither stalls inside a threadgroup nor shared-memory residency, which points at memory-level parallelism itself: the weight staging loop issues exactly one uint load per thread per step, so its latency is fully exposed.  NEXT: raise the number of loads in flight per step without adding shared memory.",
+ "next": "Tested register prefetching in the GEMM weight staging - carrying the next K step's word, scale and bias in three registers across the dequantisation, the activation staging, a barrier and the MMAs, with no extra shared memory - and it came out a tie: gates 19/0 with word-for-word identical output, but 2/6 and plus 0.2 per cent in the A/B, so it was reverted.  That is the third refutation of the staging bottleneck in two rounds, after double buffering (which halved the barrier count but doubled shared memory and lost 9.5 per cent, 0/6) and aliasing the accumulator staging to cut shared memory 44 per cent (a tie at 1/6), so it is not intra-threadgroup stalls, not shared-memory residency and not memory-level parallelism.  I also killed the obvious alternative design: since the GEMV path sweeps weights at 481 GB/s while the GEMM's staging only moves them at about 24 GB/s, a K-token GEMV would read each weight only once per K tokens.  bench --tokens measures that path directly and it floors at about 20.5 ms per token from k=4 onward, so 128 tokens would take 16 sweeps of 166.8 ms at k=8, which is 2.67 s against the GEMM's 0.95 s - the GEMM is 2.8 times faster and the K-sweep idea is dead.  The staging puzzle is now narrowed to something that is neither bandwidth, nor latency, nor buffering, nor residency, with fourteen explanations excluded.  Within the BM=32/BN=32/BK=32/NT=128/simdgroup_matrix design, 7.76 TFLOPS looks like a hard ceiling, and beating llama.cpp on cold TTFT would need the GEMM roughly four times faster.  NEXT: either a fundamentally different GEMM (MetalPerformancePrimitives tensor ops, which would need the staging problem solved first since the MMA is only 26 per cent of the time), or accept that cold TTFT is out of reach and consolidate the two metrics that are won.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
