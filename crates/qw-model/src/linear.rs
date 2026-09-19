@@ -240,7 +240,10 @@ impl<'a> QLinear<'a> {
                         );
                     }
                     batch.barrier();
-                    if let Ok(ak) = batch.kernel(msl::MPP, "q4_mpp_affine") {
+                    if let Err(e) = batch.kernel(msl::MPP, "q4_mpp_affine_v2") {
+                        eprintln!("q4_mpp_affine FAILED TO BUILD: {e}");
+                    }
+                    if let Ok(ak) = batch.kernel(msl::MPP, "q4_mpp_affine_v2") {
                         batch.encode(
                             Dispatch::new(
                                 &ak,

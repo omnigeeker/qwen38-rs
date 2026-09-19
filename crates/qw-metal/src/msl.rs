@@ -1325,7 +1325,7 @@ kernel void q4_group_sums(
 // accumulator between groups - which is what the cooperative destination tensor
 // is for.  Nothing but A and q is ever read from memory, so this keeps the
 // whole 3.2x that the tensor path bought.
-kernel void q4_mpp_affine(
+kernel void q4_mpp_affine_v2(
     tensor<device half, dextents<int32_t, 2>> A,           // [rows, K]
     tensor<device uint4b_format, dextents<int32_t, 2>> B,  // [out_f, K]
     device const ushort* scales [[buffer(2)]],             // [out_f, ngroups] bf16
@@ -1368,8 +1368,8 @@ kernel void q4_mpp_affine(
                 // not the descriptor's (m, n) order.  Reading it the other way
                 // round leaves most of the tile unwritten and indexes the scales
                 // out of range.
-                int n = tgid.x * 32 + (int)ids[0];
-                int m = tgid.y * 64 + (int)ids[1];
+                int m = tgid.y * 64 + (int)ids[0];
+                int n = tgid.x * 32 + (int)ids[1];
                 float sc = as_type<float>((uint)scales[(size_t)n * ngroups + g] << 16);
                 float bi = as_type<float>((uint)biases[(size_t)n * ngroups + g] << 16);
                 cT.set(i, cT.get(i) + part.get(i) * sc + bi * gsum[(size_t)m * ngroups + g]);

@@ -6306,3 +6306,49 @@ G[m,g] = Σ_{k∈g} A[m,k]
 于是 affine 只剩 bias 项）。
 
 **默认路径（mode 0）完全未变**，affine 路径是 opt-in 的 mode 8。
+
+### 72bn. **affine 内核：运行了、存对了、但累加被绕过 —— 三个硬事实**（第 127 轮）
+
+对 mode 8 做了一整轮排查，得到三个**互相矛盾但都经实测确认**的事实。
+记录下来，因为它们把问题空间压缩得很小。
+
+**事实 1：affine 路径确实在执行。**
+把 `q4_store_half` 改成写常数 999，输出立刻崩坏成
+`onedtrxtrx对你的不治trxAppBundle…`（md5 `f89d2716`，len 182）。
+⇒ `q4_store_half` 在跑，且它的结果确实进入了 `y`。
+
+**事实 2：affine 内核的输出 == 纯 matmul `Σ_k A·q`，与 `sc`/`bi` 完全无关。**
+
+| 配置 | md5 | len |
+|---|---|---|
+| mode 7（单次全 K matmul，无 affine） | `c934afba…` | 161 |
+| mode 8，`sc=1, bi=0` | `c934afba…` | 161 |
+| mode 8，**真实 bf16 sc/bi** | `c934afba…` | 161 |
+| mode 8，**硬编码 `sc=2.0f`** | `c934afba…` | 161 |
+| 基线 mode 0 | `5b5f6e93…` | 182 |
+
+**把 `sc` 硬编码成 2.0 都毫无影响** —— 这排除了"查找返回值有误"、
+"缓冲区绑错"、"bf16 转换错"等一整类猜想。累加那行等于没执行。
+
+**事实 3：`get_multidimensional_index` 两个分量交换，md5 也不变。**
+⇒ 差异不是 m/n 映射造成的。
+
+**已排除的原因**（都实测过）：
+- 内核构建失败被静默吞掉 → 已加 `eprintln!`，实测 **0 次构建失败**；
+- cargo 构建失败导致跑旧二进制 → 完整构建输出确认 `Finished release`，exit 0；
+- Metal 按内核名缓存 → **改名为 `q4_mpp_affine_v2` 后行为不变**；
+- `batch.buffer` 竞技场复用 → 未证实，但 `gsum`/`cacc` 不重叠。
+
+**剩下的最强假设**：`cT` 与 `part` 这两个 cooperative tensor
+由**同一个 op、同一套模板参数**构造，layout 完全相同，
+编译器很可能把它们的 thread 存储**分配在同一处**。
+若如此，`part.set(i, 0.0f)` 会连带清零 `cT`，
+`cT.set(i, cT.get(i) + part.get(i)*sc)` 就变成 `X = X + X*sc`，
+每轮被清零，最终存的不是"96 组加权和"。
+
+**下一轮的直接验证**：改用普通 `thread float acc[N]` 数组累加
+（避免第二个 cooperative tensor），最后一次性 `cT.set(i, acc[i])` 再 `store`。
+上一轮尝试这个重构时，python 断言失败导致改动没落盘，
+之后又被 999 诊断掩盖，所以**这个重构从未真正测过**。
+
+**默认路径（mode 0）完全未变**，affine 路径是 opt-in 的 mode 8。

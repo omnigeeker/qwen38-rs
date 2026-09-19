@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 189,
+ "round": 190,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4674,9 +4674,35 @@
     "next_hypothesis": "op.run may not be writing into part, leaving the affine with only its bias term",
     "default_untouched": "yes; mode 8 is opt-in"
    }
+  },
+  {
+   "round": 190,
+   "title": "Narrowed the affine kernel's failure to three measured but contradictory facts.  (1) The affine path really executes: making q4_store_half write the constant 999 garbles the output to md5 f89d2716, so the narrowing kernel runs and its result reaches y.  (2) The affine kernel's output equals the plain matmul sum_k A*q exactly and is independent of sc and bi - mode 7 with no affine, mode 8 with sc=1/bi=0, mode 8 with the real bf16 scales and biases, and mode 8 with sc hardcoded to 2.0f all give the identical md5 c934afba len 161, against the baseline's 5b5f6e93 len 182.  Hardcoding sc=2.0 having no effect rules out a wrong lookup value, a misbound buffer and a bad bf16 conversion, and says the accumulation line is not taking effect.  (3) Swapping the two components of get_multidimensional_index also leaves the md5 unchanged, so the m/n mapping is not the cause.  Ruled out by measurement: a silently swallowed kernel build failure (eprintln added, zero failures), a failed cargo build leaving a stale binary (full build output shows Finished release, exit 0), and Metal caching by kernel name (renaming to q4_mpp_affine_v2 changed nothing).  Strongest remaining hypothesis: cT and part are cooperative tensors built from the same op with identical template arguments and layouts, so they may share thread storage - then part.set(i,0) also zeroes cT and cT.set(i, cT.get(i) + part.get(i)*sc) collapses to X = X + X*sc and is wiped each iteration, so the stored value is not the weighted sum of 96 groups.  Next test: accumulate in a plain thread float acc[N] array instead of a second cooperative tensor, then copy into cT once before store - attempted this round but never measured, because a python assertion failed so the edit never landed and the 999 diagnostic masked it.  Default path untouched; affine path stays opt-in behind QW_GEMM_MODE=8.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "default path (mode 0) verified word-for-word against the baseline md5; mode 8 is opt-in and still not numerically aligned",
+   "evidence": {
+    "fact1_affine_runs": "store_half writing 999 garbles the output to md5 f89d2716, so the path executes and reaches y",
+    "fact2_sc_ignored": {
+     "mode7_no_affine": "c934afba len 161",
+     "mode8_sc1_bi0": "c934afba len 161",
+     "mode8_real_sc_bi": "c934afba len 161",
+     "mode8_sc_hardcoded_2.0": "c934afba len 161",
+     "baseline": "5b5f6e93 len 182"
+    },
+    "fact3_index_swap": "no effect on md5, so the m/n mapping is not the cause",
+    "ruled_out": [
+     "silently swallowed kernel build failure (eprintln added, zero failures)",
+     "failed cargo build leaving a stale binary (Finished release, exit 0)",
+     "Metal caching by kernel name (renamed to q4_mpp_affine_v2, no change)"
+    ],
+    "strongest_hypothesis": "cT and part share thread storage because they come from the same op with identical layouts; part.set(i,0) then zeroes cT and the accumulation collapses to X = X + X*sc, wiped each iteration",
+    "next_test": "accumulate in a plain thread float acc[N] array, copy into cT once before store - attempted but never measured this round because a python assertion failed and the 999 diagnostic masked it",
+    "default_untouched": "yes"
+   }
   }
  ],
- "next": "Implemented the complete affine-aware MetalPerformancePrimitives GEMM and got it compiling and running.  The design is a per-group loop over the 96 weight groups with tilek=64, applying the per-(column, group) scale and bias to the in-register cooperative tensor between groups, so nothing but the activations and the 4-bit weights is ever read from memory and the 3.2x the tensor path bought is preserved.  q4_group_sums computes the per-group activation sums the bias term needs, and q4_store_half narrows the float accumulator to the half output because the tensor op's store requires matching element types.  Four API obstacles were cleared and are worth remembering: the official example's '#pragma unroll full' is not accepted by this compiler and must be '#pragma clang loop unroll(full)'; __remove_addrspace_t lives in mpp::tensor_ops::__tensor_ops_detail and needs a using-directive; this stdlib has no get_mask, it is is_valid_element, with get(i) and set(i, v) for element access and get() safely returning zero for invalid elements; and store() requires the destination element type to match the accumulator.  The kernel now builds, runs, and produces coherent text, but the output does not yet match the baseline - md5 c934afba with length 161 against the baseline's 182.  The key unsolved clue is that swapping the two components of get_multidimensional_index changes the md5 not at all, so the discrepancy is not the m/n mapping and something else is systematically wrong; the next thing to check is whether op.run actually writes into the part cooperative tensor, since a permanently zero part would leave the affine with only its bias term.  The default path is untouched and the affine path stays opt-in behind QW_GEMM_MODE=8.  NEXT: diagnose why part may be zero, get mode 8 to reproduce the baseline, then measure its cold prefill.",
+ "next": "Spent the round narrowing the affine kernel's failure down to three measured but mutually contradictory facts.  First, the affine path really does execute: making q4_store_half write the constant 999 immediately garbles the output to md5 f89d2716, so the narrowing kernel runs and its result does reach y.  Second, the affine kernel's output equals the plain matmul sum_k A*q exactly and is completely independent of sc and bi - mode 7 with no affine, mode 8 with sc=1 and bi=0, mode 8 with the real bf16 scales and biases, and mode 8 with sc hardcoded to 2.0f all produce the identical md5 c934afba with length 161, against the baseline's 5b5f6e93 with length 182.  Hardcoding sc to 2.0 having no effect at all rules out a whole class of explanations - a wrong lookup value, a misbound buffer, a bad bf16 conversion - and says the accumulation line is simply not taking effect.  Third, swapping the two components of get_multidimensional_index also leaves the md5 unchanged, so the m/n mapping is not the cause.  Ruled out along the way, each by measurement: a silently swallowed kernel build failure (an eprintln was added and there were zero failures), a failed cargo build leaving a stale binary (the full build output shows Finished release with exit 0), and Metal caching by kernel name (renaming to q4_mpp_affine_v2 changed nothing).  The strongest remaining hypothesis is that cT and part, two cooperative tensors built from the same op with identical template arguments and therefore identical layouts, are being allocated the same thread storage, in which case part.set(i, 0.0f) also zeroes cT and cT.set(i, cT.get(i) + part.get(i)*sc) collapses to X = X + X*sc and gets wiped every iteration, so what is stored is not the weighted sum of 96 groups.  The direct test for next round is to accumulate in a plain thread float acc[N] array instead of a second cooperative tensor, then copy it into cT once before store - a refactor I attempted this round but never actually measured, because a python assertion failed so the edit never landed and the 999 diagnostic then masked it.  The default path is untouched and the affine path stays opt-in behind QW_GEMM_MODE=8.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
