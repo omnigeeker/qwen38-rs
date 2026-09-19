@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 187,
+ "round": 188,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4633,9 +4633,25 @@
     "strategic_read": "even with a free affine, ~2.0 s vs llama.cpp's 1.60 s; the bottleneck then moves to the non-GEMM side at ~1.24 s (63%)",
     "next": "solve the affine, then attn_scores_softmax + attn_out (4,096 launches, causal mask)"
    }
+  },
+  {
+   "round": 188,
+   "title": "Found the key to the affine: matmul2d exposes get_destination_cooperative_tensor<left_t, right_t, element_t>() returning an in-register accumulator, and cT[i] with cT.get_mask(i) is the element access.  That is exactly what the affine needs, because s[n,g] and b[n,g] depend on the output column n, so they can neither be pre-multiplied into the activation ([m,k], n-independent) nor folded into the 4-bit weights without losing precision; the only exact route is one matmul per 64-weight group with tilek=64 and the per-group scale and bias applied to the register accumulator between groups, costing no extra memory traffic.  The Metal stdlib builtin headers are readable at /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.886/include/metal, which is how metal_cooperative_tensor was read; the path came out of a compiler error after find / timed out.  The trap: cooperative_tensor takes three template arguments and the third is an implementation-defined Layout with no public alias, so it must come from the op - cooperative_tensor<float, dextents<int32_t,2>> gives too few template arguments and neither void nor a repeated extents works.  MPPTensorOpsMatMul2d.h lines 228-300 hold a complete simpleMatMulCooperative example with a bias add to follow.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "no computation changed; the failing API probe was removed and the default path verified word-for-word",
+   "evidence": {
+    "key_api": "matmul2d::get_destination_cooperative_tensor<left,right,element>()",
+    "element_access": "cT[i] guarded by cT.get_mask(i); cT.get_capacity() for the loop bound",
+    "stdlib_path": "/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.886/include/metal",
+    "official_example": "MPPTensorOpsMatMul2d.h lines 228-300, simpleMatMulCooperative with bias add",
+    "trap": "cooperative_tensor's third template arg is an implementation-defined Layout with no public alias; take it from the op",
+    "why_this_solves_affine": "per-group tilek=64 loop with scale/bias applied to the register accumulator between groups - no extra memory traffic",
+    "next": "implement the affine-aware MPP GEMM, verify against the mlx-lm oracle, re-measure, then attack the non-GEMM"
+   }
   }
  ],
- "next": "Dispatched the MetalPerformancePrimitives probe for real under QW_GEMM_MODE=7 and measured a 602-token cold prefill at 1.9 s against the existing q4_gemm_tile's 6.0 s - a 3.2 times jump, the largest single win in the project.  Sweeping the tile size showed 64x32 is already best (64x128 and 128x128 both gave 2.1 s), and the effective weight bandwidth works out at about 218 GB/s against the hand-written staging loop's 60, which explains why four rounds of tuning that loop never helped: the problem was never how the loop was written, it is that simdgroup_matrix must go through threadgroup memory and matmul2d does not.  The probe is NOT shippable because it computes only A x q and ignores the affine, and the affine turns out to be genuinely hard to fold in: our scales and biases have shape [out_f, K/64], so s depends on the output column n, which means it cannot be pre-multiplied into the activation (that is [m,k] and n-independent) and cannot be folded into the 4-bit weights without losing precision.  An exact affine therefore needs per-group accumulation in registers, which needs element access to cooperative_tensor - and that type is not in the MPP headers, it is a Metal compiler builtin, so its API needs a round of its own to pin down.  The honest strategic read: even with a free affine we would be at about 2.0 s against llama.cpp's 1.60 s, so after MPP the bottleneck moves to the non-GEMM side at roughly 1.24 s or 63 per cent of the time, whose remaining dispatch hotspot is attn_scores_softmax plus attn_out at 4,096 launches and needs a causal mask.  NEXT: solve the affine for the MPP path, then attack the non-GEMM.",
+ "next": "Found the key to the affine: matmul2d has a public member get_destination_cooperative_tensor<left_t, right_t, element_t>() that returns an in-register accumulator, and cT[i] with cT.get_mask(i) is the element access.  That is exactly what the affine needs, because s[n,g] and b[n,g] depend on the output column n, so they can neither be pre-multiplied into the activation (which is [m,k] and n-independent) nor folded into the 4-bit weights without losing precision; the only exact route is to run one matmul per 64-weight group with tilek=64 and apply the per-group scale and bias to the register accumulator between groups, which costs no extra memory traffic.  The Metal stdlib builtin headers turned out to be readable on disk at /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/lib/clang/32023.886/include/metal, which is how I read metal_cooperative_tensor; I got the path out of a compiler error after find / timed out.  The trap worth remembering is that cooperative_tensor takes three template arguments and the third is an implementation-defined Layout that has no public alias in the MPP headers, so it must be obtained from the op rather than spelled out - cooperative_tensor<float, dextents<int32_t,2>> gives too few template arguments and neither void nor a repeated extents works.  The official header MPPTensorOpsMatMul2d.h lines 228 to 300 contain a complete simpleMatMulCooperative example including a bias add that I can follow directly.  NEXT: implement the affine-aware MPP GEMM with a 96-iteration per-group loop over the cooperative accumulator, verify it against the mlx-lm oracle through the gates, then re-measure cold prefill and turn to the non-GEMM side.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

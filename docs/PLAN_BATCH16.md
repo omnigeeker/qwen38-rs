@@ -6226,3 +6226,51 @@ y[m,n] = Σ_k A[m,k]·q[k,n]·s[n,g] + Σ_k A[m,k]·b[n,g]
 
 **注意**：mode 7 的输出是**错的**（不含 affine），所以**不能发布**，它只是探针。
 默认路径（mode 0）完全未变。
+
+### 72bl. **找到 affine 的钥匙：`matmul2d::get_destination_cooperative_tensor()`**（第 125 轮）
+
+affine 的障碍是：`s[n,g]`、`b[n,g]` 依赖输出通道 n，所以无法预乘进激活，也无法折进 4-bit 权重。
+唯一的精确出路是**按组做 matmul、在寄存器里累加**，这需要逐元素访问累加器。
+
+**Metal stdlib 头文件的真实路径（之前 `find /` 超时，这次从编译错误里拿到了）：**
+```
+/System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/
+  Libraries/lib/clang/32023.886/include/metal/metal_cooperative_tensor
+```
+（`metal_tensor`、`metal_cooperative_tensor` 等内建头都在这里，可直接读。）
+
+**`cooperative_tensor<T, E, L>` 的第三个模板参数是 Layout，MPP 内部生成，
+公开头文件里没有直接可用的别名 —— 所以不要自己声明它，要从 op 上取：**
+
+```metal
+constexpr auto desc = matmul2d_descriptor(64, 32, 64 /* tilek = 一个组 */,
+                                           false, true, false);
+matmul2d<desc, execution_simdgroups<4>> op;
+
+auto mA = A.static_slice<64, 64>(tgid.y*64, 0);
+auto mB = B.static_slice<32, 64>(tgid.x*32, 0);
+
+// ★ 关键 API：从 op 取目标 cooperative tensor
+auto cT = op.get_destination_cooperative_tensor<
+              __remove_addrspace_t<decltype(mA)>,
+              __remove_addrspace_t<decltype(mB)>, float>();
+
+#pragma unroll full
+for (uint16_t i = 0; i < cT.get_capacity(); ++i)
+    if (cT.get_mask(i)) cT[i] = 0;
+
+op.run(mA, mB, cT);          // 结果留在寄存器，不落显存
+```
+
+**`cT[i]` 就是逐元素访问，`cT.get_mask(i)` 是有效性守卫**（官方文档原话：
+"not all threads and even all elements within a thread need be valid"）。
+
+**⇒ 这正是 affine 需要的：按 96 个组循环，每组 `tilek=64`，
+组间对 `cT[i]` 施加 `s[n,g]` / `b[n,g]`，累加全在寄存器里 —— 零额外显存流量。**
+
+官方示例位置：`MPPTensorOpsMatMul2d.h` 第 228–300 行注释里有一个完整的
+`simpleMatMulCooperative` 内核（含 bias add 的写法），下一轮照抄即可。
+
+**踩坑记录**：`cooperative_tensor<float, dextents<int32_t,2>>` 会报
+"too few template arguments"；补 `void` 或重复 extents 都不对 —— **不要去猜第三个参数，
+Layout 必须从 op 上取。**

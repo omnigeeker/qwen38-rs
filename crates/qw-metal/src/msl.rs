@@ -1294,4 +1294,5 @@ kernel void q4_mpp_probe(
     auto mC = C.slice(tgid.y * 64, tgid.x * 32);
     op.run(mA, mB, mC);
 }
+
 "#;
