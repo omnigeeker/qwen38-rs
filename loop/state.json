@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 147,
+ "round": 148,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3526,9 +3526,54 @@
     "accuracy": "bit-identical for both variants",
     "next": "cool down, verify baseline stability, then eight-round interleaved A/B of uint2/BK64"
    }
+  },
+  {
+   "round": 148,
+   "title": "Ruled out vectorising the staging with a clean test and, in doing so, found the difference that actually matters.  After cooling the GPU for 150 seconds and confirming the baseline was stable at 11.698/11.589/11.679 (0.9 percent spread), eight interleaved rounds gave medians of 11.668 for BK=32 against 11.714 for uint2/BK64 - 0.4 percent slower and losing 7 of the 8 pairs.  Since uint4/BK128 was confounded by BK, this clean comparison refutes the instruction-issue hypothesis: vectorising the staging buys nothing.  What the run did reveal is that the GEMM runs eight times fewer threads than the GEMV - (out_f/BM)*NT = 160*128 = 20480 for a 5120-row tensor against the GEMV's out_f*32 = 163840 - and that at BK=32, BM*nwords is exactly 128 = NT, so each thread issues a single four-byte load per k0 step inside a serial load-use-store chain, with no memory-level parallelism at all to hide the latency.  Parallelism and latency hiding are now the best remaining explanation, ahead of bandwidth, bank conflicts, shared capacity and instruction count.  That revives split-K, whose rejection no longer stands: the occupancy probe that killed it measured shared CAPACITY, worth only 2.6 percent, which is a different constraint from thread or warp count.  Split-K takes the threadgroup count from 160 to 320 and doubles parallelism for one extra reduction pass; shrinking BM from 32 to 16 doubles it as well at the cost of halving wsh and reducing reuse.  Next: BM=16 as the smaller change, or split-K directly, validated with eight interleaved rounds.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (both staging variants remain reverted; BK=32 single-word staging is the shipped default)",
+   "evidence": {
+    "cooldown_probe": [
+     11.698,
+     11.589,
+     11.679
+    ],
+    "interleaved_bk32": [
+     11.572,
+     11.667,
+     11.668,
+     11.603,
+     11.609,
+     11.681,
+     11.68,
+     11.668
+    ],
+    "interleaved_u2": [
+     11.617,
+     11.723,
+     11.746,
+     11.634,
+     11.714,
+     11.686,
+     11.778,
+     11.713
+    ],
+    "median_bk32": 11.668,
+    "median_u2": 11.714,
+    "verdict": "uint2 0.4% slower, 7/8 pairs; instruction-issue hypothesis refuted",
+    "threads": {
+     "gemv": 163840,
+     "gemm": 20480,
+     "ratio": 8
+    },
+    "root_cause_candidate": "parallelism / latency hiding - one 4-byte load per thread per k0 step in a serial chain",
+    "revived": "split-K (the probe that rejected it measured shared capacity, not thread count)",
+    "next": "BM=16 or split-K, eight interleaved rounds"
+   }
   }
  ],
- "next": "Tested the vectorised staging two ways and neither can be adopted yet.  uint4 (four words, 32 weights, per thread) with BK=128 - which makes nwords4 4 so BM*nwords4 is exactly 128 = NT with every thread busy - was 40 percent SLOWER over six interleaved rounds (16.07-16.17 against 11.46-11.90), consistent in all six.  But that test is confounded by BK itself: BK=128 alone was already measured at 24.585 against BK=64's 16.580, a 48 percent penalty, so most of the regression is BK and the instruction-issue hypothesis is NOT refuted by it.  The cleaner variant, uint2 (two words, 16 weights per thread) at BK=64, where nwords4 is 4 and BM*4 is again 128 = NT with the weight tile back at BK=64, gave 12.602 / 14.503 / 18.077 / 18.170 against BK=32's 14.510 / 17.102 / 18.438 / 18.119 - the first two rounds favour uint2 clearly and the last two are a dead heat, but the machine drifted from 14.5 to 18.4 ms (+27 percent) inside the run, so four rounds cannot decide it.  Both variants had bit-identical accuracy.  DECISION: reverted to the committed, verified BK=32 single-word staging, because a result that cannot be resolved under drift is not evidence.  NEXT: let the GPU cool, confirm two consecutive baseline readings are stable, then re-run uint2/BK64 as an EIGHT-round interleaved A/B.  If it holds it is the second evidence-backed cold-path win after the x staging fix's 1.7x.",
+ "next": "uint2/BK64 is NOT faster: after cooling 150 s and confirming the baseline was stable (11.698/11.589/11.679, 0.9 percent spread), eight interleaved rounds gave medians of 11.668 for BK=32 against 11.714 for uint2/BK64 - 0.4 percent slower, losing 7 of 8 pairs.  So vectorising the staging buys nothing, and with the clean comparison (uint4/BK128 having been confounded by BK) the instruction-issue hypothesis is now REFUTED.  But the experiment surfaced the real difference: the GEMM runs far fewer threads than the GEMV - (out_f/BM)*NT = 160*128 = 20480 for a 5120-row tensor against the GEMV's out_f*32 = 163840, eight times as many - and at BK=32 BM*nwords is exactly 128 = NT, so each thread issues ONE four-byte load per k0 step inside a serial load-use-store chain with no memory-level parallelism to hide latency.  Parallelism and latency hiding are therefore the best remaining explanation, ahead of bandwidth, conflicts, capacity and instruction count.  This REVIVES split-K, and the reason it was dropped does not hold: the occupancy probe that rejected it measured shared CAPACITY (worth 2.6 percent), not thread or warp count, which is a different constraint.  Split-K halves K and takes the threadgroup count from 160 to 320, doubling parallelism for the price of one extra reduction; shrinking BM from 32 to 16 doubles it too at the cost of halving wsh and reducing reuse.  NEXT: try BM=16 first as the smaller change - one constant plus the sg mapping - or go straight to split-K, and validate with EIGHT interleaved rounds.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
