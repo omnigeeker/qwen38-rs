@@ -87,7 +87,15 @@ const PREFIX_BLOB_MAX_MB: usize = 4096;
 /// ~320 - so a boundary at 6884 matches nothing, while one a little further
 /// back lands inside the shared region and lets the request resume there.
 /// The spacing is deliberately finer near the end, where the variation is.
-const PREFIX_LADDER: [usize; 10] = [0, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096];
+///
+/// Offset 0 used to be in this list: the chunk that ended at the prompt end was
+/// exported and became the boundary a repeat request resumed from, which is why
+/// a hit had to re-run that chunk.  The prompt-end snapshot supersedes it - it
+/// sits AT the end and carries the first token's logits, so a hit computes
+/// nothing - and leaving 0 in would pay a second 28.6 ms export on every cold
+/// prompt for a boundary nothing prefers.  The disk store moved with it: a
+/// 128-256 token prompt used to reach disk only through offset 0.
+const PREFIX_LADDER: [usize; 9] = [256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096];
 
 /// Prefixes on disk, keyed by content rather than by slot, so they outlive the
 /// process and are shared by every slot and every session.
@@ -1263,8 +1271,25 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 match model.export_prefix_with_logits(slot, a.pf, idx) {
                     Ok(blob) => {
                         if blob.len() <= PREFIX_BLOB_MAX_MB * 1024 * 1024 {
-                            cache.record_boundary(slot, a.ids.clone(), Some(blob));
+                            cache.record_boundary(slot, a.ids.clone(), Some(blob.clone()));
                             a.end_snapshot = true;
+                            // The disk copy rides along, so the next process starts
+                            // warm at the prompt END rather than one chunk short.
+                            // Only for a prefix long enough to be a real agent system
+                            // prompt: the blob costs about 0.1 MB a token.  This is
+                            // the same guard the ladder used.
+                            if a.pf >= 128 {
+                                if let Some(d) = prefixes::DiskPrefix::from_env() {
+                                    match d.store(&a.ids, &blob) {
+                                        Ok(()) => tracing::info!(
+                                            "slot {slot}: persisted {} tokens ({} MB) to disk",
+                                            a.pf,
+                                            blob.len() / (1024 * 1024)
+                                        ),
+                                        Err(e) => tracing::warn!("prefix store: {e}"),
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(e) => tracing::warn!("prompt-end snapshot failed: {e}"),

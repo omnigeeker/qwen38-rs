@@ -3917,3 +3917,45 @@ ladder 的 `k=0` 那次导出现在被 prompt 末尾快照取代了（前者停�
 且带 logits）。把 `k=0` 从 `PREFIX_LADDER` 去掉、并把 `DiskPrefix::store` 挪到
 prompt 末尾那个块里，冷路径的导出次数就回到改动前的 1 次，而且**磁盘缓存也能
 享受零重算命中**。要小心：现在 128–256 token 的 prompt 只靠 `k=0` 落盘。
+
+---
+
+## 71. 冷路径回到净零；并且**「GEMM 数值不可用」这个结论被实测推翻了**（第 65 轮）
+
+### ① ladder 去掉 `k=0`，磁盘落盘挪到 prompt 末尾
+
+`PREFIX_LADDER` 从 `[0, 256, …]` 变成 `[256, 384, …, 4096]`，`DiskPrefix::store`
+从 ladder 块挪进 prompt 末尾块（仍然 `pf >= 128` 才落盘）。效果：
+
+- 冷 prompt 的导出次数从 **2 次回到 1 次**（§70 多加的那 28.6 ms 消失）；
+- **磁盘缓存现在也存的是 prompt 末尾的 v2 blob**，所以跨进程命中同样**零重算**
+  （`import_prefix` 本来就接受 v2）；
+- 128–256 token 的 prompt 仍然落盘（以前只靠 `k=0`，现在由 prompt 末尾块负责）。
+
+### ② 全量 497 个 linear 的 GEMM 精度：**worst rel 9.662e-4，全部 PASS**
+
+`QW_GEMM_CHECK_ALL=1 qwen38 gemm-check`，497 个张量全跑完：
+
+```
+gemm-check: worst relative error 9.662e-4 at ...layers.37.mlp.down_proj.weight -> PASSED
+```
+
+对照**出厂 GEMV 路径**（`qwen38 check`，8 个真实张量，同一套 CPU 参考）：
+
+| 张量 | GEMV max_abs | GEMM max_abs |
+|---|---|---|
+| layers.0.mlp.gate_proj | 5.0e-4 | 9.5e-4 |
+| layers.0.mlp.down_proj | 1.0e-3 | ~1.95e-3（最差档） |
+| layers.0.linear_attn.out_proj | 1.6e-3 | — |
+
+**⇒ 两条路径的逐元素误差是同一量级（GEMM 最差 1.95e-3，GEMV 最差 1.6e-3），
+GEMM 并不比出厂路径差。** 而出厂 GEMV 带着同样的误差通过了 `oracle parity 6/6`。
+
+**这直接推翻了 §28–29 记下的「GEMM 数值路径不兼容（1e-3 逐 linear 放大到 ~17 logits）」
+——1e-3 的扰动在两个 ~1e-3 精度实现之间本来就会放大成十几 logits，那是任何两个
+不同实现都会有的差异，不是 GEMM 特有的缺陷。** 判断 GEMM 能不能用的正确判据是
+`oracle parity 6/6`（对 mlx-lm），而不是「和 GEMV 的输出是否逐位相同」。
+
+⚠️ 但要注意：**即使 GEMM 数值上可用，它现在也只比 GEMV 快 1.17×**
+（272 ms vs 317 ms 每 32-token pass），因为 staging 占 212 ms。
+所以这只是「让 GEMM 线重新可用」的前提，本身还不足以赢冷 TTFT。
