@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 133,
+ "round": 134,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3143,9 +3143,32 @@
     "basis": "GEMM more accurate on all four tensors (max_abs 1.3-1.9x, rel 1.5-1.8x) and 2.2x faster on cold prefill",
     "superseded": "section 72b - the divergence is the shipped GEMV drifting, not the GEMM"
    }
+  },
+  {
+   "round": 134,
+   "title": "Measured cold prefill with the GEMM as the default: 5.2 s and 9.8 s on a 390-token prompt, read from the server's own 'prompt in after' log line, against the scalar default's best-ever 14.2 s and its 21-29 s under load - consistent with the 2.2x measured in the paired A/B.  The Ollama half of the comparison is invalid this round and nothing from it is quotable.  Two separate faults, both recorded so they are not repeated: the first script started its timer AFTER urlopen, which blocks until the response headers arrive and Ollama only sends those once prefill is done, so it measured a nonsense 0.00 s; and after moving the timer before the request it still reported 0.12 and 0.22 s for a prompt that cannot take less than about 0.85 s at 468 tok/s, which is an Ollama prefix-cache hit, because the previous run had used byte-identical prompt text.  That is precisely the warming trap noted many rounds ago.  Next round must re-measure Ollama with a fresh random prefix every time and print prompt_eval_count to prove it really re-prefilled, and then re-run the 9-length consistency test to record which lengths differ under the GEMM default and check that the differences go toward the more accurate path.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (unchanged; no code change this round)",
+   "evidence": {
+    "ours_cold_ttft_s": [
+     5.2,
+     9.8
+    ],
+    "prompt_tokens": 390,
+    "scalar_default_reference_s": {
+     "best": 14.2,
+     "under_load": [
+      21.32,
+      28.81
+     ]
+    },
+    "ollama_measurement": "INVALID - prefix cache hit (0.12/0.22 s for a >=0.85 s prompt); first script also timed from after urlopen",
+    "next": "fresh random prefix per round plus prompt_eval_count to prove re-prefill"
+   }
   }
  ],
- "next": "THE GEMM IS NOW THE DEFAULT PREFILL PATH AND THE GATES PASS.  QW_GEMM_MIN_ROWS default changed from usize::MAX to 8 in linear.rs, so every prefill pass with rows >= 8 goes through the GEMM (set it very high to fall back to the scalar loop).  bash tools/accept.sh gives 19 passed / 0 failed, ACCEPTED - and that suite contains oracle parity 6/6 against mlx-lm, server==cli, spec==plain, chunk-4-vs-chunk-32 agreement and three cache-consistency checks, so correctness against the ORACLE holds with the GEMM as the default.  The justification is the table from the previous round: same harness, same x, same CPU reference, the GEMM better on all four tensors by 1.3-1.9x on max_abs and 1.5-1.8x on rel.  Section 72b's wording is now obsolete - the 1-of-9 divergence should be read as the shipped GEMV drifting away from the correct answer, not as the GEMM breaking equivalence - and from here the equivalence baseline is the mlx-lm oracle, not GEMV output.  NEXT: re-measure the paired cold TTFT against Ollama with the GEMM default (expect the 2.2x), and re-run the 9-length consistency test to record which lengths now differ and confirm they differ in the direction of the more accurate path.",
+ "next": "Measured cold TTFT with the GEMM default: 5.2 s and 9.8 s on a 390-token prompt (server log 'prompt in after'), against the scalar default's best of 14.2 s and 21-29 s under load - consistent with the 2.2x.  The Ollama side of the comparison is INVALID this round for two reasons, both recorded: the first script set t0 after urlopen, which blocks until the response headers arrive and Ollama only sends them after prefill, producing a nonsense 0.00 s; and after fixing that it still reported 0.12 and 0.22 s for a prompt that needs at least 0.85 s at 468 tok/s, which is an Ollama PREFIX CACHE HIT because the previous run used byte-identical prompt text - exactly the warming trap documented long ago.  So no cold-TTFT comparison number is quotable until Ollama is re-measured with a fresh random prefix each round AND prompt_eval_count is printed to prove it really re-prefilled.  NEXT: that clean paired measurement, then re-run the 9-length consistency test to record which lengths now differ under the GEMM default and confirm the differences go in the direction of the more accurate path.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
