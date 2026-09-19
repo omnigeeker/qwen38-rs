@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 164,
+ "round": 165,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3968,9 +3968,36 @@
     "excluded_count": 8,
     "next": "a structurally different kernel is required"
    }
+  },
+  {
+   "round": 165,
+   "title": "Tested BM=64/BN=64/NT=256, deliberately built so that eight simdgroups hold only four accumulators each and register pressure matches the shipped kernel - the flaw that cost the earlier BN=64 attempt 27 percent.  The weight staging then has exactly BM*nwords = 256 = NT work items and shared totals 26176 B, inside the 32768 limit.  Accuracy was bit-identical and the gates passed 19/0.  Interleaved after a 300 s cooldown it won the first three rounds - base 6.447/6.448/6.536 against 6.172/6.178/6.044, medians 6.448 versus 6.172, roughly 4.3 percent - but round 4 returned 935.494 s against the base's 5.510 s, a fifteen-minute outlier no load can explain, pointing to an occasional hang or retry in the 256-thread configuration.  Not adopted: the gain is only 4.3 percent and the stability risk is unexplained, and by discipline it is better to forgo 4.3 percent than to ship a default that may intermittently hang.  Reverted, md5 restored to 3826791b87de8814392d476370de4612, gemm-check PASSES.  The weightier conclusion is that the GEMM is not traffic-bound either: halving the traffic bought only 4.3 percent, which together with staging being 89 percent of the time means the staging's cost is governed by the fixed per-iteration expense - latency, instructions, synchronisation - rather than by bytes.  That fits the instruction hypothesis also having failed: uint2 halved the instructions for nothing and BN=64 halved the bytes for 4.3 percent, so both dimensions are at diminishing returns.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BM=64/BN=64/NT=256 reverted; the shipped build is restored)",
+   "evidence": {
+    "base": [
+     6.447,
+     6.448,
+     6.536,
+     5.51
+    ],
+    "variant": [
+     6.172,
+     6.178,
+     6.044,
+     935.494
+    ],
+    "rounds_1_3": "3/3 wins, median 6.448 -> 6.172 = 4.3%",
+    "round_4_anomaly": "935.494 s (15.6 min) vs 5.510 s - unexplained, suggests an occasional hang",
+    "decision": "not adopted: 4.3% gain does not justify an unexplained stability risk",
+    "design": "NT=256, 8 simdgroups, 4 accumulators each; BM*nwords = 256 = NT; shared 26176 B",
+    "conclusion": "the GEMM is not traffic-bound: halving traffic bought 4.3%, so the staging's cost is the fixed per-iteration expense, not bytes",
+    "next": "both instructions and bytes are at diminishing returns - a structurally different kernel is needed"
+   }
   }
  ],
- "next": "Refuted the coalescing hypothesis too, and hit a hard limit on the way.  BK=256 failed to build with a clear message - 'Threadgroup memory size (41984) exceeds the maximum threadgroup memory allowed (32768)' - which the loud error added in an earlier round produced directly; without it this would have been another all-zero mystery.  Backing off to BK=128 keeps shared at 23296 B, inside the limit, and with a uint4 per lane eight lanes share a row so a warp touches 8 rows x 64 contiguous bytes instead of 8 rows x 16.  Accuracy was bit-identical and the gates were 19/0 ACCEPTED, but four interleaved rounds after a 300 s cooldown gave bk32 6.011/6.015/5.975/6.081 against bk128+uint4's 8.523/8.511/8.429/8.564 - 0 of 4, 41 percent slower.  So coalescing is refuted, and the reason is instructive: at BK=32 the supposedly wasted seven eighths of each cache line is not wasted at all, because the same warp reads the next 16 bytes of the same row on the next k0 iteration and L2 absorbs it.  The 12.5 percent line-utilisation figure was a misleading metric; the real effective bandwidth was never that poor, and BK=128's shared-memory rise from 9.3 KB to 23.3 KB cost more occupancy than the access pattern gained.  Reverted, md5 back to 3826791b87de8814392d476370de4612, gemm-check PASSES.  The staging now has eight explanations excluded - dequantisation, per-step overhead, bank conflicts, global bandwidth, shared capacity, instruction count, parallelism beyond grid.y = 4, traffic via BN, and coalescing - so its 61 GB/s is the hard limit of this kernel design and further parameter tuning has nothing left to give.  Any further cold-path gain needs a structurally different kernel.",
+ "next": "Tested BM=64/BN=64/NT=256, designed so eight simdgroups keep only four accumulators each and the register pressure matches the shipped kernel, which was the flaw that made the earlier BN=64 attempt lose 27 percent.  The weight staging then has exactly BM*nwords = 256 = NT work items and shared comes to 26176 B, inside the 32768 limit.  Accuracy was bit-identical and the gates passed 19/0.  Interleaved after a 300 s cooldown it won the first three rounds - base 6.447/6.448/6.536 against 6.172/6.178/6.044, medians 6.448 to 6.172, about 4.3 percent - but round 4 produced 935.494 s against the base's 5.510 s, a fifteen-minute outlier that no load can explain and that points to an occasional hang or retry in the 256-thread configuration.  NOT ADOPTED, for two reasons: the gain is only 4.3 percent, and there is an unexplained stability risk.  By discipline it is better to forgo 4.3 percent than to ship a default that may intermittently hang.  Reverted, md5 back to 3826791b87de8814392d476370de4612, gemm-check PASSES.  The more important conclusion is that the GEMM is not traffic-bound either: halving the weight traffic bought only 4.3 percent, which alongside the earlier finding that staging is 89 percent of the time means the staging's cost is set by the fixed per-iteration expense - latency, instructions, synchronisation - and not by the number of bytes.  That is consistent with the instruction-count hypothesis having been refuted too: uint2 halved the instructions and bought nothing, BN=64 halved the bytes and bought 4.3 percent, so both dimensions have hit diminishing returns.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
