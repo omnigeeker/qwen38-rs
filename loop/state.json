@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 148,
+ "round": 149,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3571,9 +3571,39 @@
     "revived": "split-K (the probe that rejected it measured shared capacity, not thread count)",
     "next": "BM=16 or split-K, eight interleaved rounds"
    }
+  },
+  {
+   "round": 149,
+   "title": "Found decisive evidence that parallelism is the cold-path bottleneck, by changing nothing but the token count.  bench --rows 8 --tokens N sets grid.y = N/32 and so the threadgroup count, and ms per token reads 11.548 at 32 tokens (grid.y 1, 370 ms per pass), 7.941 at 64, 7.427 at 128 (grid.y 4, 951 ms per pass) and 8.086 at 256.  That is a 36 percent improvement between 32 and 128 tokens, with 256 slightly worse, so saturation is near 128.  This confirms the parallelism and latency-hiding hypothesis from the previous round: at 32 tokens the GEMM launches only out_f/32 threadgroups - 160 for a 5120-row tensor - roughly two waves across 40 SMs, nowhere near enough to hide the staging latency, while quadrupling the threadgroup count overlaps it.  The consequence is uncomfortable: PREFILL SITS EXACTLY AT THE WORST POINT, because PASS_ROWS_MAX is 32, so grid.y is 1 and every prefill pass pays the 11.548 ms per token case.  Two fixes would capture the same 36 percent - split-K, cutting K into four with a second reduction pass, which leaves the chunk structure untouched and is the lower-risk route, or widening the prefill pass from 32 rows to 128, which requires enlarging BATCH_MAX, PASS_ROWS_MAX and the x, y and conv-ring buffers and changes every existing path.  Chose split-K for next round, confined to the GEMM kernel plus one reduction, validated with eight interleaved rounds.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (measurement only; no code change)",
+   "evidence": {
+    "ms_per_token_by_tokens": {
+     "32": 11.548,
+     "64": 7.941,
+     "128": 7.427,
+     "256": 8.086
+    },
+    "grid_y": {
+     "32": 1,
+     "64": 2,
+     "128": 4,
+     "256": 8
+    },
+    "improvement_32_to_128": "36%",
+    "saturation": "near 128 tokens",
+    "verdict": "parallelism / latency hiding confirmed as the bottleneck",
+    "prefill_at_worst_point": "PASS_ROWS_MAX = 32 -> grid.y = 1",
+    "fixes": [
+     "split-K (K into 4 + one reduction; lower risk)",
+     "widen the prefill pass to 128 rows (needs BATCH_MAX/PASS_ROWS_MAX and buffers enlarged)"
+    ],
+    "next": "split-K, eight interleaved rounds"
+   }
   }
  ],
- "next": "uint2/BK64 is NOT faster: after cooling 150 s and confirming the baseline was stable (11.698/11.589/11.679, 0.9 percent spread), eight interleaved rounds gave medians of 11.668 for BK=32 against 11.714 for uint2/BK64 - 0.4 percent slower, losing 7 of 8 pairs.  So vectorising the staging buys nothing, and with the clean comparison (uint4/BK128 having been confounded by BK) the instruction-issue hypothesis is now REFUTED.  But the experiment surfaced the real difference: the GEMM runs far fewer threads than the GEMV - (out_f/BM)*NT = 160*128 = 20480 for a 5120-row tensor against the GEMV's out_f*32 = 163840, eight times as many - and at BK=32 BM*nwords is exactly 128 = NT, so each thread issues ONE four-byte load per k0 step inside a serial load-use-store chain with no memory-level parallelism to hide latency.  Parallelism and latency hiding are therefore the best remaining explanation, ahead of bandwidth, conflicts, capacity and instruction count.  This REVIVES split-K, and the reason it was dropped does not hold: the occupancy probe that rejected it measured shared CAPACITY (worth 2.6 percent), not thread or warp count, which is a different constraint.  Split-K halves K and takes the threadgroup count from 160 to 320, doubling parallelism for the price of one extra reduction; shrinking BM from 32 to 16 doubles it too at the cost of halving wsh and reducing reuse.  NEXT: try BM=16 first as the smaller change - one constant plus the sg mapping - or go straight to split-K, and validate with EIGHT interleaved rounds.",
+ "next": "DECISIVE: parallelism is the bottleneck.  Changing nothing but bench --rows 8 --tokens N, which sets grid.y = N/32 and therefore the threadgroup count, gives 11.548 ms per token at 32 tokens (grid.y 1, 370 ms per pass), 7.941 at 64, 7.427 at 128 (grid.y 4, 951 ms per pass) and 8.086 at 256 - a 36 percent improvement from 32 to 128 tokens, with 256 slightly worse, so saturation is near 128.  That confirms the parallelism and latency-hiding hypothesis: at 32 tokens the GEMM has only out_f/32 threadgroups (160 for a 5120-row tensor), about two waves on 40 SMs, which is not enough to hide the staging latency, and quadrupling the threadgroup count overlaps it properly.  The important consequence is that PREFILL SITS EXACTLY AT THE WORST POINT: PASS_ROWS_MAX is 32, so grid.y is 1 and every prefill pass pays the 11.548 ms per token case.  Two fixes capture the same 36 percent: split-K, cutting K into four and adding the four partial sums in a second pass, which leaves the chunk structure alone and is the lower-risk option; or widening the prefill pass from 32 rows to 128, which needs BATCH_MAX, PASS_ROWS_MAX and the x/y/conv-ring buffers all enlarged and changes the behaviour of every existing path.  NEXT: split-K, confined to the GEMM kernel plus one reduction, validated with eight interleaved rounds.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
