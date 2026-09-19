@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 131,
+ "round": 132,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3075,9 +3075,63 @@
     "process_failure": "four rounds of comparing rel against max_abs; three wrong conclusions",
     "next": "one harness, same tensors, both kernels, both metrics - no new hypotheses"
    }
+  },
+  {
+   "round": 132,
+   "title": "Built the apples-to-apples harness and it REVERSES the previous round's conclusion.  gemm_check's CPU-reference branch now runs the GEMM and the shipped K4_U4HX kernel against the same CPU reference on the same x (same seed, 40 tokens) and prints max_abs and rel for both.  The GEMM is more accurate on ALL FOUR tensors: out_proj 1.097e-2 / 2.715e-4 against 2.028e-2 / 5.020e-4, gate_proj 9.508e-4 / 3.347e-4 against 1.265e-3 / 4.453e-4, in_proj_a 9.441e-4 / 2.856e-4 against 1.752e-3 / 5.298e-4, and lm_head 9.847e-4 / 2.818e-4 against 1.698e-3 / 4.857e-4 - better by 1.3-1.9x on max_abs and 1.5-1.8x on rel.  So last round's 'the GEMM is worse' was wrong and the round before's reversal was right, and the mistake was precisely the one I had just promised to stop making: comparing check's numbers, from a different run with a different x, against gemm-check's.  Same harness, same tensors, same reference: the GEMM wins everywhere.  This matters because the GEMM is therefore BOTH 2.2x faster on cold prefill AND more accurate than what we ship, which means the 1-of-9 prompt divergence is the shipped GEMV drifting away from the correct answer, not the GEMM, and the equivalence baseline defended for many rounds is the worse of the two paths.  Next: make QW_GEMM_MIN_ROWS default to 8 and re-baseline on the mlx-lm oracle rather than on GEMV output.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (the harness change only adds a print in gemm-check's CPU branch)",
+   "evidence": {
+    "same_harness_max_abs_and_rel": {
+     "layers.0.linear_attn.out_proj": {
+      "gemm": [
+       0.01097,
+       0.0002715
+      ],
+      "gemv": [
+       0.02028,
+       0.000502
+      ]
+     },
+     "layers.0.mlp.gate_proj": {
+      "gemm": [
+       0.0009508,
+       0.0003347
+      ],
+      "gemv": [
+       0.001265,
+       0.0004453
+      ]
+     },
+     "layers.0.linear_attn.in_proj_a": {
+      "gemm": [
+       0.0009441,
+       0.0002856
+      ],
+      "gemv": [
+       0.001752,
+       0.0005298
+      ]
+     },
+     "lm_head": {
+      "gemm": [
+       0.0009847,
+       0.0002818
+      ],
+      "gemv": [
+       0.001698,
+       0.0004857
+      ]
+     }
+    },
+    "verdict": "the GEMM is more accurate on every tensor; the shipped GEMV is the drifting path",
+    "tokens": 40,
+    "next": "default QW_GEMM_MIN_ROWS=8 and re-baseline on the mlx-lm oracle"
+   }
   }
  ],
- "next": "Killed the output-side hypothesis too: osh is threadgroup float (msl.rs:720) and the final write is a single (half) rounding, so the output path was already f32.  Three hypotheses are now dead - weight rounding (the whi+wlo split changed nothing), the output intermediate (this round), and my mis-read that the GEMV was the inaccurate one.  The real problem is that across four rounds I repeatedly compared rel (normalised by max_ref or rms) against max_abs and drew three wrong conclusions from it; the out_proj row is the tell - max_abs 1.097e-2 alongside rel 2.715e-4 is not a contradiction, it just means that tensor's output magnitude is large, and I read it as evidence of a large error.  STOPPING that practice.  The only thing next round should do, with no new hypotheses, is build ONE harness that measures both K4_U4HX and the GEMM against the CPU on the SAME tensor set and reports BOTH max_abs and max_abs/max|y| for each.  That single table answers which is more accurate and by how much.  Until it exists the GEMM stays opt-in and no further kernel change is made on speculation.",
+ "next": "BUILT THE APPLES-TO-APPLES HARNESS AND IT REVERSES LAST ROUND.  gemm_check's CPU branch now runs both the GEMM and the shipped K4_U4HX kernel against the SAME CPU reference on the SAME x (same seed, 40 tokens) and prints both max_abs and rel.  Result on all four tensors: GEMM is MORE accurate - out_proj 1.097e-2/2.715e-4 vs 2.028e-2/5.020e-4, gate_proj 9.508e-4/3.347e-4 vs 1.265e-3/4.453e-4, in_proj_a 9.441e-4/2.856e-4 vs 1.752e-3/5.298e-4, lm_head 9.847e-4/2.818e-4 vs 1.698e-3/4.857e-4.  The GEMM wins on every tensor, by 1.3-1.9x on max_abs and 1.5-1.8x on rel.  So the previous round's 'the GEMM is worse' was wrong and the round before's reversal was right; the error was exactly the one I said I would stop making - comparing check's numbers (a different run with a different x) against gemm-check's.  CONSEQUENCE, and this is the important one: the GEMM is BOTH 2.2x faster on cold prefill AND more accurate than the path we ship, so the 1-of-9 prompt divergence means the SHIPPED GEMV is the one drifting away from the correct answer, and the equivalence baseline we have been defending is the worse of the two paths.  NEXT: default QW_GEMM_MIN_ROWS to 8, then re-baseline on the mlx-lm oracle instead of on GEMV output - run oracle parity 6/6, server==cli (checking whether gen's single-row path should also move to the GEMM), and the 9-length test; and rewrite the section 72b conclusion, which currently says the GEMM is the less accurate one.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

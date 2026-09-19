@@ -583,6 +583,33 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
                 max_ref = max_ref.max(b.abs());
             }
         } else {
+            // Same harness, same tensor, same reference, same metric: run the four-row
+            // kernel the engine actually ships against the same CPU reference the GEMM
+            // is being measured against.  Comparing the GEMM's `rel` with this kernel's
+            // `max_abs` is what produced three wrong conclusions in a row; only these
+            // two numbers side by side mean anything.
+            let gbuf = dev.buffer_from_bytes(&vec![f16::from_f32(0.0); tokens * l.out_f]);
+            let mut gb = qw_metal::CommandBatch::new(&mut dev);
+            let tk = gb.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K4_U4HX)?;
+            let mut off = 0usize;
+            while off < tokens {
+                gb.encode(
+                    qw_metal::Dispatch::new(&tk, (l.out_f * 32, 1, 1), (32, 1, 1))
+                        .buf_offset(0, l.weight.buf, l.weight.offset)
+                        .buf_offset(1, l.scales.buf, l.scales.offset)
+                        .buf_offset(2, l.biases.buf, l.biases.offset)
+                        .buf_offset(3, &xbuf, off * l.in_f * 2)
+                        .buf_offset(4, &gbuf, off * l.out_f * 2)
+                        .scalar(5, l.in_f as i32)
+                        .scalar(6, 4i32)
+                        .scalar(7, l.out_f as i32),
+                );
+                off += 4;
+            }
+            gb.finish(true);
+            let ggot: Vec<f16> = gbuf.to_vec(0, tokens * l.out_f);
+            let mut g_abs = 0.0f64;
+            let mut g_ref = 0.0f64;
             for t in 0..tokens {
                 let xr: Vec<f16> = xv[t * l.in_f..(t + 1) * l.in_f].to_vec();
                 let want = l.cpu_reference(&xr)?;
@@ -591,8 +618,19 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
                     let b = want[r] as f64;
                     max_abs = max_abs.max((a - b).abs());
                     max_ref = max_ref.max(b.abs());
+                    let g = ggot[t * l.out_f + r].to_f32() as f64;
+                    g_abs = g_abs.max((g - b).abs());
+                    g_ref = g_ref.max(b.abs());
                 }
             }
+            println!(
+                "      gemm max_abs {:.3e} rel {:.3e}   |   gemv max_abs {:.3e} rel {:.3e}   (same CPU ref, {} tokens)",
+                max_abs,
+                if max_ref > 0.0 { max_abs / max_ref } else { max_abs },
+                g_abs,
+                if g_ref > 0.0 { g_abs / g_ref } else { g_abs },
+                tokens
+            );
         }
         let rel = if max_ref > 0.0 { max_abs / max_ref } else { max_abs };
         let ok = rel < 2e-3;

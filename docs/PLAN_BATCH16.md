@@ -4157,3 +4157,32 @@ GEMV 的输出为准），因为 oracle 才是真正的正确性标准。
 对**同一批张量**、用**同一个指标**（同时报 `max_abs` 与 `max_abs/max|y|`），
 同时测 `K4_U4HX` 与 GEMM。只有这张表能回答「哪个更准、差多少」。
 在这个表出来之前，GEMM 保持 opt-in，且不再基于推测修改 kernel。
+
+### 72h. **同一 harness 的表出来了：GEMM 比出厂 GEMV 更准**（第 72 轮）
+
+在 `gemm_check()` 的 CPU 参考分支里，对**同一批张量、同一份 x（同种子 40 token）、
+同一个 CPU 参考**同时跑 GEMM 与 `K4_U4HX`，两个指标一起报：
+
+| 张量 | GEMM max_abs | GEMM rel | GEMV max_abs | GEMV rel |
+|---|---|---|---|---|
+| `layers.0.linear_attn.out_proj` | **1.097e-2** | **2.715e-4** | 2.028e-2 | 5.020e-4 |
+| `layers.0.mlp.gate_proj` | **9.508e-4** | **3.347e-4** | 1.265e-3 | 4.453e-4 |
+| `layers.0.linear_attn.in_proj_a` | **9.441e-4** | **2.856e-4** | 1.752e-3 | 5.298e-4 |
+| `lm_head` | **9.847e-4** | **2.818e-4** | 1.698e-3 | 4.857e-4 |
+
+**四个张量上 GEMM 全部更准**：`max_abs` 好 1.3–1.9×，`rel` 好 1.5–1.8×。
+
+⇒ **§72f「GEMM 更差」的结论是错的，§72e 的反转才是对的。** 错因正是我上一节
+说要停掉的那件事：§72f 拿的是 `check`（**另一次运行、另一批 x**）的数字去和
+`gemm-check` 比。同一 harness 下，GEMM 在**每一个**张量上都更准。
+
+### 这意味着什么
+
+**GEMM 同时更快（冷 prefill 2.2×）和更准。** 那么 §72b 那次 35-token 分叉，
+**偏离正确答案的是出厂 GEMV，不是 GEMM**；我们一直把 GEMV 的输出当作「等价性
+基准」，这个基准本身是两条路里较差的那条。
+
+**下一轮**：把 `QW_GEMM_MIN_ROWS` 默认设为 8（即 GEMM 成为默认 prefill 路径），
+然后**以 mlx-lm oracle 而不是以 GEMV 输出作为验收标准**重新基线化：
+跑 `oracle parity 6/6`、`server==cli`（此时 cli 的 `gen` 走单行路径，需要一并
+确认是否也该走 GEMM）、以及 §72b 的 9 长度一致性。**同时要更新 §72b 的结论措辞。**
