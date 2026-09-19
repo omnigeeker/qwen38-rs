@@ -83,6 +83,8 @@ def ours(p):
     e = dict(os.environ)
     for k in ("QW_PREFIX_DISK", "QW_PREFIX_SNAPSHOT"):
         e.pop(k, None)
+    if SPEC:
+        e["QW_SPEC"] = "1"   # speculative decoding (MTP): our strongest otps path
     s = subprocess.Popen([OURS, "serve", "--model-dir", "models/Qwen3.8-27B-4bit",
                           "--port", str(PORT)], env=e,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
