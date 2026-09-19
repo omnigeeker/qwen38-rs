@@ -127,6 +127,34 @@ kernel void attn_out(
 }
 
 // Append one token's K/V into the head-major cache.
+kernel void kv_append_rows(
+    device const half*  k      [[buffer(0)]],
+    device const half*  v      [[buffer(1)]],
+    device half*        kcache [[buffer(2)]],
+    device half*        vcache [[buffer(3)]],
+    constant int&       pos0   [[buffer(4)]],
+    constant int&       maxT   [[buffer(5)]],
+    constant int&       Hkv    [[buffer(6)]],
+    constant int&       D      [[buffer(7)]],
+    // The k and v scratch rows are NOT the same length: scratch.k is shared with
+    // the delta-net path and is laid out with key_dim = Hk*Dk = 2048 elements per
+    // token, while the attention k this kernel copies is only Hkv*D = 1024 of
+    // them; scratch.v is exactly Hkv*D.  Reading k[i] with the v row length
+    // silently walks into the next token, which is what broke the gates.
+    constant int&       krow   [[buffer(8)]],
+    constant int&       vrow   [[buffer(9)]],
+    uint i [[thread_position_in_grid]])
+{
+    const int per_row = Hkv * D;
+    const int token = (int)i / per_row;
+    const int j = (int)i - token * per_row;
+    const int hk = j / D;
+    const int d  = j - hk * D;
+    const size_t dst = ((size_t)hk * maxT + pos0 + token) * D + d;
+    kcache[dst] = k[(size_t)token * krow + j];
+    vcache[dst] = v[(size_t)token * vrow + j];
+}
+
 kernel void kv_append(
     device const half*  k      [[buffer(0)]],
     device const half*  v      [[buffer(1)]],
@@ -402,6 +430,48 @@ kernel void gdn_step_seq(
 //   * delta-net q/k:  no weight, scale = inv or inv^2
 //   * attention q/k:  with weight, q read at stride 2*head_dim (the projection
 //     emits [q | gate] per head)
+kernel void rmsnorm_s_rows(
+    device const half* x [[buffer(0)]],
+    device const half* w [[buffer(1)]],
+    device half*       y [[buffer(2)]],
+    constant int&      D [[buffer(3)]],
+    constant int&      in_stride_bytes [[buffer(4)]],
+    constant float&  eps [[buffer(5)]],
+    constant float& scale [[buffer(6)]],
+    constant int& has_weight [[buffer(7)]],
+    constant int& heads [[buffer(8)]],
+    constant int& sx_bytes [[buffer(9)]],
+    constant int& sy_bytes [[buffer(10)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint nt   [[threads_per_threadgroup]])
+{
+    const uint head  = tg % (uint)heads;
+    const uint token = tg / (uint)heads;
+    device const half* xr = (device const half*)((device char*)x + (size_t)token * sx_bytes
+                            + (size_t)head * in_stride_bytes);
+    device half*       yr = (device half*)((device char*)y + (size_t)token * sy_bytes
+                            + (size_t)head * D * 2);
+    float ss = 0.0f;
+    for (int i = (int)lane; i < D; i += (int)nt) {
+        const float v = (float)xr[i];
+        ss += v * v;
+    }
+    ss = simd_sum(ss);
+    threadgroup float red[32];
+    const uint sg = lane / 32, sl = lane % 32;
+    if (sl == 0) red[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0.0f;
+    const uint nsg = (nt + 31) / 32;
+    for (uint i = 0; i < nsg; ++i) total += red[i];
+    const float rstd = rsqrt(total / (float)D + eps) * scale;
+    for (int i = (int)lane; i < D; i += (int)nt) {
+        const float v = (float)xr[i];
+        yr[i] = has_weight ? (half)(v * rstd * (float)w[i]) : (half)(v * rstd);
+    }
+}
+
 kernel void rmsnorm_s(
     device const half* x [[buffer(0)]],
     device const half* w [[buffer(1)]],
@@ -438,6 +508,22 @@ kernel void rmsnorm_s(
 }
 
 // out[i] = attn_out[i] * sigmoid(qg[head * 2D + D + d])  (attention output gate)
+kernel void gate_mul_rows(
+    device const half* a   [[buffer(0)]],
+    device const half* qg  [[buffer(1)]],
+    device half*       out [[buffer(2)]],
+    constant int&      D   [[buffer(3)]],
+    constant int&      row_elems [[buffer(4)]],
+    uint i [[thread_position_in_grid]])
+{
+    const int token = (int)i / row_elems;
+    const int j = (int)i - token * row_elems;
+    const int head = j / D;
+    const int d = j - head * D;
+    const float g = (float)qg[token * row_elems * 2 + head * 2 * D + D + d];
+    out[i] = (half)((float)a[i] / (1.0f + exp(-g)));
+}
+
 kernel void gate_mul(
     device const half* a   [[buffer(0)]],
     device const half* qg  [[buffer(1)]],
@@ -543,6 +629,7 @@ kernel void sigmoid_mul(
 pub const K_ATTN_SCORES_SOFTMAX: &str = "attn_scores_softmax";
 pub const K_ATTN_OUT: &str = "attn_out";
 pub const K_KV_APPEND: &str = "kv_append";
+pub const K_KV_APPEND_ROWS: &str = "kv_append_rows";
 pub const K_CONV1D_SILU_RING: &str = "conv1d_silu_ring";
 pub const K_CONV1D_SILU_RING_TILE: &str = "conv1d_silu_ring_tile";
 pub const K_RMSNORM_TILE: &str = "rmsnorm_nw_tile";
@@ -550,8 +637,10 @@ pub const K_CONV1D_SILU: &str = "conv1d_silu";
 pub const K_GDN_STEP: &str = "gdn_step";
 pub const K_GDN_STEP_SEQ: &str = "gdn_step_seq";
 pub const K_RMSNORM_WS: &str = "rmsnorm_s";
+pub const K_RMSNORM_WS_ROWS: &str = "rmsnorm_s_rows";
 pub const K_RMSNORM_NW: &str = "rmsnorm_s";
 pub const K_GATE_MUL: &str = "gate_mul";
+pub const K_GATE_MUL_ROWS: &str = "gate_mul_rows";
 pub const K_COPY: &str = "copy_off";
 pub const K_ROUND_BF16: &str = "round_bf16";
 pub const K_RMSNORM_GATED: &str = "rmsnorm_gated";

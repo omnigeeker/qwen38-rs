@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 180,
+ "round": 181,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4424,9 +4424,52 @@
     "bisects_invalidated": "both 16/3 and 17/2 were contaminated",
     "next": "bisect again on a guaranteed-clean port"
    }
+  },
+  {
+   "round": 181,
+   "title": "Found and fixed the bug that forced last round's revert, so the attention batching now ships.  The diagnosis used a runtime mask, QW_ATTN_BATCH with bit 1 the q/k norms, bit 2 the output gate, bit 4 rope and bit 8 the kv append, where mask 0 reproduces the pre-batching code exactly and so acts as a usable control, plus a fast checker that starts the server, sends a fixed long prompt and compares the output md5 in about forty seconds rather than ten minutes.  Against a baseline md5 of 5b5f6e93 at 182 characters, masks 0, 1, 2 and 4 matched, mask 8 did not, and mask 15 did not - the bug was in kv_append_rows alone and the other three were correct all along.  The root cause is that the k and v scratch rows are not the same length: scratch.k is shared with the delta-net path and is laid out with key_dim = linear_num_key_heads times linear_key_head_dim = 16 x 128 = 2048 elements per token, while the attention k this kernel copies is only num_key_value_heads times head_dim = 4 x 256 = 1024 of them, and scratch.v is exactly 1024.  The original used two different expressions, key_dim for k and nkv*hd for v, whereas my batched kernel used a single Hkv*D for both, so k[i] walked into the next token.  The fix adds krow and vrow scalars addressing k[token*krow + j] and v[token*vrow + j] separately, after which every mask including 15 matches the baseline word for word.  Dispatches per pass fell from 29,682 to 17,490, gates pass 19/0, and six interleaved A/B rounds gave a median of 6.066 to 5.952, B winning 6/6 at -2.0 per cent with all differences negative and tightly clustered.  With the gdn fusion, cold prefill is down from 6.69 s to about 5.95 s.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (output word-for-word identical to the baseline)",
+   "evidence": {
+    "bisect": {
+     "baseline_md5": "5b5f6e931dddd4cc943589f4380e2325",
+     "mask0": "match",
+     "mask1_norm": "match",
+     "mask2_gate": "match",
+     "mask4_rope": "match",
+     "mask8_kv": "MISMATCH 46358d6ce0c192ce243328713b3da1c8",
+     "mask15": "MISMATCH"
+    },
+    "root_cause": "scratch.k per-token stride is key_dim = hk*dk = 16*128 = 2048 (shared with the delta-net path) but nkv*hd = 4*256 = 1024; the batched kernel used one Hkv*D for both k and v",
+    "fix": "added krow/vrow scalars; k[token*krow + j], v[token*vrow + j]",
+    "after_fix": "all masks including 15 match the baseline",
+    "dispatches": {
+     "before": 29682,
+     "after": 17490,
+     "cut": "41%"
+    },
+    "A": [
+     5.866,
+     6.073,
+     6.13,
+     6.059,
+     6.076
+    ],
+    "B": [
+     5.741,
+     5.954,
+     5.99,
+     5.951,
+     5.958
+    ],
+    "verdict": "6/6 B wins, median 6.066 -> 5.952 = -2.0%",
+    "cumulative": "cold prefill 6.69 s -> ~5.95 s (~11%) with the gdn fusion",
+    "next": "copy_off and conv1d_silu_ring (6144 each, 70% of what remains), then attn_scores_softmax/attn_out which need a causal mask"
+   }
   }
  ],
- "next": "Attempted the attention batching and had to revert it, and along the way found a measurement trap that had been corrupting results.  Four token-batched kernels were added - rmsnorm_s_rows, gate_mul_rows, kv_append_rows and rope_partial_rows - with one_seq guarding rope and kv_append since those need pos = pos0 + t, while the norms and the gate are batched unconditionally.  The dispatch effect was large: 29,682 fell to 17,490, a 41 per cent cut.  But the gates failed, 14 passed and 5 failed on server==cli and on chunks 4 and 32 disagreeing, so it was reverted.  The trap is this: after reverting, the binary's md5 was identical to the verified /tmp/q.gdseq and the gates STILL failed, because pkill -f qwen38 does not match the /tmp/q.* copies - their command lines contain no qwen38 - so a stale server from the broken build kept holding port 8199 and tools/accept.sh kept talking to it; lsof showed q.attn1 pid 90583 listening.  Killing it by pid restored the verified binary to 19/0 immediately.  So measurements must start by confirming the port is free with lsof -ti :8199 and killing by pid, never by pkill -f qwen38; this briefly made me think the attention batching was fine when on a clean port it genuinely fails 5 gates, and it means the two bisect runs earlier this round (16/3 and 17/2) were both contaminated and tell us nothing.  NEXT: bisect again on a guaranteed-clean port to find which of the four kernels is wrong.",
+ "next": "Found and fixed the bug that forced last round's revert, and the attention batching now ships.  The diagnosis used a runtime mask, QW_ATTN_BATCH with bit 1 for the q/k norms, bit 2 for the output gate, bit 4 for rope and bit 8 for the kv append, where mask 0 reproduces the pre-batching code exactly and therefore acts as a usable control, plus a fast checker that starts the server, sends a fixed long prompt and compares the output md5 in about forty seconds instead of the ten-minute accept.sh.  Against a baseline md5 of 5b5f6e93 at 182 characters, masks 0, 1, 2 and 4 all matched, mask 8 did not, and mask 15 did not - so the bug was in kv_append_rows alone and the other three were correct all along.  The root cause is that the k and v scratch rows are NOT the same length: scratch.k is shared with the delta-net path and is laid out with key_dim = linear_num_key_heads times linear_key_head_dim = 16 x 128 = 2048 elements per token, while the attention k this kernel copies is only num_key_value_heads times head_dim = 4 x 256 = 1024 of them, and scratch.v is exactly 1024.  The original code used two different expressions for the two offsets, key_dim for k and nkv*hd for v, whereas my batched kernel used a single Hkv*D for both, so k[i] walked into the next token.  The fix adds krow and vrow scalars and addresses k[token*krow + j] and v[token*vrow + j] separately; after it every mask including 15 matches the baseline word for word.  Dispatches per pass fell from 29,682 to 17,490, a 41 per cent cut, the gates pass 19/0, and six interleaved A/B rounds gave a median of 6.066 to 5.952, B winning 6/6 at -2.0 per cent with every difference negative and tightly clustered.  Together with the gdn fusion the cold prefill has come down from 6.69 s to about 5.95 s, roughly 11 per cent.  NEXT: the remaining dispatch hotspots are copy_off and conv1d_silu_ring at 6144 each, 70 per cent of what is left, and attn_scores_softmax and attn_out at 2048 each, which need a causal mask.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

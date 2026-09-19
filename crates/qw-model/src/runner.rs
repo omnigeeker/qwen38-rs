@@ -40,6 +40,10 @@ struct Kernels {
     conv1d_ring: Kernel,
     gdn: Kernel,
     gdn_seq: Kernel,
+    rmsnorm_ws_rows: Kernel,
+    gate_mul_rows: Kernel,
+    kv_append_rows: Kernel,
+    rope_rows: Kernel,
     copy: Kernel,
     round_bf16: Kernel,
 }
@@ -432,6 +436,20 @@ pub struct Qwen38 {
 
 const NT: usize = 256;
 
+/// Bisect mask for the token-batched attention operators: bit 1 the q/k norms,
+/// bit 2 the output gate, bit 4 rope, bit 8 the kv append.  All four on by
+/// default; a mask of 0 must reproduce the pre-batching code exactly, which is
+/// what makes it a usable control.
+fn attn_batch_mask() -> u32 {
+    static M: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *M.get_or_init(|| {
+        std::env::var("QW_ATTN_BATCH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15)
+    })
+}
+
 fn f16_buf(dev: &GpuDevice, vals: &[f32]) -> GpuBuffer {
     let v: Vec<f16> = vals.iter().map(|x| f16::from_f32(*x)).collect();
     dev.buffer_from_bytes(&v)
@@ -659,6 +677,10 @@ impl Qwen38 {
                 conv1d_ring: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
                 gdn_seq: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP_SEQ)?,
+                rmsnorm_ws_rows: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS_ROWS)?,
+                gate_mul_rows: b.kernel(msl_ops::GDN, msl_ops::K_GATE_MUL_ROWS)?,
+                kv_append_rows: b.kernel(msl_ops::ATTN, msl_ops::K_KV_APPEND_ROWS)?,
+                rope_rows: b.kernel(msl::FUSED, msl::K_ROPE_PARTIAL_ROWS)?,
                 copy: b.kernel(msl_ops::GDN, msl_ops::K_COPY)?,
                 round_bf16: b.kernel(msl_ops::GDN, msl_ops::K_ROUND_BF16)?,
             }
@@ -1580,6 +1602,13 @@ impl Qwen38 {
             b.barrier();
             match &layer.kind {
                 Kind::Full(a) => {
+                    // A prefill pass is one sequence's consecutive positions, so rope
+                    // and the kv append can take the first row's position and count
+                    // up; a batch pass cannot and keeps the per-row loops for those
+                    // two.  The norms and the gate are per-token independent and are
+                    // batched either way.
+                    let one_seq = rows.iter().all(|r| r.0 == rows[0].0);
+                    let am = attn_batch_mask();
                     // q (with output gate), k, v projections
                     a.q.encode_rows(
                         &mut b,
@@ -1610,11 +1639,27 @@ impl Qwen38 {
                         n,
                     );
                     b.barrier();
+                    // q_norm: heads live at stride 2*hd inside the q_proj output
+                    // (each head emits [query | gate]).  Unlike the delta net there
+                    // is NO extra query scale here — the reference only applies
+                    // `scale = head_dim**-0.5` inside SDPA.
+                    if am & 1 != 0 {
+                    b.encode(
+                        Dispatch::new(&kernels.rmsnorm_ws_rows, (nh * n * NT, 1, 1), (NT, 1, 1))
+                            .buf(0, &scratch.qg)
+                            .buf(1, &a.q_norm)
+                            .buf(2, &scratch.q)
+                            .scalar(3, hd as i32)
+                            .scalar(4, (2 * hd * 2) as i32)
+                            .scalar(5, eps)
+                            .scalar(6, 1.0f32)
+                            .scalar(7, 1)
+                            .scalar(8, nh as i32)
+                            .scalar(9, (nh * hd * 4) as i32)
+                            .scalar(10, (nh * hd * 2) as i32),
+                    );
+                    } else {
                     for (row, _) in rows.iter().enumerate() {
-                        // q_norm: heads live at stride 2*hd inside the q_proj output
-                        // (each head emits [query | gate]).  Unlike the delta net
-                        // there is NO extra query scale here — the reference only
-                        // applies `scale = head_dim**-0.5` inside SDPA.
                         b.encode(
                             Dispatch::new(&kernels.rmsnorm_ws, (nh * NT, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.qg, row * (nh * hd * 4))
@@ -1627,7 +1672,24 @@ impl Qwen38 {
                                 .scalar(7, 1),
                         );
                     }
+                    }
                     b.barrier();
+                    if am & 1 != 0 {
+                    b.encode(
+                        Dispatch::new(&kernels.rmsnorm_ws_rows, (nkv * n * NT, 1, 1), (NT, 1, 1))
+                            .buf(0, &scratch.pk)
+                            .buf(1, &a.k_norm)
+                            .buf(2, &scratch.k)
+                            .scalar(3, hd as i32)
+                            .scalar(4, (hd * 2) as i32)
+                            .scalar(5, eps)
+                            .scalar(6, 1.0f32)
+                            .scalar(7, 1)
+                            .scalar(8, nkv as i32)
+                            .scalar(9, (nkv * hd * 2) as i32)
+                            .scalar(10, (key_dim * 2) as i32),
+                    );
+                    } else {
                     for (row, _) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.rmsnorm_ws, (nkv * NT, 1, 1), (NT, 1, 1))
@@ -1641,7 +1703,33 @@ impl Qwen38 {
                                 .scalar(7, 1),
                         );
                     }
+                    }
                     b.barrier();
+                    if one_seq && am & 4 != 0 {
+                        let p0 = rows[0].1 as i32;
+                        b.encode(
+                            Dispatch::new(&kernels.rope_rows, (nh * n * 64, 1, 1), (64, 1, 1))
+                                .buf(0, &scratch.q)
+                                .buf(1, &scratch.q)
+                                .scalar(2, nh as i32)
+                                .scalar(3, hd as i32)
+                                .scalar(4, rot_dim)
+                                .scalar(5, cfg.rope_theta() as f32)
+                                .scalar(6, p0)
+                                .scalar(7, (nh * hd * 2) as i32),
+                        );
+                        b.encode(
+                            Dispatch::new(&kernels.rope_rows, (nkv * n * 64, 1, 1), (64, 1, 1))
+                                .buf(0, &scratch.k)
+                                .buf(1, &scratch.k)
+                                .scalar(2, nkv as i32)
+                                .scalar(3, hd as i32)
+                                .scalar(4, rot_dim)
+                                .scalar(5, cfg.rope_theta() as f32)
+                                .scalar(6, p0)
+                                .scalar(7, (key_dim * 2) as i32),
+                        );
+                    } else {
                     for (row, &(_, pos)) in rows.iter().enumerate() {
                         // partial RoPE (non-traditional pairing)
                         b.encode(
@@ -1665,7 +1753,23 @@ impl Qwen38 {
                                 .scalar(6, pos as i32),
                         );
                     }
+                    }
                     b.barrier();
+                    if one_seq && am & 8 != 0 {
+                        b.encode(
+                            Dispatch::new(&kernels.kv_append_rows, (nkv * hd * n, 1, 1), (NT, 1, 1))
+                                .buf(0, &scratch.k)
+                                .buf(1, &scratch.pv)
+                                .buf_offset(2, &a.k_cache, rows[0].0 * kv_stride)
+                                .buf_offset(3, &a.v_cache, rows[0].0 * kv_stride)
+                                .scalar(4, rows[0].1 as i32)
+                                .scalar(5, max_t)
+                                .scalar(6, nkv as i32)
+                                .scalar(7, hd as i32)
+                                .scalar(8, key_dim as i32)
+                                .scalar(9, (nkv * hd) as i32),
+                        );
+                    } else {
                     for (row, &(seq, pos)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
@@ -1678,6 +1782,7 @@ impl Qwen38 {
                                 .scalar(6, nkv as i32)
                                 .scalar(7, hd as i32),
                         );
+                    }
                     }
                     b.barrier();
                     for (row, &(seq, pos)) in rows.iter().enumerate() {
@@ -1709,8 +1814,18 @@ impl Qwen38 {
                         );
                     }
                     b.barrier();
+                    // out * sigmoid(gate) where gate sits after each head's query
+                    if am & 2 != 0 {
+                    b.encode(
+                        Dispatch::new(&kernels.gate_mul_rows, (n * (nh * hd), 1, 1), (NT, 1, 1))
+                            .buf(0, &scratch.attn_out)
+                            .buf(1, &scratch.qg)
+                            .buf(2, &scratch.attn_gated)
+                            .scalar(3, hd as i32)
+                            .scalar(4, (nh * hd) as i32),
+                    );
+                    } else {
                     for (row, _) in rows.iter().enumerate() {
-                        // out * sigmoid(gate) where gate sits after each head's query
                         b.encode(
                             Dispatch::new(&kernels.gate_mul, (nh * hd, 1, 1), (NT, 1, 1))
                                 .buf_offset(0, &scratch.attn_out, row * (nh * hd * 2))
@@ -1718,6 +1833,7 @@ impl Qwen38 {
                                 .buf_offset(2, &scratch.attn_gated, row * (nh * hd * 2))
                                 .scalar(3, hd as i32),
                         );
+                    }
                     }
                     b.barrier();
                     a.o.encode_rows(

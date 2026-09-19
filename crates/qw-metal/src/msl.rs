@@ -1189,6 +1189,42 @@ kernel void silu_mul(
 // Partial RoPE, non-traditional (half-split) pairing:
 //   pairs are (i, i + rot_dim/2), angle = pos * base^(-2i/rot_dim)
 //   the tail [rot_dim, head_dim) is copied through untouched.
+kernel void rope_partial_rows(
+    device const half* x    [[buffer(0)]],
+    device half*       y    [[buffer(1)]],
+    constant int&      n_heads   [[buffer(2)]],
+    constant int&      head_dim  [[buffer(3)]],
+    constant int&      rot_dim   [[buffer(4)]],
+    constant float&    base      [[buffer(5)]],
+    constant int&      pos0      [[buffer(6)]],
+    constant int&      stride_bytes [[buffer(7)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint nt   [[threads_per_threadgroup]])
+{
+    const uint head  = tg % (uint)n_heads;
+    const uint token = tg / (uint)n_heads;
+    device const half* xr = (device const half*)((device char*)x + (size_t)token * stride_bytes)
+                            + (size_t)head * head_dim;
+    device half*       yr = (device half*)((device char*)y + (size_t)token * stride_bytes)
+                            + (size_t)head * head_dim;
+    const int pos = pos0 + (int)token;
+    const int half_rot = rot_dim / 2;
+    for (int i = (int)lane; i < head_dim; i += (int)nt) {
+        yr[i] = xr[i];
+    }
+    for (int i = (int)lane; i < half_rot; i += (int)nt) {
+        const float theta = pow((float)base, -2.0f * (float)i / (float)rot_dim);
+        const float angle = (float)pos * theta;
+        const float c = cos(angle);
+        const float s = sin(angle);
+        const float a = (float)xr[i];
+        const float b = (float)xr[i + half_rot];
+        yr[i]            = (half)(a * c - b * s);
+        yr[i + half_rot] = (half)(a * s + b * c);
+    }
+}
+
 kernel void rope_partial(
     device const half* x    [[buffer(0)]],
     device half*       y    [[buffer(1)]],
@@ -1222,4 +1258,5 @@ kernel void rope_partial(
 "#;
 
 pub const K_SILU_MUL: &str = "silu_mul";
+pub const K_ROPE_PARTIAL_ROWS: &str = "rope_partial_rows";
 pub const K_ROPE_PARTIAL: &str = "rope_partial";
