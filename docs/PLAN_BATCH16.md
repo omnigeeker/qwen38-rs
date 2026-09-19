@@ -3604,3 +3604,57 @@ threadgroup 变少 ⇒ 在飞字节更少」一致，与「占用率不是瓶颈
 3. **x staging 的 92 ms**（连续 lane 取连续 token ⇒ 地址相隔 10240 B）——需按 `[token][k]` 暂存再转置载入。
 
 三项全成 ⇒ 冷 TTFT 14.2 s → 约 2–3 s，与 Ollama 的 1.98 s 同一量级。
+
+### 补测：TTFT 随 prompt 长度（短 prompt 也输，且输在固定开销上）
+
+同一台机器、交错、内容块计时，每条 prompt 都是新文本（首次请求=真冷），
+第二次同文本=暖（缓存命中）：
+
+| prompt | ours 冷 | Ollama 冷 | ours 暖 | Ollama 暖 |
+|---|---|---|---|---|
+| ~12 token | 0.394 s | 0.323 s（9 tok） | 0.379 s | 0.143 s |
+| ~128 token | 2.429 s | 0.510 s（110 tok） | 0.377 s | 0.130 s |
+| ~900 token | 14.531 s | 2.388 s（788 tok） | 0.873 s | 0.114 s |
+
+**⇒ 三种长度全输。** 暖路径的缓存是有效的（日志：`skipped 758 of 788 (96%)`），
+但暖 TTFT 仍要 0.38–0.87 s，因为缓存只跳到**已保存的边界**，剩下最多一个 pass
+（约 30 行 = 8 次扫描 = 317 ms）仍要真算，外加约 0.35 s 的固定开销。
+
+**固定开销的实测（10 token prompt，`QW_ENCODE_TIME=1`）：**
+
+| batch | dispatch | commit+wait |
+|---|---|---|
+| 1（setup） | 96 | 20 ms |
+| **2（prefill 一趟 10 行）** | **5108** | **341 ms** |
+| 3–8（decode，每 token） | 1234 | 36 ms |
+| 9（teardown） | 96 | 4 ms |
+
+10 行的一趟 prefill 里 GEMV 只占 3 次扫描（1491 dispatch ≈ 119 ms），
+**剩下 3617 个非 GEMV dispatch 花了约 222 ms ⇒ 61 µs/dispatch**——比
+「只跑非 GEMV」时测到的 9.5 µs/dispatch 贵 6 倍。**同一个非 GEMV 链，在有 GEMV
+的 pass 里贵得多**，说明它与 GEMV 的显存流量/队列互相拖累，不是单纯的发射延迟。
+⇒ **短 prompt 的 TTFT 主要由这一趟 prefill 决定，而不是缓存。**
+
+### GEMM 三项成本的现测（`bench --rows 8 --tokens 32`，mode 诊断）
+
+| mode | 内容 | 时间 | 推出 |
+|---|---|---|---|
+| 0 | 全量 | 272 ms | — |
+| 1 | 跳过反量化 | 268 ms | 反量化 4 ms |
+| 2 | 跳过 MAC | 212 ms | **MAC 60 ms** |
+| 3 | 跳过 x staging | 160 ms | **x staging 112 ms** |
+| 5 | K-major 权重 | 269 ms | 布局无关（与 §58 一致） |
+| | | | ⇒ **权重 staging ≈ 100 ms**（14.4 GB ⇒ 144 GB/s，GEMV 是 362–417） |
+
+**⇒ 权重 staging 100 ms 只有 GEMV 的 1/3 带宽，与「在飞字节 80 KB vs 需要 238 KB」
+的 3 倍缺口一致；MAC 只有 60 ms（36 TFLOPS），比 Ollama 的有效算力（约 24.5 TFLOPS）还快。**
+**GEMM 的问题从来不是算力，而是 staging。**
+
+### 结论（需要决策）
+
+按当前实测，冷 prefill 要到 Ollama 的 1.98 s 需要**同时**完成四件事：
+① 权重 staging 的寄存器多级预取（100 → ~36 ms）；② x staging（112 → ~30 ms）；
+③ 把 BN 从 32 提到 128 以摊薄权重（但 shared 预算紧张）；
+④ 非 GEMV 从 3.0 s 降到 ~0.5 s。**四件都做成的最好情况是与 Ollama 打平（约 2 s），
+而不是赢**——因为 MAC 本身（BN=128 时约 1.7 s）就接近 Ollama 的总时间。
+**前三件都属于已经失败过 11 轮的 GEMM 线。**
