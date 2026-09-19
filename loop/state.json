@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 179,
+ "round": 180,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4405,9 +4405,28 @@
     "hard_batchable": "attn_scores_softmax, attn_out = 4,096 (14%), need a causal mask",
     "next": "batch the attention layer over tokens, starting with the four independent operators"
    }
+  },
+  {
+   "round": 180,
+   "title": "Attempted the attention batching and had to revert it, and found a measurement trap that had been corrupting results.  Four token-batched kernels were added - rmsnorm_s_rows, gate_mul_rows, kv_append_rows and rope_partial_rows - with one_seq guarding rope and kv_append since they need pos = pos0 + t, while the norms and the gate batch unconditionally.  The dispatch effect was large, 29,682 falling to 17,490 or 41 per cent, but the gates failed at 14 passed and 5 failed on server==cli and on chunks 4 and 32 disagreeing, so it was reverted.  The trap: after reverting, the binary's md5 was identical to the verified /tmp/q.gdseq and the gates still failed, because pkill -f qwen38 does not match the /tmp/q.* copies - their command lines contain no qwen38 - so a stale server from the broken build kept holding port 8199 and accept.sh kept talking to it, with lsof showing q.attn1 pid 90583 listening.  Killing it by pid restored the verified binary to 19/0 at once.  Measurements must therefore begin by confirming the port is free with lsof -ti :8199 and kill by pid, never with pkill -f qwen38.  This briefly suggested the attention batching was fine when on a clean port it genuinely fails 5 gates, and it means both bisect runs earlier in the round (16/3 and 17/2) were contaminated and prove nothing.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED after the revert (the attention version failed 14/5)",
+   "evidence": {
+    "dispatches": {
+     "before": 29682,
+     "attention_version": 17490,
+     "cut": "41%"
+    },
+    "gates_attention_version": "14 passed / 5 failed - NOT ACCEPTED, reverted",
+    "trap": "pkill -f qwen38 does not match /tmp/q.* copies; a stale q.attn1 (pid 90583) held port 8199 and accept.sh talked to it",
+    "revert_verified": "md5 matched the verified /tmp/q.gdseq and gates returned to 19/0 once the stale server was killed by pid",
+    "bisects_invalidated": "both 16/3 and 17/2 were contaminated",
+    "next": "bisect again on a guaranteed-clean port"
+   }
   }
  ],
- "next": "Pulled the complete prefill dispatch histogram, having only looked at the top seven entries before, and it names the largest remaining target: the full-attention layers are still processed one token at a time during prefill.  Of the 29,682 dispatches per pass, copy_off 6144 and conv1d_silu_ring 6144 are the GDN phase-2 pair at 41 per cent, per-token but with no barriers, while the attention path is 16,384 or 55 per cent - rmsnorm_s 4096 and rope_partial 4096 at 128 tokens times 32, then kv_append, attn_scores_softmax, attn_out and gate_mul at 2048 each, 128 tokens times 16 layers - meaning the prefill drives the single-token attention path with its chain of per-token barriers.  round_bf16 does not appear, so bf16_residual is off by default and there is no hidden 8192 there.  The lesson from the gdn fusion is that removing barriers pays far more than removing dispatches, so the priority is clear: rmsnorm_s, rope_partial, kv_append and gate_mul are 12,288 dispatches or 41 per cent and are entirely independent per token, so they can be batched immediately, whereas attn_scores_softmax and attn_out are 4,096 or 14 per cent and need a causal mask over the query block, which is harder.  NEXT: batch the attention layer over tokens, starting with those four independent operators.",
+ "next": "Attempted the attention batching and had to revert it, and along the way found a measurement trap that had been corrupting results.  Four token-batched kernels were added - rmsnorm_s_rows, gate_mul_rows, kv_append_rows and rope_partial_rows - with one_seq guarding rope and kv_append since those need pos = pos0 + t, while the norms and the gate are batched unconditionally.  The dispatch effect was large: 29,682 fell to 17,490, a 41 per cent cut.  But the gates failed, 14 passed and 5 failed on server==cli and on chunks 4 and 32 disagreeing, so it was reverted.  The trap is this: after reverting, the binary's md5 was identical to the verified /tmp/q.gdseq and the gates STILL failed, because pkill -f qwen38 does not match the /tmp/q.* copies - their command lines contain no qwen38 - so a stale server from the broken build kept holding port 8199 and tools/accept.sh kept talking to it; lsof showed q.attn1 pid 90583 listening.  Killing it by pid restored the verified binary to 19/0 immediately.  So measurements must start by confirming the port is free with lsof -ti :8199 and killing by pid, never by pkill -f qwen38; this briefly made me think the attention batching was fine when on a clean port it genuinely fails 5 gates, and it means the two bisect runs earlier this round (16/3 and 17/2) were both contaminated and tell us nothing.  NEXT: bisect again on a guaranteed-clean port to find which of the four kernels is wrong.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

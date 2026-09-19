@@ -5837,3 +5837,36 @@ r5 6.158/6.072   r6 6.573/6.380
 
 **下一轮：把注意力层按 token 批量化**（先做那 4 个独立的），
 这是本轮之后收益最大的一步。
+
+### 72bd. 注意力批量化：dispatch −41%，但**门禁失败 ⇒ 回退**；以及一个严重的测量陷阱（第 117 轮）
+
+按 §72bc 的计划，为四个逐 token 独立的注意力算子新增批量化内核
+（`rmsnorm_s_rows` / `gate_mul_rows` / `kv_append_rows` / `rope_partial_rows`），
+调用侧用 `one_seq` 守卫 rope 与 kv_append（它们需要 `pos = pos0 + t`），
+norm 与 gate 无条件批量化。
+
+**dispatch 效果显著**：`29,682 → 17,490（−41%）`，
+`rmsnorm_s_rows` 32、`rope_partial_rows` 32、`kv_append_rows` 16、`gate_mul_rows` 16。
+
+**但门禁失败**：`14 passed / 5 failed`（`server==cli`、`chunk 4 和 32 不一致` 等）⇒ **回退**。
+
+### ⚠️ 测量陷阱（代价很大，必须记住）
+
+回退后二进制 **md5 与已验证的 `/tmp/q.gdseq` 完全相同**，门禁却仍然失败。
+原因：**`pkill -f qwen38` 匹配不到 `/tmp/q.*` 这些副本** ——
+它们的命令行里没有 "qwen38" 这个字符串。于是**坏构建的残留服务一直占着 8199 端口**，
+`tools/accept.sh` 一直在跟它说话：
+
+```
+COMMAND   PID      USER   FD   TYPE   NAME
+q.attn1 90583 waynewong   13u  IPv4   TCP localhost:vvr-data (LISTEN)
+```
+
+清掉之后，**同一个已验证二进制立刻恢复 19/0 ACCEPTED**。
+
+**⇒ 教训**：
+1. **测量前必须确认端口干净**：`lsof -ti :8199`，按 PID 杀，不要靠 `pkill -f qwen38`；
+2. 一度让我误判「注意力批量化没问题」——干净端口下它 **14/5 真失败**，bug 是真的；
+3. 本轮早些时候的 16/3、17/2 两次「二分」结果**全部被污染，不可信**。
+
+**⇒ 下一轮**：在干净端口下重新二分，定位是四个内核中的哪一个（或哪几个）出错。
