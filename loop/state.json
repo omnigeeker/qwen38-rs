@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 143,
+ "round": 144,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3411,9 +3411,33 @@
     "remaining": "latency/occupancy - ~13.6 KB shared, 128 threads/tg -> ~2 tg and 8 warps per SM",
     "next": "raise occupancy: shrink xsh (BK=32) or Q4_GEMM_NT 128 -> 256, validated by interleaved A/B"
    }
+  },
+  {
+   "round": 144,
+   "title": "Worked out the real cost of the occupancy route before touching code, because raising Q4_GEMM_NT is not a one-constant change.  NT is 128 and the mapping r_off = (sg>>1)*16 with t_off = (sg&1)*16 means four simdgroups tile the 32x32 output 2x2; eight simdgroups would need a 64x32 (BM=64, 4x2) or 32x64 (BN=64, 2x4) tile.  Current shared use is wsh 4608 + xsh 5248 + osh 4096 = 13.95 KB per threadgroup and BM=64 would take it to 22.7 KB, so more NT trades shared memory for warps rather than being free.  Ranked the candidates: cheapest is dropping BK to 32, which shrinks xsh from 5248 to 2624 B and the total to 11.3 KB - one line, and although BK=32 and 64 tied on throughput earlier that was with nothing else changed and it deserves a retest now that occupancy is the suspected constraint; next is BN=64 with NT=256, whose shared arithmetic must be redone and may not pay; and the structural option is split-K, since out_f=5120 launches 160 threadgroups against roughly 80 concurrent, two waves, so halving K and reducing doubles parallelism for the price of a second pass.  Chose candidate 1 for next round: one line plus an interleaved A/B, which also tests the occupancy hypothesis itself - if shrinking xsh buys nothing, shared capacity is not the constraint and the other two candidates should be dropped.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no code change)",
+   "evidence": {
+    "NT": 128,
+    "simdgroup_map": "2x2 over a 32x32 tile (r_off=(sg>>1)*16, t_off=(sg&1)*16)",
+    "shared_bytes": {
+     "wsh": 4608,
+     "xsh": 5248,
+     "osh": 4096,
+     "total": 13952
+    },
+    "NT256_requires": "8 simdgroups -> BM=64 (22.7 KB shared) or BN=64; trades shared for warps",
+    "candidates": [
+     "BK=32 to shrink xsh (one line, retest)",
+     "BN=64 + NT=256 (recompute shared, may not pay)",
+     "split-K (grid 160 vs ~80 concurrent = 2 waves)"
+    ],
+    "next": "candidate 1, which doubles as a test of the occupancy hypothesis"
+   }
   }
  ],
- "next": "Ruled out the last simple explanation for the weight staging's 37 GB/s: packed the eight staged halves into two half4 stores instead of eight half stores (alignment is guaranteed because the base is a multiple of four halves), which should cut the shared-store phases four-fold.  Accuracy was bit-identical, but the interleaved A/B gave medians of 12.096 for the baseline against 11.998 for the packed version - 0.8 percent, inside the noise - so it was reverted.  The machine was in a fast state (12 ms) this time rather than the previous round's 18 ms, so this tie is trustworthy.  That exhausts the simple explanations for the staging: dequantisation is free (mode 1 matches mode 0), per-step overhead and barriers are not it (larger BK is worse), bank conflicts are not it (0.8 percent), and global bandwidth is not it (0.15 loads per SM per cycle, far below capability).  Latency and occupancy are the only explanation left: wsh + xsh + osh is about 13.6 KB with 128 threads per threadgroup, so roughly two threadgroups and eight warps per SM.  NEXT: attack occupancy - shrink xsh (BK=32 takes it from 5.2 to 2.6 KB) or raise Q4_GEMM_NT to 256 for more warps per threadgroup to hide latency; note NT feeds the sg derivation so any change must be validated by an interleaved A/B.",
+ "next": "Worked out what an occupancy attack actually costs, because NT=256 is not a one-constant change.  Q4_GEMM_NT is 128 with r_off = (sg>>1)*16 and t_off = (sg&1)*16, so four simdgroups tile the 32x32 output as 2x2; eight simdgroups need a 64x32 (BM=64, 4x2) or 32x64 (BN=64, 2x4) tile instead.  Shared usage now is wsh 4608 + xsh 5248 + osh 4096 = 13.95 KB per threadgroup, and BM=64 would push that to 22.7 KB, so raising NT trades shared memory for warps rather than being free.  Ranked three candidates: (1) cheapest, drop BK to 32 so xsh goes 5248 -> 2624 B and the total to 11.3 KB - a one-line change, and although BK=32/64 tied on throughput before, that was with no other change and is worth retesting now that occupancy is the suspected constraint; (2) BN=64 with NT=256 (2x4 mapping), whose shared arithmetic has to be redone and may not pay; (3) structural, split-K - with out_f=5120 the grid is 160 threadgroups against roughly 80 concurrent (40 SMs at about 2 each), i.e. two waves, so splitting K in two and reducing afterwards doubles parallelism at the cost of an extra reduction pass.  NEXT: candidate 1, one line plus an interleaved A/B - and it doubles as a test of the occupancy hypothesis itself, because if shrinking xsh buys nothing then shared capacity is not the constraint and candidates 2 and 3 should not be attempted.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
