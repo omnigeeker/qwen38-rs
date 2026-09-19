@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 130,
+ "round": 131,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3057,9 +3057,27 @@
     "rule_fixed": "cross-path comparisons use max_abs only, never rel vs max_abs",
     "next": "out_proj has the shortest K yet the largest error, so suspect the f16 output intermediate (osh); try f32 with a single rounding"
    }
+  },
+  {
+   "round": 131,
+   "title": "Checked the hypothesis from last round and killed it: osh is threadgroup float (msl.rs:720) and the final write is a single (half)osh[idx] rounding, so the output path was already f32 with one rounding and the f16 output intermediate does not exist.  That makes three dead hypotheses in a row - the whi+wlo weight split changed nothing, the output intermediate is f32, and my previous claim that the GEMV might be the less accurate path was wrong.  The common cause is now clear and it is a process failure, not a kernel fact: over four rounds I repeatedly compared rel (normalised by max_ref or by rms) against max_abs and drew three wrong conclusions.  The out_proj row is the tell I misread - max_abs 1.097e-2 together with rel 2.715e-4 is not contradictory, it just means that tensor's outputs are large in magnitude, and I treated it as evidence of a large error.  Stopped that practice.  The single next action, with no new speculation, is one harness that measures K4_U4HX and the GEMM against the CPU on the same tensor set and reports both max_abs and max_abs/max|y| for each, so the comparison is finally apples to apples.  The GEMM stays opt-in and no kernel change is made on speculation until that table exists.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no engine change)",
+   "evidence": {
+    "osh_type": "threadgroup float (msl.rs:720)",
+    "final_write": "y[...] = (half)osh[idx] - one rounding",
+    "dead_hypotheses": [
+     "weight rounding (whi+wlo, no change)",
+     "f16 output intermediate (osh is float)",
+     "GEMV is the inaccurate path (refuted)"
+    ],
+    "process_failure": "four rounds of comparing rel against max_abs; three wrong conclusions",
+    "next": "one harness, same tensors, both kernels, both metrics - no new hypotheses"
+   }
   }
  ],
- "next": "Ran the decisive same-tensor, same-CPU-reference comparison and it kills the reversal I proposed last round: on layers.0.mlp.gate_proj the GEMV's max_abs is 5.0e-4 against the GEMM's 9.508e-4, and on layers.0.linear_attn.out_proj it is 1.6e-3 against 1.097e-2 - the GEMM is 1.9x and 6.9x WORSE, so it is genuinely the less accurate path and the GEMM staying opt-in is correct.  The cause of my error was the same normalisation mistake for the third round running: comparing the GEMM's rel (divided by max_ref) with the GEMV's max_abs.  Rule now fixed in the doc: cross-path comparisons use max_abs only.  The out_proj row shows why rel is misleading here - rel 2.715e-4 with max_abs 1.097e-2, because the denominator max|y| is large, so rel HIDES absolute error.  The whi+wlo weight split is proven useless, so the next precision lead is the x side and the accumulation: out_proj has the SHORTEST K (6144) yet the LARGEST error, which points at an output-side f16 intermediate - osh is half and simdgroup_store rounds to half before y is written - rather than at accumulation.  NEXT experiment: make the osh path and the final write f32 with a single rounding, then re-measure out_proj's max_abs against the CPU and re-run the 9-length equivalence test.",
+ "next": "Killed the output-side hypothesis too: osh is threadgroup float (msl.rs:720) and the final write is a single (half) rounding, so the output path was already f32.  Three hypotheses are now dead - weight rounding (the whi+wlo split changed nothing), the output intermediate (this round), and my mis-read that the GEMV was the inaccurate one.  The real problem is that across four rounds I repeatedly compared rel (normalised by max_ref or rms) against max_abs and drew three wrong conclusions from it; the out_proj row is the tell - max_abs 1.097e-2 alongside rel 2.715e-4 is not a contradiction, it just means that tensor's output magnitude is large, and I read it as evidence of a large error.  STOPPING that practice.  The only thing next round should do, with no new hypotheses, is build ONE harness that measures both K4_U4HX and the GEMM against the CPU on the SAME tensor set and reports BOTH max_abs and max_abs/max|y| for each.  That single table answers which is more accurate and by how much.  Until it exists the GEMM stays opt-in and no further kernel change is made on speculation.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
