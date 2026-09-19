@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 144,
+ "round": 145,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3435,9 +3435,41 @@
     ],
     "next": "candidate 1, which doubles as a test of the occupancy hypothesis"
    }
+  },
+  {
+   "round": 145,
+   "title": "Adopted Q4_GEMM_BK = 32 after six interleaved A/B rounds in which it won every single pair - 11.700, 11.571, 11.702, 11.662, 11.587 and 11.792 against BK=64's 11.872, 11.869, 12.110, 12.092, 11.990 and 11.969, medians 11.681 against 11.980, a 2.6 percent win.  The earlier four-round run that read as a tie had been taken while the machine drifted from 13 to 20 ms, whereas this one held steady at 11.5-12.1 ms with the same direction in all six rounds, which is why it is the one to trust - another confirmation that only interleaved A/B is usable on this machine.  Accuracy stays bit-identical and the gates pass 19/0 ACCEPTED with BK=32 as the default.  More importantly the probe answered the question it was designed for: halving xsh bought only 2.6 percent, so shared capacity is a weak constraint, and that kills the two larger occupancy candidates - BN=64 with NT=256, which would push shared use up to 22.7 KB, and split-K, which needs an extra reduction pass.  Both dropped.  That closes the weight-staging line: five explanations for its 37 GB/s have now been measured and excluded - dequantisation, per-step overhead, bank conflicts, global bandwidth and shared capacity - leaving memory latency itself, set by the per-thread dependency chain, as the structural limit of this kernel.  Cold TTFT is 7.4-10.5 s against Ollama's 2.1-2.9 s while otps and warm TTFT both win comfortably, so the next round should move to a higher-yield direction instead of more two-percent staging attempts.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BK=32 is now the default)",
+   "evidence": {
+    "interleaved_bk32": [
+     11.7,
+     11.571,
+     11.702,
+     11.662,
+     11.587,
+     11.792
+    ],
+    "interleaved_bk64": [
+     11.872,
+     11.869,
+     12.11,
+     12.092,
+     11.99,
+     11.969
+    ],
+    "median_bk32": 11.681,
+    "median_bk64": 11.98,
+    "win": "6/6 pairs, 2.6%",
+    "binary_md5": "35fe8f5f363f352317a379f252f7d83d",
+    "probe_conclusion": "shared capacity is a weak constraint -> drop BN=64/NT=256 and split-K",
+    "staging_line_closed": "five explanations excluded (dequant, step overhead, bank conflict, global bw, shared capacity); latency is structural",
+    "next": "move to a higher-yield direction than staging micro-optimisation"
+   }
   }
  ],
- "next": "Worked out what an occupancy attack actually costs, because NT=256 is not a one-constant change.  Q4_GEMM_NT is 128 with r_off = (sg>>1)*16 and t_off = (sg&1)*16, so four simdgroups tile the 32x32 output as 2x2; eight simdgroups need a 64x32 (BM=64, 4x2) or 32x64 (BN=64, 2x4) tile instead.  Shared usage now is wsh 4608 + xsh 5248 + osh 4096 = 13.95 KB per threadgroup, and BM=64 would push that to 22.7 KB, so raising NT trades shared memory for warps rather than being free.  Ranked three candidates: (1) cheapest, drop BK to 32 so xsh goes 5248 -> 2624 B and the total to 11.3 KB - a one-line change, and although BK=32/64 tied on throughput before, that was with no other change and is worth retesting now that occupancy is the suspected constraint; (2) BN=64 with NT=256 (2x4 mapping), whose shared arithmetic has to be redone and may not pay; (3) structural, split-K - with out_f=5120 the grid is 160 threadgroups against roughly 80 concurrent (40 SMs at about 2 each), i.e. two waves, so splitting K in two and reducing afterwards doubles parallelism at the cost of an extra reduction pass.  NEXT: candidate 1, one line plus an interleaved A/B - and it doubles as a test of the occupancy hypothesis itself, because if shrinking xsh buys nothing then shared capacity is not the constraint and candidates 2 and 3 should not be attempted.",
+ "next": "Adopted Q4_GEMM_BK = 32 on six interleaved A/B rounds in which it won EVERY pair: 11.700/11.571/11.702/11.662/11.587/11.792 against BK=64's 11.872/11.869/12.110/12.092/11.990/11.969, medians 11.681 vs 11.980, so 2.6 percent faster.  The earlier four-round run that showed a tie was taken while the machine drifted from 13 to 20 ms; this one held steady at 11.5-12.1 ms with a consistent direction in all six rounds, so it is the trustworthy one.  Accuracy is bit-identical and the gates are 19 passed / 0 failed, ACCEPTED with BK=32 as the default (binary md5 35fe8f5f363f352317a379f252f7d83d).  The probe also answered its real question: halving xsh bought only 2.6 percent, so shared capacity is a WEAK constraint, and that rules out the two bigger occupancy candidates - BN=64 with NT=256, whose shared use would actually rise to 22.7 KB, and split-K, which costs an extra reduction pass.  Both are dropped on cost-benefit grounds.  That closes the weight-staging line: its 37 GB/s is not dequantisation, not per-step overhead, not bank conflicts, not global bandwidth and not shared capacity - five explanations measured and excluded - so what remains is memory latency itself, set by the per-thread dependency chain, which is the structural limit of this kernel.  Cold TTFT stands at 7.4-10.5 s against Ollama's 2.1-2.9 s (3.5-4x behind) while otps and warm TTFT both win comfortably, so the next round should move to a higher-yield direction rather than more two-percent attempts on staging.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

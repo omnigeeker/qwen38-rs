@@ -687,7 +687,7 @@ Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
 // ---------------------------------------------------------------------------
 #define Q4_GEMM_BM 32
 #define Q4_GEMM_BN 32
-#define Q4_GEMM_BK 64
+#define Q4_GEMM_BK 32
 // Shared-memory leading dimensions, padded away from a multiple of the 32-bank
 // (128-byte) period.  With an unpadded stride of 64 halfs, every one of the eight
 // rows a simdgroup_load touches starts on the same bank and the load serialises
