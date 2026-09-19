@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 157,
+ "round": 158,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3779,9 +3779,36 @@
     ],
     "next": "fix usage reporting, then re-measure the cold path on a cool machine with a fixed prompt"
    }
+  },
+  {
+   "round": 158,
+   "title": "Re-measured the cold path after a 300 s cooldown with a paired, alternating harness on a fresh random 672-token prompt.  Cold TTFT was ours 15.102/12.131/14.318 s against Ollama's 2.316/1.646/3.249 s, medians 14.318 against 2.316, roughly 6.2x behind.  Ollama prefills 581 tokens in about 2.3 s, near 250 tok/s, consistent with the 220-260 tok/s recorded earlier, while ours does 672 tokens in 14.3 s, about 47 tok/s, consistent with the earlier 46-74 tok/s - neither side is anomalous and the gap is real.  The otps figures from this round are void: the harness divided non-empty content chunks by elapsed time and a chunk can hold several tokens, so it measured chunks per second, optimistic and not comparable with Ollama's exact eval_count/eval_duration.  The reliable otps result stays the earlier properly counted paired run - plain 15.23 against 11.06 for a 1.377x win and spec 24.52 against 14.88 for 1.647x.  Both sides also declined monotonically over the three rounds, ours from 26.25 to 9.54 and Ollama from 23.57 to 6.75, confirming that this machine throttles hard under sustained load and that comparisons must be interleaved and cooled.  The honest state is: otps won at 1.38x and 1.65x, warm TTFT won by 13-32x, cold TTFT lost by about 6x; because the objective requires winning both metrics, the cold TTFT gap keeps the goal active.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (measurement only; no code change)",
+   "evidence": {
+    "cold_ttft_ours": [
+     15.102,
+     12.131,
+     14.318
+    ],
+    "cold_ttft_ollama": [
+     2.316,
+     1.646,
+     3.249
+    ],
+    "median_ours": 14.318,
+    "median_ollama": 2.316,
+    "ratio": "~6.2x behind",
+    "ours_prefill_rate": "672 tokens / 14.3 s = ~47 tok/s",
+    "ollama_prefill_rate": "581 tokens / 2.3 s = ~250 tok/s",
+    "otps_this_round": "VOID - counted chunks not tokens; the trustworthy figures remain plain 15.23 vs 11.06 (1.377x) and spec 24.52 vs 14.88 (1.647x)",
+    "throttling": "both sides declined monotonically across rounds (ours 26.25->9.54, ollama 23.57->6.75)",
+    "honest_state": "otps won, warm TTFT won 13-32x, cold TTFT lost ~6x -> goal stays active"
+   }
   }
  ],
- "next": "Fixed the cold-TTFT harness and used it to refute the out_f routing idea.  The harness bug was real: the server emits a role-only SSE chunk (`{\"delta\":{\"content\":\"\",\"role\":\"assistant\"}}`) BEFORE any token is generated, at 0.063 s, and the old script stopped the clock on the first data: line - so it was timing the role chunk, not TTFT.  That is the previously recorded trap (never measure TTFT on the first SSE byte) hit a second time.  The fix skips empty-content chunks and ':' keep-alives and stops only on the first non-empty content, and the server log confirms a genuine cold prefill (prefix cache miss, 0 of 672 tokens skipped, prefill 192/672 after 3.1 s and 576/672 after 10.0 s).  With it working, four interleaved rounds on a fresh random 672-token prompt gave the default GEMM-everywhere 18.779/17.177/16.735/17.791 against the min_out_f=17408 variant's 20.745/21.154/19.575/20.023 - GEMM everywhere won 4/4 by about 15 percent.  So the hypothesis that the tile kernel's eight times more threads would win on out_f=5120 is refuted by measurement despite its eight-fold weight re-read being avoided, and QW_GEMM_MIN_OUT_F stays at its default of 0.  Two other things to record: stream_options.include_usage does NOT make this server return usage, so prompt_tokens is still None and the harness currently relies on server logs to prove a cold prefill, which should be fixed next; and the cold TTFT measured this round is 16.7-21.2 s for 672 tokens (about 38 tok/s), not comparable with the earlier 7.4-10.5 s for about 490 tokens because the prompt is longer and the machine is hotter after many rounds of benchmarking.  The absolute cold-path figures need one more measurement on a cool machine with a fixed prompt before they can be treated as final.",
+ "next": "Re-measured the cold path after a 300 s cooldown, paired and alternating on a fresh random 672-token prompt.  Cold TTFT came out ours 15.102/12.131/14.318 s against Ollama's 2.316/1.646/3.249 s - medians 14.318 s versus 2.316 s, so about 6.2x behind.  Ollama's 581 tokens in 2.3 s is roughly 250 tok/s, matching the 220-260 tok/s recorded earlier, and ours at 672 tokens in 14.3 s is about 47 tok/s, matching the earlier 46-74 tok/s, so neither side is anomalous and the gap is real.  My own otps numbers from this round are VOID because the harness computed the rate as non-empty content chunks divided by elapsed time, and a chunk can carry several tokens - so it measured chunks per second, which is both optimistic and not comparable with Ollama's accurate eval_count/eval_duration.  The trustworthy otps result remains the earlier paired measurement with proper token counting: plain 15.23 against 11.06, a 1.377x win, and spec 24.52 against 14.88, a 1.647x win.  Also worth recording that both sides declined monotonically across the three rounds - ours 26.25 down to 9.54, Ollama 23.57 down to 6.75 - so this machine throttles hard under sustained load and every cross-round comparison must be interleaved and cooled first.  Honest state of the objective: otps won at 1.38x and 1.65x, warm TTFT won by 13-32x, cold TTFT lost by about 6x.  Since the objective requires winning BOTH metrics, the cold TTFT gap means the goal stays active.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
