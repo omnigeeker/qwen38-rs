@@ -5354,3 +5354,40 @@ Error: failed to build pipeline for `q4_gemm_tile`:
    代码可从 `/tmp/msl9.bak` 取回；**唯一新增的是 split-K 与归约**。
 
 **这是目前唯一有明确数字支撑、且能翻盘的路径。下一轮实施。**
+
+### 72aq. `BN=128` 为何**结构性**受阻；split-K 的实施清单（第 107 轮）
+
+在动手实现 split-K 前，先把「能不能不走 split-K、直接把 `BN` 做大」这条路彻底算清。
+
+`BN=128` 需要 32×128 = **64 个 8×8 tile**。用 `NT=128`（4 个 simdgroup）
+⇒ **每个 simdgroup 16 个累加器** ⇒ 寄存器压力过大（§72al 实测慢 73% 正是如此）。
+用 `NT=256`（8 个 simdgroup）⇒ 每个 8 个累加器，但：
+
+| 配置 | 权重 staging 工作项 | `NT=256` 的线程利用 |
+|---|---|---|
+| `BM=32` | `32×4 = 128` | **一半线程空转** |
+| `BM=64` | `64×4 = 256` ✓ | 但 64×128 = **128 个 tile** ⇒ 每个 simdgroup **16 个累加器** |
+
+**⇒ 两头堵死**：要么 16 个累加器（寄存器压力），要么一半线程在占 89% 时间的
+staging 里空转。**`BN=128` 无法靠调 `NT`/`BM` 绕开。**
+
+（唯一剩下的花招是把每个 word 的 8 个 nibble 拆给 2 个线程 ⇒ 256 个工作项，
+但那会让**每个 word 被加载两次**，得不偿失。）
+
+### split-K 的实施清单（下一轮直接照做）
+
+1. **kernel 改动（很小）**：读 `tg.z`；当 `mode == 4` 时，最终写出改为
+   ```c
+   ((device float*)y)[(size_t)z * (size_t)k * (size_t)out_f + (size_t)tok * out_f + (size_t)row] = osh[idx];
+   ```
+   （`y` 此时当 scratch 用，f32 部分和；不需要新 buffer 绑定。）
+2. **归约 kernel（新增，约 15 行 MSL）**：对每个 `(tok, row)`，
+   读 `S` 个 f32 部分和相加，写回 `half` 的 `y`。
+3. **Rust 侧**：`out_f ≤ 5120` 时分配 scratch（`4 × rows × out_f × 4 B = 10.5 MB`），
+   GEMM dispatch 用 `grid.z = 4` 且 buffer 4 指向 scratch；
+   然后 dispatch 归约 kernel 写真正的 `y`。
+4. **正确性**：`gemm-check` 必须逐位一致（f32 部分和相加与一次累加在
+   f32 下**不保证逐位相同**，所以这里要允许 `max_abs` 量级一致，
+   并以**门禁的 oracle 一致性**为准）。
+5. **性能**：预计每 pass 流量 `4W → W`，6 个 pass 由 345 GB 降到 86 GB，
+   **6.0 s → 约 1.4 s**，对 Ollama 的 2.3 s 为赢。

@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 166,
+ "round": 167,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4017,9 +4017,32 @@
     ],
     "next": "implement split-K with the reduction"
    }
+  },
+  {
+   "round": 167,
+   "title": "Showed that BN=128 is structurally blocked, before spending a round trying to route around it.  A 32x128 tile contains 64 8x8 tiles, so NT=128 forces sixteen accumulators per simdgroup - the register pressure that measured 73 percent slower - while NT=256 needs only eight but leaves the weight staging with BM*nwords = 128 work items for 256 threads, so half the threads idle inside the staging that is 89 percent of the time; raising BM to 64 fills those threads but takes the tile count to 128 and the accumulators back to sixteen.  Both ends are blocked, so BN=128 cannot be reached by tuning NT or BM, and the only remaining trick - splitting each word's eight nibbles between two threads to make 256 work items - would load every word twice and is not worth it.  Split-K is therefore the only route, and the implementation list is now concrete: the kernel change is small (read tg.z and, under mode 4, write the final value as an f32 partial into y reinterpreted as float at offset z*k*out_f, needing no new buffer binding); a reduction kernel of roughly fifteen lines sums the S partials into the real half y; the Rust side allocates a 10.5 MB scratch only when out_f <= 5120 and dispatches with grid.z = 4 before the reduction; and correctness is judged by bit-identity where it holds and by the oracle gates otherwise, because four summed f32 partials need not match a single running accumulator exactly.  Expected: traffic per pass 4W to W, six passes 345 GB to 86 GB, cold prefill 6.0 s to about 1.4 s, beating Ollama's 2.3 s.  Implement next round.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (analysis only; no code change)",
+   "evidence": {
+    "BN128_blocked": {
+     "NT=128": "16 accumulators per simdgroup - the register pressure that cost 73%",
+     "NT=256_BM32": "weight staging has 128 work items for 256 threads - half idle in the 89%-of-time staging",
+     "NT=256_BM64": "128 tiles -> 16 accumulators again"
+    },
+    "conclusion": "BN=128 unreachable by tuning NT/BM; split-K is the only route",
+    "splitk_checklist": [
+     "kernel: read tg.z; under mode 4 write f32 partials into y at z*k*out_f (no new binding)",
+     "reduction kernel ~15 lines MSL summing S partials into half y",
+     "Rust: 10.5 MB scratch only when out_f <= 5120, grid.z = 4, then the reduction",
+     "correctness: bit-identity where it holds, oracle gates otherwise"
+    ],
+    "expected": "traffic per pass 4W -> W; six passes 345 GB -> 86 GB; 6.0 s -> ~1.4 s vs Ollama 2.3 s",
+    "next": "implement split-K"
+   }
   }
  ],
- "next": "Worked out why Ollama wins and what it takes to beat it.  Comparing weight traffic per token settles it: Ollama prefills 581 tokens in 2.3 s, and if it reads the 14.4 GB of weights once for the whole prompt - they fit in the 128 GB of unified memory - that is an effective 6.3 GB/s, far too low to be bandwidth-bound.  So Ollama's prefill is COMPUTE-bound at about 14.6 TFLOPS (581 tokens x 28.8 G weights x 2 FLOP = 33.5 TFLOP over 2.3 s, against an M5 Max peak near 36), and it reads the weights exactly once.  We, by contrast, move W/BN = 14.4/32 = 0.45 GB per token - independent of the pass width, as established earlier - which is 302 GB for a 672-token prompt, 4.95 s at 61 GB/s and matching the measured 6.0 s.  So we are not losing on bandwidth but on how many times we read the weights: 0.45 GB/token against Ollama's 0.0248, eighteen times as much, and even a tenfold bandwidth advantage cannot overcome eighteen times the data.  THE WINNING PLAN is BN=128 with split-K(4).  BN=128 makes grid.y = 1 so each pass reads the weights once, and grid.z = 4 splits K four ways to restore parallelism to (out_f/32)*4 = 640 threadgroups - exactly the 61 GB/s sweet spot measured in the BN sweep.  Per pass that is W = 14.4 GB instead of 4W = 57.6, so six passes come to 86 GB rather than 345, an estimated 1.4 s against Ollama's 2.3 s, which wins.  Implementation notes: enable split-K only for out_f <= 5120, since out_f >= 17408 already gives at least 544 threadgroups from grid.x alone, which keeps the partial-sum buffer at 4*128*5120*4 B = 10.5 MB rather than the 508 MB lm_head would need; the buffer is f32[S][rows][out_f] with S = 4; a light elementwise reduction kernel sums the four partials into y; and the BN=128 tile was already implemented and proved bit-identical in the earlier round, recoverable from /tmp/msl9.bak, so split-K plus the reduction is the only new work.  This is the only remaining route with numbers behind it, so implement it next.",
+ "next": "Established that BN=128 is structurally blocked before spending a round trying to route around it.  A 32x128 tile is 64 8x8 tiles, so with NT=128 the four simdgroups need sixteen accumulators each, which is the register pressure that measured 73 percent slower earlier; with NT=256 each simdgroup needs eight, but then the weight staging has only BM*nwords = 128 work items for 256 threads, so half the threads idle inside the staging that accounts for 89 percent of the time, and raising BM to 64 to fill them brings the tile count to 128 and the accumulators back to sixteen.  Both ends are blocked, so BN=128 cannot be reached by tuning NT or BM.  The only remaining trick - splitting each word's eight nibbles across two threads for 256 work items - makes every word load twice and is not worth it.  That leaves split-K as the sole route, and the implementation list is now written down concretely: the kernel change is small (read tg.z and, under mode 4, write the final value as an f32 partial into y reinterpreted as float at offset z*k*out_f, so no new buffer binding is needed); a reduction kernel of about fifteen lines sums the S partials into the real half y; the Rust side allocates a 10.5 MB scratch only when out_f <= 5120 and dispatches with grid.z = 4 before the reduction; and correctness is judged by bit-identity where it holds and by the oracle gates otherwise, since summing four f32 partials need not match one running accumulator bit for bit.  Expected effect: traffic per pass falls from 4W to W, six passes from 345 GB to 86 GB, and the cold prefill from 6.0 s to about 1.4 s, which beats Ollama's 2.3 s.  Implement next round.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
