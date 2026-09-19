@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 141,
+ "round": 142,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3351,9 +3351,37 @@
     "decision": "reverted to BK=64; needs an interleaved two-binary A/B with medians",
     "next": "interleaved A/B BK 32 vs 64"
    }
+  },
+  {
+   "round": 142,
+   "title": "Settled the BK question with a proper interleaved A/B - two binaries, the order swapped every round, bench --rows 8 --tokens 32.  BK=32 gave 13.127, 18.371, 17.961 and 18.919; BK=64 gave 14.675, 18.030, 20.118 and 17.898.  Medians are 18.166 against 17.964, so BK=64 is about 1.1 percent faster, effectively a tie, which confirms the previous round's '16 percent for BK=32' was thermal drift and that reverting it was right.  The same BK=64 drifted from 14.675 to 20.118 across four rounds, +37 percent, which is a stark reminder that no single non-interleaved kernel timing on this machine is usable.  Q4_GEMM_BK stays 64 and that line is closed.  All three directions on the cold path are now measured: the x staging fix landed and gave 1.7x, the weight staging runs at 37 GB/s and is latency- or occupancy-bound rather than bandwidth- or conflict-bound (larger BK is worse, so BK is not the fix), and the MAC is only 43 of the 391 ms and is not the bottleneck.  The one unverified idea left on weight staging is vectorising the load to uint4 and reading scale and bias once per group rather than eight times, which first requires redesigning the write-side mapping to dodge the 32-way conflict identified earlier, and it must be validated with an interleaved A/B from the outset given what this round demonstrated.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no change: BK stays 64)",
+   "evidence": {
+    "interleaved_bk32": [
+     13.127,
+     18.371,
+     17.961,
+     18.919
+    ],
+    "interleaved_bk64": [
+     14.675,
+     18.03,
+     20.118,
+     17.898
+    ],
+    "median_bk32": 18.166,
+    "median_bk64": 17.964,
+    "verdict": "effectively a tie, BK=64 marginally faster; the 16% was thermal drift",
+    "drift_within_run": "BK=64 went 14.675 -> 20.118, +37%, in four rounds",
+    "decision": "Q4_GEMM_BK stays 64, line closed",
+    "cold_path_state": "x staging fixed (1.7x); weight staging 37 GB/s latency/occupancy-bound; MAC only 43/391 ms",
+    "next": "vectorise weight staging + one scale/bias read per group, with the write-side mapping redesigned, validated by interleaved A/B"
+   }
   }
  ],
- "next": "Ran the BK discriminating experiment and did NOT adopt its result, because the design was confounded and I caught it before shipping.  Sequential single measurements of BK = 32 / 64 / 128 (bench --rows 8 --tokens 32): mode 0 13.883 / 16.580 / 24.585 ms per token and mode 2 (staging only) 10.832 / 12.782 / 19.336.  So staging does NOT fall with the k0 step count - BK=128 halves the steps and staging nearly doubles - which refutes the 'per-step fixed overhead dominates' hypothesis from the previous round, and larger BK is simply worse, probably because more shared memory means fewer threadgroups per SM and worse latency hiding.  BUT the three values were measured in the order 32, 64, 128 in a single pass, so thermal drift is perfectly collinear with the order, and BK=64 read 16.580 in that session against 12.228 in an earlier one - a 35 percent machine-state difference.  'BK=32 is 16 percent faster' therefore cannot be separated from 'BK=32 happened to run first while the machine was coolest'.  End to end could not arbitrate either: BK=32 gave 8.0 / 16.9 / 14.2 s on fresh 300-word prompts while BK=64's 7.44 / 9.23 / 10.46 s came from an Ollama-interleaved run, and the 16.9 s shows the load was heavy, so they are not comparable.  DECISION: reverted Q4_GEMM_BK to 64 and rebuilt, because a 16 percent result collinear with measurement order is not evidence enough to change a shipped default.  NEXT: an interleaved two-binary A/B, alternating several rounds and taking medians, to settle BK 32 against 64 - BK=32 makes nwords 4, so BM*nwords is exactly 128 = NT with one iteration per thread and a smaller xsh, which is structurally cleaner and worth a fair test.",
+ "next": "Settled BK with a proper interleaved A/B (two binaries, order swapped each round, bench --rows 8 --tokens 32): BK=32 gave 13.127 / 18.371 / 17.961 / 18.919 and BK=64 gave 14.675 / 18.030 / 20.118 / 17.898, medians 18.166 against 17.964.  So BK=64 is about 1.1 percent faster - effectively a tie - and the '16 percent win for BK=32' was indeed thermal drift, which vindicates reverting it.  Worth noting the same BK=64 drifted from 14.675 to 20.118, +37 percent, across just four rounds, so no single non-interleaved kernel timing on this machine is usable.  Q4_GEMM_BK stays 64 and that line is closed.  The cold path now has all three directions measured: the x staging fix landed for 1.7x, the weight staging runs at 37 GB/s and is latency/occupancy-bound (larger BK is worse, so the fix is not BK), and the MAC is only 43 of 391 ms and is not the bottleneck.  NEXT: the one unverified idea left on the weight staging is vectorising the load to uint4 and reading scale/bias once per group instead of eight times, which needs the write-side mapping redesigned first to avoid the 32-way conflict noted earlier - and it must be validated with an interleaved A/B from the start, given what this round showed.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
