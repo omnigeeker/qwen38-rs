@@ -6567,3 +6567,74 @@ gemm max_abs ... rel ...   |   gemv max_abs ... rel ...   |   MPP max_abs ... re
 或让每个 group 的结果落进 device scratch 后由一个便宜的收窄内核
 做 `acc[m,n] += s[n,g]*T_g[m,n]`（需评估 dispatches 与带宽）。
 **注意 descriptor 第 6 参数是 `relaxed_precision`，不是 accumulate。**
+
+### 72bs. **两条替代路线被排除；确定唯一可行的结构**（第 132 轮）
+
+#### 路线一：MPP 原生「块缩放」（`tensor_plane_scales`）—— 精度不可用
+
+在 `__impl` 里发现 `matmul2d` 的 `run` 符号带有完整的缩放参数：
+
+```
+leftScaleDataType, leftScaleBlockSize0, leftScaleBlockSize1,
+rightScaleDataType, rightScaleBlockSize0, rightScaleBlockSize1
+```
+
+公开层通过 `metal::tensor_plane_scales` 暴露，**但硬性约束是**：
+
+```cpp
+static_assert(is_same_v<scaleType, metal_fp8_ue8m0_format>, "Scale data type must be metal_fp8_ue8m0_format");
+static_assert(blockSize0 == 32, "Scale block size 0 must be 32");
+static_assert(blockSize1 == 1,  "Scale block size 1 must be 1");
+static_assert(!descriptor.transpose_left, "Left tensor must not be transposed if it has scale factors");
+```
+
+**⇒ 要求 fp8_ue8m0（只有 8 位指数，即 2 的幂）+ block 32；
+而 MLX affine 是 bf16 尺度 + block 64。**
+
+**⇒ 把尺度压成 2 的幂会引入最高 2× 的逐组误差，远超 `gemm-check` 的 2e-3 容差
+（当前 gemm 实测 3.3e-4）⇒ 这条路精度上不可用，不能作为默认。**
+
+（枚举值已记录备用：`float32 = 0x10000000|32`、`float16 = 0x10000000|16`、
+`bfloat16 = 0x80000000|0x10000000|16`、`uint4 = 4`、`invalid = 0`。）
+
+#### 路线二：threadgroup 张量累加 —— 类型层面就不允许
+
+写了 `q4_mpp_affine_v3`：每个 threadgroup 负责一块 64×32 输出，
+在内部按组调用 `op.run`，把结果落进 threadgroup 张量 `tmp`，
+再显式做 `acc[i] += tmp[i]*sc + bi*gsum`。**编译失败：**
+
+```
+metal_tensor:1494: error: static_assert failed due to requirement
+  '__is_tensor_addrspace_v<metal_tensor_handle, threadgroup half>'
+  "tensor: ElementType must be device or constant qualified"
+```
+
+**⇒ `tensor`（tensor_handle）只能是 device 或 constant 限定，
+threadgroup 目标在类型层面就被禁止 ⇒ 显式 threadgroup 累加不可行。**
+
+#### `store` 的约束已核对，全部满足却仍是空操作
+
+```cpp
+enable_if_t<(is_same_v<element_type, typename tensor<T,E,tensor_handle,Tags...>::value_type> &&
+             get_rank() <= E::rank())>
+store(tensor<T, E, tensor_handle, Tags...> t) thread const;
+```
+
+`cT` 是 `float`、`mC` 是 `tensor<device float, ...>`、rank 2/2，
+**三条约束全部满足，`slice()` 返回的 `tensor_offset` 也确实落在 `Tags...` 里**，
+但 `cT` 全设 555 后再 `store` 依然对输出毫无影响。
+**⇒ 该工具链上 cooperative tensor 的 store 通路已穷尽，不再投入。**
+
+#### 唯一剩下的可行结构
+
+`op.run` 写 **device** 张量是**唯一被证明有效**的目标（mode 7 probe，3.2×）。
+所以 affine 只能这样做：
+
+1. 每个 threadgroup 负责一块 64×32 输出，内部按组循环 96 次 `op.run`，
+   把第 g 组的结果写进 **device scratch 的第 g 个切片**；
+2. 第二个（便宜的）收窄内核做
+   `y[m,n] = Σ_g s[n,g]*scratch[g,m,n] + b[n,g]*gsum[m,g]`。
+
+**代价**：scratch = 96 × rows × out_f × 4 字节，对 `lm_head`（out_f 248320）是几十 GB，
+**必须按 out_f 分块**（例如 4096 列一块 ⇒ 约 100 MB）。
+**⇒ 这是下一轮要实现的唯一路线。**

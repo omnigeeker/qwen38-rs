@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 194,
+ "round": 195,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4805,9 +4805,31 @@
     "descriptor_arg6": "relaxed_precision, not accumulate",
     "default_untouched": "yes"
    }
+  },
+  {
+   "round": 195,
+   "title": "Eliminated the two remaining alternative routes to the affine with documented evidence, leaving exactly one viable structure.  Route one: the MPP matmul does support hardware block scales (the __impl run symbols carry left/rightScaleDataType and ScaleBlockSize0/1, exposed publicly via metal::tensor_plane_scales) but it hard-asserts scale type metal_fp8_ue8m0_format with blockSize0 == 32 and blockSize1 == 1 and a non-transposed left tensor.  fp8_ue8m0 has only an 8-bit exponent, so scales would round to powers of two - up to 2x per-group error, far outside the 2e-3 tolerance the current 3.3e-4 gemm meets.  Route two: q4_mpp_affine_v3 accumulating each group in threadgroup memory failed to compile because tensor<threadgroup T, ...> is rejected - metal_tensor asserts a tensor_handle element type must be device or constant qualified - so threadgroup accumulation is closed at the type level.  I also checked store's constraints exactly (is_same_v of element_type and value_type, get_rank() <= E::rank()): cT is float, mC a device float tensor, both rank 2, and slice() does put its tensor_offset in Tags, so every constraint holds and store is still a no-op, closing that path too.  The one structure left uses the proven primitive: op.run into a device tensor.  Each threadgroup owns a 64x32 tile, loops the 96 groups calling op.run into a device scratch slice per group, and a second cheap narrowing kernel computes y[m,n] = sum_g s[n,g]*scratch[g,m,n] + b[n,g]*gsum[m,g].  The scratch is 96 * rows * out_f * 4 bytes - tens of GB for lm_head at out_f 248320 - so it must be tiled over out_f, about 100 MB at 4096 columns.  That tiling is next.  Enum values: float32 0x10000000|32, float16 0x10000000|16, bfloat16 0x80000000|0x10000000|16, uint4 4, invalid 0.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "default path verified word-for-word against baseline md5 5b5f6e93 len 182; gemm-check PASSED (worst rel 3.347e-4)",
+   "evidence": {
+    "route1_blocked": "tensor_plane_scales requires metal_fp8_ue8m0_format with blockSize0==32 and blockSize1==1; fp8_ue8m0 is exponent-only so scales round to powers of two (up to 2x per-group error) vs the 2e-3 tolerance",
+    "route2_blocked": "tensor<threadgroup half, ...> fails to compile: metal_tensor asserts 'ElementType must be device or constant qualified'",
+    "store_constraints_met_but_noop": "is_same_v element_type/value_type holds (both float), get_rank()<=E::rank() holds (2<=2), slice() puts tensor_offset in Tags - yet store writes nothing",
+    "only_viable": "op.run into a device tensor; per-threadgroup 64x32 tile, 96 group calls into per-group device scratch, then a narrowing kernel y[m,n] = sum_g s[n,g]*scratch[g,m,n] + b[n,g]*gsum[m,g]",
+    "scratch_size": "96 * rows * out_f * 4 bytes; must tile over out_f (~100 MB at 4096 columns)",
+    "enums": {
+     "float32": "0x10000000|32",
+     "float16": "0x10000000|16",
+     "bfloat16": "0x80000000|0x10000000|16",
+     "uint4": 4,
+     "invalid": 0
+    },
+    "default_untouched": "yes"
+   }
   }
  ],
- "next": "Built a 10-second numeric measurement bench for the MPP path and proved the cooperative-tensor read path is dead on this toolchain.  The bench matters most: the MPP affine path is now wired into gemm-check and measured against the same CPU reference the GEMM and GEMV are measured against, so instead of a 40-second end-to-end md5 that only says yes or no, there is a relative-error number in about ten seconds.  Baseline: gemm rel 2.7e-4 to 3.3e-4 and gemv rel 4.5e-4 to 5.3e-4 both pass, while MPP sits at rel 1.5 to 3.2.  Isolation with that bench: real sc and real bi give 2.391/3.187/1.521/2.760; sc=1 with bi=0 gives exactly 1.000 on all four, meaning the output is all zeros; real sc with bi=0 gives the identical 1.000, so sc has no effect at all; sc=1 with real bi reproduces the first row bit for bit, so bi is the only contributor.  Therefore part.get(i) is always zero.  Hoisting part out of the loop, swapping the coordinate order in both places, switching the descriptor K to dynamic_extent, and even deleting the group loop so op.run is called exactly once all leave that conclusion intact - a single op.run(mA, mB, part) still reads back zero.  Ruled out along the way: slice without explicit extents, implicit versus explicit buffer index collisions, cT and part sharing thread storage, array overflow, static versus dynamic K, where part is created, and the coordinate order from Apple's documentation.  What does work: op.run into a device tensor (the mode 7 probe) is fully effective and 3.2x faster than the hand-written GEMM, and cT.set/get work on a cooperative tensor that op.run never touched, which is how the bias term reaches the output.  cT.store is a silent no-op, reconfirmed.  Next: find a way to accumulate per-group results in device memory while applying s[n,g], either via an alpha/beta accumulation overload if one exists or by landing each group's result in device scratch and letting a cheap narrowing kernel do acc[m,n] += s[n,g]*T_g[m,n].  Note the descriptor's sixth argument is relaxed_precision, not accumulate.",
+ "next": "Eliminated the two remaining alternative routes to the affine with documented evidence, leaving exactly one viable structure.  Route one: the MPP matmul does support hardware block scales - the __impl run symbols carry leftScaleDataType, leftScaleBlockSize0/1 and the matching right-side parameters, and the public layer exposes them through metal::tensor_plane_scales - but it hard-asserts that the scale type is metal_fp8_ue8m0_format with blockSize0 equal to 32 and blockSize1 equal to 1, and that the left tensor is not transposed.  fp8_ue8m0 carries only an 8-bit exponent, so the scales would be rounded to powers of two, giving up to a factor of two of error per group, far outside the 2e-3 gemm-check tolerance that the current 3.3e-4 gemm meets.  Route two: a q4_mpp_affine_v3 that accumulated each group in threadgroup memory failed to compile because tensor<threadgroup T, ...> is rejected outright - metal_tensor asserts that a tensor_handle element type must be device or constant qualified - so explicit threadgroup accumulation is closed at the type level.  I also verified the store constraints exactly: is_same_v of element_type and value_type plus get_rank() <= E::rank(); cT is float, mC is a device float tensor, both rank 2, and slice() does place its tensor_offset in Tags, so every constraint is satisfied and store is still a no-op, which closes that path.  The one structure left standing is the one whose primitive is proven: op.run into a device tensor is the only destination that works, so each threadgroup must own a 64x32 output tile, loop the 96 groups calling op.run into a device scratch slice per group, and let a second cheap narrowing kernel compute y[m,n] = sum_g s[n,g]*scratch[g,m,n] + b[n,g]*gsum[m,g].  That scratch is 96 * rows * out_f * 4 bytes, which for lm_head at out_f 248320 is tens of gigabytes, so it has to be tiled over out_f - 4096 columns per tile is about 100 MB - and that tiling is the next thing to implement.  Enum values recorded for later: float32 0x10000000|32, float16 0x10000000|16, bfloat16 0x80000000|0x10000000|16, uint4 4, invalid 0.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
