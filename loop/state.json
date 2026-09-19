@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 196,
+ "round": 197,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4858,9 +4858,40 @@
     "conclusion": "op.run into a cooperative tensor produces no data on this machine despite the symbol existing and all preconditions holding - driver-level, stop probing from MSL",
     "default_untouched": "yes, reverted"
    }
+  },
+  {
+   "round": 197,
+   "title": "Overturning result: MetalPerformancePrimitives does not execute at all on this machine, invalidating the entire MPP line since round 94.  An 80-token generation showed the default path answering about ocean salinity and whales (md5 a97e4ebb) while mode 7 answered about 'the three main types of data' (md5 fc75a676) - unrelated, so mode 7's output was always wrong and its 3.8x came from not computing.  Adding a fourth path to gemm-check so the mode 7 probe faces the same CPU reference gave PROBE rel 1.000e0 on all four linears - all zeros - so the device-tensor destination is zero too.  Eliminated in turn: cooperative vs device destination (both zero); dextents taking shape from the bound buffer (binding an exactly-sized copy still zero); dynamic vs static K=5120 (still zero); the __HAVE_INT4B_FORMAT_TYPE__ gate (int4b=1 tensor=1 bfloat=1 metalver=400 via the engine's own compiler chain, so the branch is compiled); and finally a pure half-by-half matmul with device operands, device destination and static extents gave max_abs 2.250e0 rel 1.000e0, nonzero 0/2048.  So mpp::tensor_ops::matmul2d::run silently does nothing here - identically zero output, no error, no crash, symbol present, feature macros present.  Invalidated: round 94's '3.2x faster than the hand-written GEMM' (it timed an empty operator), last round's 'MPP ceiling 1.73 s, 8% from llama.cpp', the 'MPP bypasses staging' explanation, and every affine experiment from rounds 95-100.  Still valid: q4_gemm_tile is the only correct path (rel 3.3e-4), 799a417's single-pass prefill is a real 9%, and BN=32 means a 602-token prompt reads 14.4 GB of weights 19 times (~274 GB), the main staging cost.  Next: drop MPP and raise BN in the hand-written kernel to cut weight sweeps, sweeping only BN with everything else fixed.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "default path verified word-for-word against baseline md5 5b5f6e93 len 182; gemm-check PASSED (worst rel 3.347e-4)",
+   "evidence": {
+    "mode7_output_wrong": "80-token generation: base md5 a97e4ebb (ocean salinity/whales) vs mpp7 md5 fc75a676 (three main types of data) - unrelated",
+    "probe_vs_cpu": "PROBE rel 1.000e0 on all four linears = all zeros; the device-tensor destination does not work either",
+    "ruled_out": [
+     "cooperative vs device destination (both zero)",
+     "dextents from a 14.4 GB arena vs an exactly-sized copy (both zero)",
+     "dynamic vs static K=5120 (both zero)",
+     "__HAVE_INT4B_FORMAT_TYPE__ absent (it is 1; branch is compiled in)"
+    ],
+    "minimal_selftest": "pure half x half, device operands, device destination, static extents: max_abs 2.250e0 rel 1.000e0 nonzero 0/2048",
+    "conclusion": "mpp::tensor_ops::matmul2d::run silently does nothing on macOS 26.6.2 / SDK 27.0 / __METAL_VERSION__ 400",
+    "invalidated": [
+     "round 94's 3.2x MPP speedup",
+     "last round's 1.73 s MPP ceiling",
+     "MPP-bypasses-staging explanation",
+     "rounds 95-100 affine work"
+    ],
+    "still_valid": [
+     "q4_gemm_tile is the only correct path (rel 3.3e-4)",
+     "799a417 single-pass prefill is a real 9%",
+     "BN=32 means 19 weight sweeps for 602 tokens (~274 GB)"
+    ],
+    "default_untouched": "yes, reverted"
+   }
   }
  ],
- "next": "Two things this round.  First, the real cold-TTFT decomposition on a 602-token prompt, measured interleaved and paired: default mode 0 is 6.705/6.468 s, the MPP probe (mode 7) is 1.725/1.730 s - 3.8x and remarkably stable across runs - and skip-MACs (QW_GEMM_MODE=2, which skips only the multiply-accumulate but still does all the staging) is 4.663/4.105 s.  So the 32.5 TFLOP of MACs is worth only about 2.1 s, roughly 15.5 TFLOPS, while 4.4 s is staging and dispatch overhead.  MPP is fast not because it computes faster but because it never goes through threadgroup staging - it feeds the weights straight to the tensor units.  That explains why all sixteen earlier GEMM tuning directions failed: they optimised the 32% that was not the problem.  The MPP ceiling is 1.73 s against llama.cpp's 1.60 s, only 8% away, so the route is worth finishing.  Second, and overturning, I read the actual implementation of cooperative_tensor::get(): it is 'return is_valid_element(idx) ? (*this)[idx] : value_type();' - it returns zero for an invalid index.  Every earlier observation that part.get(i) was always zero is therefore equally consistent with is_valid_element(i) always being false, so those experiments never distinguished 'op.run did not write' from 'the index is invalid', and last round's conclusion from them has to be corrected.  I then measured the mask directly by dumping capacity and the number of valid elements from the kernel: capacity=16 and valid=16.  Sixteen elements per thread times 128 threads is 2048, exactly the 64x32 tile, and the mask is true for all sixteen, so the mask is fine and the loop does run.  Removing the is_valid_element guard entirely and using operator[] the way Apple's example does - which dereferences without a validity check - still gives rel 1.000e0 on all four linears, bit for bit the same as with the guard, so it is not get()'s semantics, not the mask, and not set/get versus operator[].  I also confirmed from the source that our exact configuration does select the cooperative implementation: at MPPTensorOpsMatMul2dImpl.h:9129 the chain matches half left, uint4b_format right, float destination with both operands in device and calls __tensorops_impl_matmul2d_op_run_cooperative_dv_f16_dv_ui4_f32_v2, and the 128 dispatched threads equal four SIMD groups as execution_simdgroups<4> requires.  Conclusion: op.run into a device tensor works (mode 7, 3.8x) while op.run into a cooperative tensor produces no data on this machine even though the symbol exists, the conditions match, the mask is correct and the capacity is correct - that is a driver-level issue and I am done probing it from the MSL side.  Next round: the device-scratch route, the only one built on a proven primitive.  Each threadgroup owns a 64x32 output tile, loops the 96 groups calling op.run into the g-th slice of a device scratch, and a cheap kernel then computes y[m,n] = sum_g s[n,g]*scratch[g,m,n] + b[n,g]*G[m,g], tiled over out_f at about 4096 columns to keep lm_head's scratch near 100 MB.",
+ "next": "Overturning result: MetalPerformancePrimitives does not execute at all on this machine, which invalidates the entire MPP line of work since round 94.  It started with a long-form comparison: on an 80-token generation the default path produces 'The user wants two things: 1. A short paragraph explaining why the ocean is salty. 2. Three facts about whales' (md5 a97e4ebb) while mode 7 produces an unrelated answer about 'the three main types of data' (md5 fc75a676), so mode 7's output has always been wrong and its 3.8x speed came from not computing.  I then turned that into a number by adding a fourth measurement path to gemm-check so the mode 7 probe is compared against the same CPU reference it had never been checked against: PROBE rel 1.000e0 on all four linears, i.e. all zeros, so the device-tensor destination is zero too and the long-standing claim that op.run into a device tensor works is false.  Elimination: cooperative versus device destination - both zero; dextents taking the shape from the bound buffer (I had been binding the whole 14.4 GB weight arena) - binding an exactly-sized copy still gives zero; dynamic_extent versus static K=5120 with slice<64,5120> - still zero; the __HAVE_INT4B_FORMAT_TYPE__ macro that gates the int4b branch - dumping it through the engine's own compiler chain gives int4b=1 tensor=1 bfloat=1 metalver=400, so the branch is compiled in; and finally a pure half-by-half matmul with device operands, a device destination and static extents gives max_abs 2.250e0 rel 1.000e0 with nonzero 0/2048.  Conclusion: mpp::tensor_ops::matmul2d::run silently does nothing on macOS 26.6.2 with SDK 27.0 and __METAL_VERSION__ 400 - output identically zero, no error, no crash, compiles fine, symbol present, feature macros present.  Consequences: round 94's '3.2x faster than the hand-written GEMM' is wrong because it timed an empty operator; last round's 'MPP ceiling 1.73 s, only 8% from llama.cpp' is wrong; last round's staging-bound explanation is partly wrong - the QW_GEMM_MODE=2 skip-MAC measurement does exercise a real branch of the hand-written kernel and remains valid, but 'MPP bypasses staging' does not hold; and every affine experiment from rounds 95-100 rested on a primitive that never worked.  What still holds: q4_gemm_tile is the only path that computes correct results (rel 3.3e-4), the single-pass prefill change in 799a417 is a real 9%, and BN=32 means a 602-token prompt reads the 14.4 GB of weights 19 times, about 274 GB, which is the main source of staging cost.  Next: drop MPP and raise BN in the hand-written kernel to cut the number of weight sweeps, doing a clean sweep that changes only BN with everything else fixed - earlier BN=8/64/128 attempts varied several things at once and were made while treating MPP as the viable route.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

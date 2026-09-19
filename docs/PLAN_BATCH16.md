@@ -6720,3 +6720,71 @@ capacity 正确。** 这已是驱动层面的问题，不再从 MSL 侧继续投
 **device scratch 的第 g 个切片**，再用一个便宜内核做
 `y[m,n] = Σ_g s[n,g]·scratch[g,m,n] + b[n,g]·G[m,g]`，并按 out_f 分块
 （4096 列 ≈ 100 MB）以避免 `lm_head` 的几十 GB scratch。
+
+### 72bu. **推翻性结论：MetalPerformancePrimitives 在本机完全不执行；整条 MPP 路线作废**（第 134 轮）
+
+#### 起因：mode 7 的输出一直是错的
+
+此前一直用「602 token 冷 prefill 的 md5」判断 mode 7，而那次比较恰好掩盖了问题。
+这次用 80 token 的生成任务做对比：
+
+```
+base  3.58s  md5=a97e4ebb  '<think>\nThe user wants two things:\n1. A short paragraph
+                            explaining why the ocean is salty.\n2. Three facts about whales...'
+mpp7  3.46s  md5=fc75a676  '<think>\nThe user is asking about the "three main types of data"
+                            in the context of data types. This is a common question...'
+```
+
+**⇒ 内容完全无关 ⇒ mode 7 的输出是错的，而它「快 3.8×」是因为它根本没在算。**
+
+#### 用 `gemm-check` 把这件事变成数字
+
+新增第四条测量路径，让 **mode 7 的 probe 也对照同一个 CPU 真值**
+（此前它从未被对照过，只被当作「device 目标可行的证据」）：
+
+```
+PROBE max_abs 4.040e1 rel 1.000e0   (device destination, no scales applied)
+PROBE max_abs 2.841e0 rel 1.000e0
+PROBE max_abs 3.306e0 rel 1.000e0
+PROBE max_abs 3.495e0 rel 1.000e0
+```
+
+**⇒ device 目标也是全零。** 第 94 轮以来「`op.run` 写 device 张量有效」的说法不成立。
+
+#### 逐步排除，最后用最简内核定位
+
+| 假设 | 测试 | 结果 |
+|---|---|---|
+| 是 cooperative tensor 的问题 | 改用 device 目标（上面） | **也是零** ⇒ 排除 |
+| 是 `dextents` 从缓冲区长度推导错（绑了整个 14.4 GB 权重区） | 绑定精确尺寸的权重副本 | **仍为零** ⇒ 排除 |
+| 是 `dynamic_extent` 推导出的 K 不对 | 改静态 `K=5120` + `slice<64,5120>` | **仍为零** ⇒ 排除 |
+| 是 `__HAVE_INT4B_FORMAT_TYPE__` 未定义、int4b 分支没编译进去 | 在引擎自己的编译链里 dump 该宏 | **`int4b=1 tensor=1 bfloat=1 metalver=400`** ⇒ 分支存在，排除 |
+| 是量化/尺度/格式的问题 | **纯 half × half、device 操作数、device 目标、静态 extent 的最简 matmul** | **`max_abs 2.250e0 rel 1.000e0 nonzero 0/2048`** |
+
+**⇒ 最终结论：`mpp::tensor_ops::matmul2d::run` 在本机
+（macOS 26.6.2 / SDK 27.0 / `__METAL_VERSION__` 400）静默地什么都不做。
+输出恒为零，且不报错、不崩溃、编译通过、符号存在、特性宏齐全。**
+
+#### 影响：撤销此前所有基于 MPP 的结论
+
+- 第 94 轮「mode 7 比手写 GEMM 快 3.2×」—— **错**，测的是一个空算子；
+- 上一轮「MPP 上限 1.73 s，距 llama.cpp 只差 8%」—— **错**，1.73 s 是没做任何计算的耗时；
+- 上一轮「prefill 是 staging-bound，MAC 只值 2.1 s」—— **部分错**：
+  `QW_GEMM_MODE=2`（skip-MACs）走的是**手写内核的真实分支**，那条测量仍然有效；
+  但「MPP 绕过 staging」的解释不成立；
+- 全部 affine 实验（第 95～100 轮）—— 底层原语从未工作过。
+
+#### 仍然成立的事实
+
+- 手写 `q4_gemm_tile` 是**唯一**能算出正确结果的路径（`rel 3.3e-4`）；
+- 单 pass prefill（`799a417`，`PASS_ROWS_MAX` 等 128→1020）仍然是真实的 9% 收益；
+- `BN=32` ⇒ 602 token 要把 14.4 GB 权重读 **19 遍**（≈274 GB），
+  这是 staging 开销的主要来源，也是**不需要 MPP 就能改进**的方向。
+
+#### 下一步：放弃 MPP，回到手写内核但换方向
+
+既然 19 遍权重遍历是真实瓶颈，而**唯一被证明正确**的原语是手写 GEMM，
+下一轮做：**提高 `BN`（每 threadgroup 处理的 token 数），直接减少权重遍历次数。**
+此前 `BN=8/64/128` 都试过并失败，但那些实验是在**同时改动其他变量**的情况下做的，
+且当时把 MPP 当作可行路线，没有把「减少遍历次数」当作唯一目标来单独测量。
+需要重做一次**只改 BN、其余全固定**的干净扫描。

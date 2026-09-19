@@ -656,6 +656,45 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
                 );
             }
             mb.finish(true);
+            // FOURTH path: the mode 7 probe - op.run into a DEVICE tensor, no
+            // cooperative tensor anywhere.  It was reported as "3.2x faster" and as
+            // proof that the device-tensor destination works; neither claim has ever
+            // been checked against the CPU reference.  Do that here.
+            let pbuf = dev.buffer_from_bytes(&vec![f16::from_f32(0.0); tokens * l.out_f]);
+            // A `tensor` parameter with dynamic extents takes those extents from the
+            // length of the buffer bound to it.  Binding the whole 14.4 GB weight
+            // arena therefore hands the op extents that are not this matrix at all,
+            // and the op silently does nothing - which is exactly what the zero
+            // output above would look like.  Bind an exactly-sized copy instead.
+            let wbytes: Vec<u8> = l.weight.buf.to_vec(l.weight.offset, l.out_f * l.in_f / 2);
+            let wcopy = dev.buffer_from_bytes(&wbytes);
+            let mut pb = qw_metal::CommandBatch::new(&mut dev);
+            {
+                let pk = pb.kernel(qw_metal::msl::MPP, "q4_mpp_probe")?;
+                pb.encode(
+                    qw_metal::Dispatch::new(
+                        &pk,
+                        (l.out_f.div_ceil(32) * 128, tokens.div_ceil(64), 1),
+                        (128, 1, 1),
+                    )
+                    .buf(0, &xbuf)
+                    .buf(1, &wcopy)
+                    .buf(2, &pbuf),
+                );
+            }
+            pb.finish(true);
+            let pgot: Vec<f16> = pbuf.to_vec(0, tokens * l.out_f);
+            let mut p_abs = 0.0f64;
+            let mut p_ref = 0.0f64;
+            for t2 in 0..tokens {
+                let xr: Vec<f16> = xv[t2 * l.in_f..(t2 + 1) * l.in_f].to_vec();
+                let want = l.cpu_reference(&xr)?;
+                for r in 0..l.out_f {
+                    let d = (pgot[t2 * l.out_f + r].to_f32() as f64 - want[r] as f64).abs();
+                    if d > p_abs { p_abs = d; }
+                    if (want[r] as f64).abs() > p_ref { p_ref = (want[r] as f64).abs(); }
+                }
+            }
             let mgot: Vec<f16> = mbuf.to_vec(0, tokens * l.out_f);
             let mut m_abs = 0.0f64;
             let mut m_ref = 0.0f64;
