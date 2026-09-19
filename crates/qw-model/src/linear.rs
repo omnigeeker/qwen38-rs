@@ -205,9 +205,12 @@ impl<'a> QLinear<'a> {
             // instead of rows/4, and the MACs go through the matrix units: the
             // MMA runs at 36 TFLOPS against the scalar path's 5.4.
             if rows >= gemm_min_rows() {
+                if let Err(e) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
+                    eprintln!("q4_gemm_tile FAILED TO BUILD ({e:?}); its dispatch is skipped and y stays zero");
+                }
                 if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
                     const BM: usize = 32;
-                    const BN: usize = 32;
+                    const BN: usize = 8;
                     let d = Dispatch::new(
                         &gk,
                         (self.out_f.div_ceil(BM) * 128, rows.div_ceil(BN), 1),

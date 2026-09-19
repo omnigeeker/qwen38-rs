@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 154,
+ "round": 155,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3698,9 +3698,39 @@
     "lesson": "every branch that silently skips work when a kernel is unavailable must report the error",
     "next": "re-apply BN=8 with the failure now loud and read the real Metal compile error (suspect: simdgroup_load leading dimension, XLD 41 -> 17)"
    }
+  },
+  {
+   "round": 155,
+   "title": "Found that BN=8 had been CORRECT all along and the fault was a third dispatch site in the test harness.  gemm-check has its own dispatch at bench.rs:527, and I had only been editing bench.rs:395, which belongs to the bench subcommand; bench.rs:528 kept bn = 32 while the kernel expected 8, so grid.y was ceil(40/32) = 2 and tok0 = tg.y*8 covered only tokens 0..15, leaving 16..39 unwritten and rel ~ 1.0.  Correcting all four dispatch sites makes gemm-check PASS with bit-identical accuracy against BN=32.  The measurement refutes it regardless: six interleaved rounds, with the machine drifting 13.7 to 18.5, gave BN=32 13.734/14.585/16.209/17.634/17.992/18.060 against BN=8's 14.653/16.510/18.407/18.083/18.465/18.491 - BN=32 won every pair.  The cause is obvious in hindsight: at 32 tokens grid.y = 4 means the weights are read four times, 57.6 GB against 14.4 GB, and the parallelism does not repay four times the traffic.  This re-reads the earlier 32-vs-128-token result correctly: the lever is not a narrower tile but how many tokens each weight read feeds.  BN=32 at 32 tokens reads the weights once at 370 ms per 32 tokens; BN=32 at 128 tokens reads them four times but takes 238 ms per 32 tokens because the re-read amortises over four times the tokens; BN=8 at 32 tokens reads them four times for the same 32 tokens and loses.  Bandwidth rises from 39 to about 60 GB/s once grid.y >= 2, but it only pays when each y-slice carries 32 tokens.  The right direction is therefore widening the prefill pass from 32 rows to 128, which needs BATCH_MAX, PASS_ROWS_MAX and the x, y and conv-ring buffers enlarged.  BN=8 reverted; the loud kernel-build error in linear.rs kept.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BN=8 reverted; the loud kernel-build check kept, md5 8469229c523c7c73421c712657ca0295)",
+   "evidence": {
+    "root_cause": "gemm-check's own dispatch at bench.rs:528 kept bn = 32, so grid.y = 2 covered only tokens 0..15",
+    "with_all_four_sites_fixed": "gemm-check PASSED, bit-identical accuracy",
+    "interleaved_bn32": [
+     13.734,
+     14.585,
+     16.209,
+     17.634,
+     17.992,
+     18.06
+    ],
+    "interleaved_bn8": [
+     14.653,
+     16.51,
+     18.407,
+     18.083,
+     18.465,
+     18.491
+    ],
+    "verdict": "BN=32 won 6/6 - BN=8 refuted by measurement (4x weight re-read for the same 32 tokens)",
+    "reinterpretation": "the lever is tokens per weight read, not tile width: 238 ms per 32 tokens at 128 tokens vs 370 ms at 32",
+    "next": "widen the prefill pass from 32 rows to 128 (BATCH_MAX, PASS_ROWS_MAX and the x/y/conv-ring buffers)"
+   }
   }
  ],
- "next": "FOUND THE ROOT CAUSE, and it was in the harness rather than the kernel.  QW_GEMM_MODE has no effect in gemm-check at all - modes 0, 1, 2 and 3 all give bit-identical output (gemm max_abs 1.097e-2 rel 2.715e-4) - because gemm-check goes through linear.rs's dispatch, which hardcoded .scalar(8, 0); the QW_GEMM_MODE read at bench.rs:409 is only used by the bench subcommand.  So the mode == 9 probe from the previous round never took effect, and the bit-identical output that puzzled me meant an invalid probe, not a kernel that failed to run.  After plumbing the mode into linear.rs, mode 9 was STILL bit-identical to mode 0, which exposed the real culprit: `if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE)` silently swallows a kernel compilation failure.  When the BN=8 kernel does not compile, batch.kernel returns Err, the entire dispatch is skipped, and y keeps its initial zeros - so a compile error masqueraded as an accuracy catastrophe (rel = 1.0) and sent me chasing the wrong thing for three rounds.  That branch now reports loudly, printing that q4_gemm_tile failed to build and that the dispatch would be skipped leaving y at zero.  Everything is reverted: msl.rs from the backup, BN back to 32 in bench.rs and linear.rs, md5 back to 35fe8f5f363f352317a379f252f7d83d, gemm-check PASSES.  LESSON for the discipline: every branch that silently skips work when a kernel is unavailable must report the error, otherwise a GPU-side problem surfaces as a numerical failure hundreds of lines away.  Next: with the failure now loud, re-apply BN=8 and read the actual Metal compile error, which will name the real constraint - most likely the simdgroup_load leading dimension, since XLD falls from 41 to 17.",
+ "next": "BN=8 was CORRECT all along - the fault was a third dispatch site in the test harness.  gemm-check has its own dispatch at bench.rs:527, and I had only been changing bench.rs:395, the one belonging to the bench subcommand.  bench.rs:528 kept bn = 32 while the kernel expected 8, so grid.y came out as ceil(40/32) = 2 and tok0 = tg.y*8 covered only tokens 0..15, leaving 16..39 never written - hence rel ~ 1.0.  With all four dispatch sites corrected, gemm-check PASSES with bit-identical accuracy against BN=32 (1.097e-2/2.715e-4 and so on).  But the measurement kills it anyway: six interleaved rounds (machine drifting 13.7 to 18.5 again) gave BN=32 13.734/14.585/16.209/17.634/17.992/18.060 against BN=8's 14.653/16.510/18.407/18.083/18.465/18.491 - BN=32 won all six, so BN=8 is refuted by measurement.  The reason is plain: at 32 tokens grid.y = 4 means the weights are re-read four times, 57.6 GB instead of 14.4 GB, and the parallelism gain does not cover four times the traffic.  That forces a re-reading of the earlier result: the real lever is not a narrower tile but HOW MANY TOKENS EACH WEIGHT READ FEEDS.  BN=32 at 32 tokens reads the weights once and takes 370 ms per 32 tokens; BN=32 at 128 tokens reads them four times but takes only 238 ms per 32 tokens, because the re-read is amortised over four times the tokens; BN=8 at 32 tokens reads them four times for the same 32 tokens and loses.  Achieved bandwidth rises from 39 to about 60 GB/s once grid.y >= 2, but only pays when each y-slice is filled with 32 tokens.  So the correct direction is candidate 2 from the earlier round: widen the prefill pass from 32 rows to 128, which requires enlarging BATCH_MAX, PASS_ROWS_MAX and the x, y and conv-ring buffers.  BN=8 is reverted; the loud kernel-build error in linear.rs is kept (md5 35fe8f5f -> 8469229c, gates 19/0 ACCEPTED).",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
