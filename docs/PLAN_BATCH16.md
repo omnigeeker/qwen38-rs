@@ -3806,3 +3806,56 @@ let take = if rem0 > chunk + PREFILL_TAIL { chunk }
 「第一个生成 token 的 logits」一起放进快照（现在 `export_prefix` 只存
 state/window/KV，代码注释里正是这个原因才让快照停在最后一趟之前）。
 按 0.17 → 0.12 s 估，那就是 1.4× 的赢。
+
+---
+
+## 69. 暖 TTFT 剩余预算的逐项归因，以及「命中不重算」的精确施工方案（第 63 轮）
+
+本轮没有改引擎，而是把最后那段差距拆到了每一毫秒，并确认了唯一能改变胜负的改动。
+
+### 10 token prompt 的逐 batch 实测（`QW_ENCODE_TIME=1 QW_PREFIX_TIME=1`）
+
+| batch | dispatch | commit+wait |
+|---|---|---|
+| 会话第一趟（预热） | 96 | 33.6 ms |
+| 冷请求 prefill | 1554（994 encoder） | 313.8 ms |
+| 解码 ×3 | 1234 | 37.4 / 38.4 / 38.5 ms |
+| 暖请求 prefill | 2194（1186 encoder） | 50.2 ms |
+| 暖请求解码 ×3 | 1234 | 36.2 / 36.8 / 38.5 ms |
+
+⇒ **暖请求 = 50 ms prefill + 3×37 ms 解码**；服务端日志的 TTFT 是 0.1 s。
+⇒ **那 50 ms 的 prefill 就是命中后重算的那一趟**（4 行 = 1 次权重扫描），
+占暖 TTFT 的一半。**把它去掉就是 1.4–2× 的赢，而且是唯一能改变胜负的改动。**
+
+### 顺带量到的两笔成本
+
+- **边界导出 28.6 ms / 204 MB，且在冷路径的关键路径上**（在最后一趟之前调用）。
+  一次短 prompt 只导出一次，占冷 TTFT 的 5–9%；204 MB 里主要是 GDN 递推状态
+  （48 层 × 约 3 MB）与卷积窗，与 prompt 长度无关。
+- **导入只要 4.2 ms**，所以暖路径不是被快照拷贝拖住的。
+
+### 为什么不能再往前挪边界（也就是为什么必须把 logits 存进快照）
+
+`engine.rs` 的注释已经写明：快照停在最后一趟**之前**，因为「第一个生成 token 的
+logits 只存在于 `save_prefix` 不拷贝的 scratch 缓冲里」。所以命中后至少要跑一趟
+（一次权重扫描，40–50 ms）——**这是任何「重算」方案的地板**。
+
+### 施工方案（下一轮直接照做）
+
+1. `runner.rs`
+   - `export_prefix(&mut self, seq, pos)` → 增加一个 `row: usize` 参数，在 blob
+     **末尾**追加 `scratch.logits` 的第 `row` 行（`vocab` 个 f16，496 KB）；
+     magic 从 `Q38PFX1` 升到 `Q38PFX2`。
+   - `import_prefix` 末尾按剩余字节长度判断是否带 logits（兼容旧 blob），
+     有则写回 `scratch.logits` 第 **0** 行。
+2. `engine.rs`
+   - 边界记录：在**跑完最后一趟之后**（`a.pf == a.ids.len()` 那段）额外记录一个
+     `pf == len` 的边界，blob 带上该槽最后一行（`i`）的 logits。这样
+     `is_prefix` 会优先选它（最长匹配），旧的 `len-4` 边界仍然兜底磁盘路径。
+   - 命中在 `pf == len` 时：不进入 pass，直接
+     `a.ready = true; a.feed = argmax(&model.logits_row(0));` 然后走一遍现有的
+     `emit()`（注意 `emit` 现在在 pass 之后的循环里，需要把这一段提出来复用），
+     并按现有格式打印 `prompt in after ...`。
+3. 验证：`bash tools/accept.sh`（19 门，重点是 `prefix cache` 相关那几门与
+   server==cli 逐位一致），然后跑 `/tmp/ttft_pair.py 8164` 做与 Ollama 的同场配对。
+   预期暖 TTFT 0.16–0.19 → 0.10–0.13 s。

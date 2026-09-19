@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 121,
+ "round": 122,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -2815,9 +2815,32 @@
     "cache_skipped_after": "106 of 110 / 784 of 788",
     "machine": "degraded ~2x during the round (cold ~900 ours 8.2 -> 18.1 s, Ollama 1.26 -> 2.94 s); only paired numbers quoted"
    }
+  },
+  {
+   "round": 122,
+   "title": "No engine change: profiled the remaining warm-TTFT budget and wrote the exact construction plan for the one change that can still flip a verdict.  A 10-token prompt, instrumented: the warm request is one 2194-dispatch prefill batch at 50.2 ms plus three 1234-dispatch decode batches at 36-38 ms, and the server's own TTFT log says 0.1 s - so the 50 ms prefill is the four-row pass a hit still recomputes, half the warm TTFT, and removing it is the only remaining 1.4-2x win.  Boundary export measured at 28.6 ms for 204 MB and it is on the COLD critical path because it is called before the final pass; import is only 4.2 ms, so the warm path is not copy-bound.  Confirmed from the code that the pass cannot simply be dropped: export_prefix stops one chunk early precisely because the first generated token's logits live in a scratch buffer it does not copy.  Plan for next round is in docs section 69: export_prefix gains a row argument and appends scratch.logits row (496 KB, magic Q38PFX1 -> Q38PFX2 with import tolerating the old tail), the engine records an extra pf == len boundary after the final pass, and a hit at pf == len samples logits_row(0) and emits without any pass.  Deliberately not started: three files plus gates plus a paired measurement does not fit in what is left of this session, and an unfinished engine change is worse than none.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (unchanged; no engine code touched this round)",
+   "evidence": {
+    "warm_10tok_prefill_ms": 50.2,
+    "warm_10tok_decode_ms": [
+     36.2,
+     36.8,
+     38.5
+    ],
+    "warm_10tok_server_ttft_s": 0.1,
+    "cold_10tok_prefill_ms": 313.8,
+    "cold_10tok_prefill_dispatches": 1554,
+    "boundary_export_ms": 28.6,
+    "boundary_export_mb": 204,
+    "boundary_import_ms": 4.2,
+    "boundary_export_on_critical_path": true,
+    "plan": "docs/PLAN_BATCH16.md section 69"
+   }
   }
  ],
- "next": "Warm TTFT is now TIED with Ollama (was 2.5x behind): capping the last prefill chunk at PREFILL_TAIL=4 rows makes the boundary a repeat request resumes from 4 tokens from the end, so a hit re-prefills one weight sweep (40 ms) instead of eight (317 ms).  Paired A/B: warm 0.271 -> 0.139 s (2.0x), cold unchanged (27.7 -> 27.2 s), gates 19/0 ACCEPTED.  Paired against Ollama at three lengths: warm ours 0.16-0.19 vs Ollama 0.16-0.18.  To actually WIN warm TTFT the only remaining move is to stop re-prefilling on a hit: record the boundary at the prompt END and put the first generated token's logits in the snapshot (export_prefix currently stores only state/window/KV, which is exactly why the snapshot stops one chunk early).  Estimated 0.17 -> 0.12 s = 1.4x.  Cold TTFT is still lost 6.2x and is not reachable without a fast GEMM.",
+ "next": "Warm TTFT is tied with Ollama; the only verdict-changing change left is to stop re-prefilling on a cache hit.  Measured attribution for a 10-token prompt with QW_ENCODE_TIME=1: warm request = 50 ms prefill (the one weight sweep the hit still recomputes) + 3 x 37 ms decode, server-log TTFT 0.1 s, so removing the pass is worth 1.4-2x.  Boundary export is 28.6 ms / 204 MB and sits on the COLD critical path (called before the final pass); import is only 4.2 ms.  The pass cannot be removed without putting the first generated token's logits in the snapshot, because export_prefix deliberately stops one chunk early for exactly that reason.  Exact plan recorded in docs section 69: add a row argument to export_prefix, append scratch.logits row (496 KB, magic -> Q38PFX2, import tolerant of old blobs), record a pf == len boundary after the final pass, and add a hit-at-pf == len path that samples logits_row(0) and reuses emit().  NOT STARTED - the remaining context in this session was not enough to land and verify a change touching three files, and a half-finished engine change is worse than none.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
