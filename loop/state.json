@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 182,
+ "round": 183,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4504,9 +4504,37 @@
     "remaining": "attn_scores_softmax + attn_out = 4,096 (78%), need a causal mask; ~73% of cold prefill time is still the GEMM",
     "next": "the GEMM, or causal-masked attention scores"
    }
+  },
+  {
+   "round": 183,
+   "title": "Re-measured the cold prefill: the GEMM's share has risen to 79 per cent, 0.95 s of each 1.2 s pass, because the dispatch work cut the non-GEMM side to 0.25 s, and even zeroing it would leave 4.75 s, so the GEMM is the whole game.  Used the kernel's existing QW_GEMM_MODE diagnostic, which is plumbed through the real linear.rs path, to decompose a 602-token cold prefill: mode 0 full 5.9 s, mode 1 constant weights with no dequantisation 6.4 s and therefore not faster, killing dequantisation as a target, mode 2 MACs skipped 4.7 s, mode 3 x staging skipped 4.8 s.  With the non-GEMM at about 1.24 s and the GEMM at about 4.66 s that gives roughly 2.4 s weight staging, 1.1 s x staging and only 1.2 s MMA - the GEMM is staging-bound at 26 per cent MMA, so its 7.76 TFLOPS is a data-movement ceiling rather than a tensor-pipe one.  Two fixes were then tested and both refuted, gates 19/0 with word-for-word identical output, and both reverted: double buffering halved the barrier count but doubled shared memory from 9,280 to 14,464 bytes and came out 0/6 at 9.5 per cent SLOWER, while aliasing the accumulator staging onto the dead tiles to cut shared memory 44 per cent to 5,184 bytes came out 1/6 at plus 1.1 per cent, a tie.  So it is neither intra-threadgroup stalls nor shared-memory residency, which points at memory-level parallelism: the weight staging loop issues exactly one uint load per thread per step, exposing its full latency.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED for both experimental builds (both reverted as they were not faster)",
+   "evidence": {
+    "gemm_share": "79% of cold prefill (0.95 s of a 1.2 s 128-token pass)",
+    "mode_timings": {
+     "0_full": 5.9,
+     "1_no_dequant": 6.4,
+     "2_no_macs": 4.7,
+     "3_no_x_staging": 4.8
+    },
+    "decomposition": {
+     "weight_staging": 2.4,
+     "x_staging": 1.1,
+     "mma": 1.2,
+     "non_gemm": 1.24
+    },
+    "conclusion": "the GEMM is staging-bound; 7.76 TFLOPS is a data-movement ceiling, not a tensor-pipe one",
+    "refuted": {
+     "double_buffering": "0/6, 9.5% SLOWER (smem 9280->14464 B, barriers 384->193)",
+     "smem_aliasing": "1/6, +1.1% (tie; smem 9280->5184 B)"
+    },
+    "next": "memory-level parallelism: the weight staging issues one uint load per thread per step"
+   }
   }
  ],
- "next": "Found the fused convolution kernel already sitting in the tree as dead code and wired it into the prefill path, which removed 70 per cent of the remaining dispatches.  conv1d_silu_ring_tile had a constant defined and a full implementation but no call site at all: its comment says it convolves a whole tile of rows at once, reading the current pass's rows straight from the staging buffer, and folds the ring update in, so it replaces both the per-row copy and the per-row convolution.  Wiring it behind the one_seq guard took copy_off and conv1d_silu_ring from 6,144 each to zero and added 48 conv1d_silu_ring_tile, so dispatches per pass fell from 17,490 to 5,250.  Correctness is argued in the kernel's own comment: every window read in that dispatch is for a position before pos0, at least three slots behind the ones it writes, so no thread reads a slot another is writing.  The gates pass 19/0 and masks 0 and 15 both match the baseline word for word.  Six interleaved A/B rounds gave a median of 6.102 to 6.031, B winning 6/6 at -1.2 per cent.  Across the three rounds the dispatch count has fallen from 41,874 to 5,250, an 87 per cent cut, for a cumulative speedup of only about 6 per cent - which reconfirms that dispatch count is not the bottleneck unless it carries barriers, since the gdn fusion was the most effective precisely because it removed 6,144 barriers at once.  Of the 5,250 dispatches left, attn_scores_softmax and attn_out are 4,096 or 78 per cent and need a causal mask, while the bulk of the cold prefill's time, about 73 per cent, is still the GEMM.  NEXT: turn to the GEMM, or batch the attention scores with a causal mask.",
+ "next": "Re-measured the cold prefill and found the GEMM's share has RISEN to 79 per cent - 0.95 s of each 1.2 s 128-token pass - because the dispatch work cut the non-GEMM side down to 0.25 s; even zeroing the non-GEMM would leave 4.75 s, so the GEMM is now the whole game.  Rather than guess further, I used the diagnostic modes the kernel already had, QW_GEMM_MODE, which is plumbed through the real linear.rs path and not just the bench, to decompose a 602-token cold prefill: mode 0 full is 5.9 s, mode 1 with constant weights and no dequantisation is 6.4 s and therefore NOT faster, which kills dequantisation as a target, mode 2 with the MACs skipped is 4.7 s, and mode 3 with the x staging skipped is 4.8 s.  With the non-GEMM at about 1.24 s and the GEMM at about 4.66 s, that decomposes into roughly 2.4 s of weight staging (global read plus dequant plus shared write), 1.1 s of x staging and only 1.2 s of MMA - so the GEMM is staging-bound at 26 per cent MMA, and its 7.76 TFLOPS is a data-movement ceiling, not a tensor-pipe one.  I then tested two fixes and both were refuted with the gates passing 19/0 and the output word-for-word identical, so both were reverted: double buffering the tiles, which halved the barrier count but doubled shared memory from 9,280 to 14,464 bytes, came out 0/6 and 9.5 per cent SLOWER, and aliasing the accumulator staging onto the dead tiles to cut shared memory 44 per cent to 5,184 bytes came out 1/6 at plus 1.1 per cent, a tie.  So it is neither stalls inside a threadgroup nor shared-memory residency, which points at memory-level parallelism itself: the weight staging loop issues exactly one uint load per thread per step, so its latency is fully exposed.  NEXT: raise the number of loads in flight per step without adding shared memory.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
