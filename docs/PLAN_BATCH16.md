@@ -6352,3 +6352,53 @@ G[m,g] = Σ_{k∈g} A[m,k]
 之后又被 999 诊断掩盖，所以**这个重构从未真正测过**。
 
 **默认路径（mode 0）完全未变**，affine 路径是 opt-in 的 mode 8。
+
+### 72bo. **affine 症结锁定：`cT.store()` 是空操作**（第 128 轮）
+
+上一轮的三个矛盾事实，本轮全部解开，并且**找到一个此前污染所有对比的严重混淆源**。
+
+#### 混淆源：`QW_GEMM_MODE` 被复用了
+
+`linear.rs:345` —— `QW_GEMM_MODE` **同时被当作 scalar 传给 `q4_gemm_tile`**
+（`.scalar(8, QW_GEMM_MODE)`）。所以设成 7/8 时，**旧内核会走调试分支**，
+产出 `c934afba`，而不是基线 `5b5f6e93`。
+
+**⇒ 之前所有"mode 8 与 mode 7 结果相同"的对比，都可能是被这个混淆污染的。**
+
+**已修复：MPP 路径改用独立变量 `QW_MPP`（`1`=probe，`2`=affine），
+不再与 `QW_GEMM_MODE` 共享。** 这是一个真实的工程改进。
+
+#### 症结：`cT.store(mC)` 什么都不写
+
+用干净变量重测，逐层隔离：
+
+| 测试 | 结果 | 结论 |
+|---|---|---|
+| affine 内核里直接 `cw[...] = 777` | 输出崩坏 `ef46dd23` | **内核确实在执行** |
+| `q4_store_half` 写常数 999 | 输出崩坏 `f89d2716` | **收窄内核有效** |
+| **`cT` 全设 555 后再 `store`** | **输出不变 `c934afba`** | **★ `store` 是空操作** |
+
+**⇒ 根因确定：`op.run` 的结果写进了 `cT`，但 `cT.store(mC)` 没有把它送进 `cacc`。**
+
+#### 已排除的候选原因（都实测过）
+
+- `slice` 未指定 extent（改 `slice<64,64>` / `slice<32,64>` / `C.slice<64,32>`）→ 无效；
+- tensor 参数隐式 buffer 索引与显式索引冲突（给 A/B/C 都加 `[[buffer(n)]]`）→ 无效；
+- `cT` 与 `part` 共享 thread 存储（改用普通 `thread float acc[]`）→ 无效；
+- `QW_GEMM_MODE` 混淆（改用 `QW_MPP`）→ 已修复，但仍不写。
+
+#### 下一轮的下一步
+
+`store` 的 `enable_if_t` 要求
+`is_same_v<element_type, tensor<...>::value_type> && get_rank() >= E::rank()`。
+`cT` 是 `float`、`C` 是 `float` ✓，rank 都是 2 ✓。
+**⇒ 下一个怀疑点：`cT` 的 `element_type` 与 `C` 的 `value_type` 在
+`tensor_handle` 标签下可能不完全相同**，
+或者 `store` 需要一个 `tensor_offset`（而非 `tensor_handle`）目标。
+
+**更稳妥的替代路线**：干脆不用 `cT.store`，
+改成用 `cT.get(i)` 配合 `cT.get_multidimensional_index(i)`
+**手动写 `cw[(m)*outf + n] = cT.get(i)`**（`cw` 已是现成的 device 指针，
+上一轮已验证直写有效）。这样绕开 `store` 的全部不确定性。
+
+**默认路径（mode 0）完全未变**，MPP 路径是 opt-in 的 `QW_MPP`。

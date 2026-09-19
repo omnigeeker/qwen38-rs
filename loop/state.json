@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 190,
+ "round": 191,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4700,9 +4700,32 @@
     "next_test": "accumulate in a plain thread float acc[N] array, copy into cT once before store - attempted but never measured this round because a python assertion failed and the 999 diagnostic masked it",
     "default_untouched": "yes"
    }
+  },
+  {
+   "round": 191,
+   "title": "Cracked the affine puzzle to one mechanism and found a confound poisoning every earlier comparison.  The confound: QW_GEMM_MODE is not private to the new code - linear.rs line 345 hands it to q4_gemm_tile as a scalar, so setting it to 7 or 8 made the old kernel take a debug branch and emit c934afba instead of the baseline 5b5f6e93, meaning the earlier 'mode 8 equals mode 7' results were untrustworthy.  The MPP paths now use a dedicated QW_MPP variable (1 probe, 2 affine).  With that fixed, isolation gives three clean results: a raw 777 write inside the affine kernel garbles the output to ef46dd23 (the kernel executes); q4_store_half writing 999 garbles it to f89d2716 (the narrowing kernel works); and setting every cT element to 555 before store leaves the output unchanged at c934afba, so cT.store(mC) is a no-op and the accumulator never reaches cacc.  That is the root cause.  Ruled out: slice without explicit extents (slice<64,64>, slice<32,64>, C.slice<64,32>), implicit buffer indices colliding with explicit ones (gave A, B, C explicit indices), cT and part sharing thread storage (switched to a plain thread float acc array), and the QW_GEMM_MODE confound.  store's enable_if needs is_same_v<element_type, value_type> and get_rank() >= E::rank(); both are float rank 2, so the next suspect is that element_type and value_type differ under the tensor_handle tag, or that store wants a tensor_offset rather than a tensor_handle.  More robust next step: bypass store and write cw[m*outf + n] = cT.get(i) via get_multidimensional_index, since cw's direct writes were proven to reach the output.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "default path (mode 0) verified word-for-word; MPP path is opt-in behind QW_MPP and still not aligned",
+   "evidence": {
+    "confound": "QW_GEMM_MODE is also passed to q4_gemm_tile at linear.rs:345, so modes 7/8 made the old kernel take a debug branch (c934afba vs baseline 5b5f6e93)",
+    "fix": "MPP paths now use a dedicated QW_MPP variable (1 probe, 2 affine)",
+    "kernel_executes": "raw 777 write inside the affine kernel garbles the output to ef46dd23",
+    "narrowing_works": "q4_store_half writing 999 garbles the output to f89d2716",
+    "root_cause": "setting every cT element to 555 before store leaves the output unchanged at c934afba - cT.store(mC) is a no-op",
+    "ruled_out": [
+     "slice without explicit extents",
+     "implicit vs explicit buffer index collision",
+     "cT and part sharing thread storage",
+     "the QW_GEMM_MODE confound itself"
+    ],
+    "next_suspect": "element_type vs value_type under the tensor_handle tag, or store wanting a tensor_offset",
+    "robust_next_step": "bypass store: write cw[m*outf + n] = cT.get(i) via get_multidimensional_index, since cw direct writes are proven to reach the output",
+    "default_untouched": "yes"
+   }
   }
  ],
- "next": "Spent the round narrowing the affine kernel's failure down to three measured but mutually contradictory facts.  First, the affine path really does execute: making q4_store_half write the constant 999 immediately garbles the output to md5 f89d2716, so the narrowing kernel runs and its result does reach y.  Second, the affine kernel's output equals the plain matmul sum_k A*q exactly and is completely independent of sc and bi - mode 7 with no affine, mode 8 with sc=1 and bi=0, mode 8 with the real bf16 scales and biases, and mode 8 with sc hardcoded to 2.0f all produce the identical md5 c934afba with length 161, against the baseline's 5b5f6e93 with length 182.  Hardcoding sc to 2.0 having no effect at all rules out a whole class of explanations - a wrong lookup value, a misbound buffer, a bad bf16 conversion - and says the accumulation line is simply not taking effect.  Third, swapping the two components of get_multidimensional_index also leaves the md5 unchanged, so the m/n mapping is not the cause.  Ruled out along the way, each by measurement: a silently swallowed kernel build failure (an eprintln was added and there were zero failures), a failed cargo build leaving a stale binary (the full build output shows Finished release with exit 0), and Metal caching by kernel name (renaming to q4_mpp_affine_v2 changed nothing).  The strongest remaining hypothesis is that cT and part, two cooperative tensors built from the same op with identical template arguments and therefore identical layouts, are being allocated the same thread storage, in which case part.set(i, 0.0f) also zeroes cT and cT.set(i, cT.get(i) + part.get(i)*sc) collapses to X = X + X*sc and gets wiped every iteration, so what is stored is not the weighted sum of 96 groups.  The direct test for next round is to accumulate in a plain thread float acc[N] array instead of a second cooperative tensor, then copy it into cT once before store - a refactor I attempted this round but never actually measured, because a python assertion failed so the edit never landed and the 999 diagnostic then masked it.  The default path is untouched and the affine path stays opt-in behind QW_GEMM_MODE=8.",
+ "next": "Cracked the affine puzzle down to one mechanism and found a confound that had been poisoning every comparison.  The confound: QW_GEMM_MODE is not private to my new code - linear.rs line 345 hands it to q4_gemm_tile as a scalar, so setting it to 7 or 8 made the old kernel take a debug branch and emit c934afba instead of the baseline 5b5f6e93, which means the earlier 'mode 8 equals mode 7' results were not trustworthy.  The MPP paths now use a dedicated QW_MPP variable (1 for the probe, 2 for the affine kernel) and no longer share QW_GEMM_MODE with the tile kernel.  With that fixed, layer-by-layer isolation gives three clean results: a raw write of 777 inside the affine kernel garbles the output to ef46dd23, so the kernel really does execute; q4_store_half writing the constant 999 garbles the output to f89d2716, so the narrowing kernel works; and setting every element of cT to 555 immediately before store leaves the output completely unchanged at c934afba, so cT.store(mC) is a no-op and the accumulator never reaches cacc.  That is the root cause.  Ruled out by measurement along the way: slice without explicit extents (tried slice<64,64>, slice<32,64> and C.slice<64,32>), implicit buffer indices colliding with explicit ones (gave A, B and C explicit [[buffer(n)]]), cT and part sharing thread storage (switched to a plain thread float acc array), and the QW_GEMM_MODE confound itself.  The store enable_if requires is_same_v<element_type, tensor<...>::value_type> and get_rank() >= E::rank(); cT is float and C is float and both have rank 2, so the next suspect is that the element_type and value_type differ under the tensor_handle tag, or that store wants a tensor_offset rather than a tensor_handle.  The more robust route for next round is to bypass store entirely: write cw[m*outf + n] = cT.get(i) using cT.get_multidimensional_index(i), since cw is already a working device pointer whose direct writes were proven to reach the output.  The default path is untouched and the MPP path is opt-in behind QW_MPP.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

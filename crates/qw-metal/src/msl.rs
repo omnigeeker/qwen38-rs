@@ -1326,12 +1326,17 @@ kernel void q4_group_sums(
 // is for.  Nothing but A and q is ever read from memory, so this keeps the
 // whole 3.2x that the tensor path bought.
 kernel void q4_mpp_affine_v2(
-    tensor<device half, dextents<int32_t, 2>> A,           // [rows, K]
-    tensor<device uint4b_format, dextents<int32_t, 2>> B,  // [out_f, K]
+    // Every parameter gets an explicit index.  With A and B implicit (0 and 1)
+    // and the scalars explicit from 2, C was left to be numbered implicitly and
+    // collided with `scales`, so cT.store() wrote into the scale table and cacc
+    // was never filled - which is why the output equalled a single full-K matmul
+    // no matter what the scale said.
+    tensor<device half, dextents<int32_t, 2>> A [[buffer(0)]],           // [rows, K]
+    tensor<device uint4b_format, dextents<int32_t, 2>> B [[buffer(1)]],  // [out_f, K]
     device const ushort* scales [[buffer(2)]],             // [out_f, ngroups] bf16
     device const ushort* biases [[buffer(3)]],             // [out_f, ngroups] bf16
     device const float* gsum [[buffer(4)]],                // [rows, ngroups]
-    tensor<device float, dextents<int32_t, 2>> C,          // [rows, out_f]
+    tensor<device float, dextents<int32_t, 2>> C [[buffer(5)]],          // [rows, out_f]
     constant int& ngroups [[buffer(6)]],
     uint2 tgid [[threadgroup_position_in_grid]])
 {
@@ -1344,17 +1349,27 @@ kernel void q4_mpp_affine_v2(
     auto cT = op.get_destination_cooperative_tensor<
         __remove_addrspace_t<decltype(probeA)>,
         __remove_addrspace_t<decltype(probeB)>, float>();
-    auto part = op.get_destination_cooperative_tensor<
-        __remove_addrspace_t<decltype(probeA)>,
-        __remove_addrspace_t<decltype(probeB)>, float>();
+    // Accumulate in plain thread registers rather than in a second cooperative
+    // tensor.  Two cooperative tensors built from the same op share a layout and
+    // may well be handed the same thread storage, in which case zeroing `part`
+    // also zeroed `cT` and the per-group scale became a no-op.  A plain array
+    // cannot alias anything.
+    float acc[64];
 
 #pragma clang loop unroll(full)
-    for (uint16_t i = 0; i < cT.get_capacity(); ++i)
-        cT.set(i, 0.0f);
+    for (uint16_t i = 0; i < cT.get_capacity(); ++i) acc[i] = 0.0f;
 
     for (int g = 0; g < ngroups; ++g) {
-        auto mA = A.slice(tgid.y * 64, g * 64);
-        auto mB = B.slice(tgid.x * 32, g * 64);
+        // The extents must be given as explicit template arguments.  Plain
+        // `slice(index...)` keeps the FULL extent and only shifts the origin, so
+        // the op read the whole K on every iteration and the per-group offset
+        // never took effect - which is why the result came out equal to a single
+        // full-K matmul no matter what the scale was.
+        auto mA = A.slice<64, 64>(tgid.y * 64, g * 64);
+        auto mB = B.slice<32, 64>(tgid.x * 32, g * 64);
+        auto part = op.get_destination_cooperative_tensor<
+            __remove_addrspace_t<decltype(mA)>,
+            __remove_addrspace_t<decltype(mB)>, float>();
 #pragma clang loop unroll(full)
         for (uint16_t i = 0; i < part.get_capacity(); ++i)
             part.set(i, 0.0f);
@@ -1363,20 +1378,20 @@ kernel void q4_mpp_affine_v2(
         for (uint16_t i = 0; i < part.get_capacity(); ++i) {
             if (part.is_valid_element(i)) {
                 auto ids = part.get_multidimensional_index(i);
-                // get_multidimensional_index returns the coordinate in the
-                // destination's own extent order, which is [n=32, m=64] here -
-                // not the descriptor's (m, n) order.  Reading it the other way
-                // round leaves most of the tile unwritten and indexes the scales
-                // out of range.
                 int m = tgid.y * 64 + (int)ids[0];
                 int n = tgid.x * 32 + (int)ids[1];
                 float sc = as_type<float>((uint)scales[(size_t)n * ngroups + g] << 16);
                 float bi = as_type<float>((uint)biases[(size_t)n * ngroups + g] << 16);
-                cT.set(i, cT.get(i) + part.get(i) * sc + bi * gsum[(size_t)m * ngroups + g]);
+                acc[i] += part.get(i) * sc + bi * gsum[(size_t)m * ngroups + g];
             }
         }
     }
-    auto mC = C.slice(tgid.y * 64, tgid.x * 32);
+#pragma clang loop unroll(full)
+    for (uint16_t i = 0; i < cT.get_capacity(); ++i) cT.set(i, acc[i]);
+    // Explicit extents here too.  Plain slice() keeps the full [rows, out_f]
+    // extent, which does not match the [64, 32] cooperative tensor, and store()
+    // silently wrote nothing - the accumulator never reached cacc.
+    auto mC = C.slice<64, 32>(tgid.y * 64, tgid.x * 32);
     cT.store(mC);
 }
 

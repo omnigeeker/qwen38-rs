@@ -223,8 +223,10 @@ impl<'a> QLinear<'a> {
                 // mode 8: the affine-aware tensor path.  Exact, unlike mode 7:
                 // one matmul per 64-weight group with the per-(column, group)
                 // scale and bias applied to the in-register accumulator.
-                if std::env::var("QW_GEMM_MODE").ok().and_then(|v| v.parse::<i32>().ok())
-                    == Some(8)
+                // Selected by its own variable, not QW_GEMM_MODE: that one is also
+                // handed to q4_gemm_tile as a scalar, so reusing it made the old
+                // kernel take a debug branch and poisoned every comparison.
+                if std::env::var("QW_MPP").ok().as_deref() == Some("2")
                     && self.out_f <= 17408
                 {
                     let ng = self.in_f / 64;
@@ -256,7 +258,9 @@ impl<'a> QLinear<'a> {
                             .buf_offset(3, self.biases.buf, self.biases.offset)
                             .buf(4, &gsum)
                             .buf(5, &cacc)
-                            .scalar(6, ng as i32),
+                            .scalar(6, ng as i32)
+                            .scalar(7, self.out_f as i32)
+                            .buf(8, &cacc),
                         );
                     }
                     batch.barrier();
@@ -271,8 +275,7 @@ impl<'a> QLinear<'a> {
                         return;
                     }
                 }
-                if std::env::var("QW_GEMM_MODE").ok().and_then(|v| v.parse::<i32>().ok())
-                    == Some(7)
+                if std::env::var("QW_MPP").ok().as_deref() == Some("1")
                     && self.out_f <= 17408
                 {
                     if let Ok(pk) = batch.kernel(msl::MPP, "q4_mpp_probe") {
