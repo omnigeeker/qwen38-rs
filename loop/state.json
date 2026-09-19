@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 181,
+ "round": 182,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4467,9 +4467,46 @@
     "cumulative": "cold prefill 6.69 s -> ~5.95 s (~11%) with the gdn fusion",
     "next": "copy_off and conv1d_silu_ring (6144 each, 70% of what remains), then attn_scores_softmax/attn_out which need a causal mask"
    }
+  },
+  {
+   "round": 182,
+   "title": "Found the fused convolution kernel already in the tree as dead code and wired it into prefill, removing 70 per cent of the remaining dispatches.  conv1d_silu_ring_tile had a constant and a full implementation but no call site: its comment says it convolves a whole tile of rows at once, reading the current pass's rows straight from the staging buffer, and folds the ring update in, so it replaces both the per-row copy and the per-row convolution.  Wiring it behind the one_seq guard took copy_off and conv1d_silu_ring from 6,144 each to zero and added 48 conv1d_silu_ring_tile, so dispatches per pass fell from 17,490 to 5,250.  Correctness is argued in the kernel's own comment: every window read in that dispatch is for a position before pos0, at least three slots behind the ones it writes, so no thread reads a slot another is writing.  Gates pass 19/0 and masks 0 and 15 both match the baseline word for word.  Six interleaved A/B rounds gave a median of 6.102 to 6.031, B winning 6/6 at -1.2 per cent.  Across three rounds dispatches fell from 41,874 to 5,250, 87 per cent, for a cumulative speedup of only about 6 per cent - reconfirming that dispatch count is not the bottleneck unless it carries barriers, since the gdn fusion was most effective precisely because it removed 6,144 barriers at once.  Of the 5,250 left, attn_scores_softmax and attn_out are 4,096 or 78 per cent and need a causal mask, while about 73 per cent of the cold prefill's time is still the GEMM.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (masks 0 and 15 both word-for-word identical to the baseline)",
+   "evidence": {
+    "dispatches": {
+     "before": 17490,
+     "after": 5250,
+     "cut": "70%",
+     "cumulative_from": 41874,
+     "cumulative_cut": "87%"
+    },
+    "fused": "conv1d_silu_ring_tile was dead code - constant defined, no call site",
+    "safety": "every window read is for pos < pos0, at least three slots behind the writes",
+    "A": [
+     5.765,
+     6.038,
+     6.327,
+     6.166,
+     6.344
+    ],
+    "B": [
+     5.68,
+     5.998,
+     6.141,
+     6.064,
+     6.277
+    ],
+    "verdict": "6/6 B wins, median 6.102 -> 6.031 = -1.2%",
+    "cumulative_speedup": "~6% for an 87% dispatch cut",
+    "lesson": "dispatch count is not the bottleneck unless it carries barriers",
+    "remaining": "attn_scores_softmax + attn_out = 4,096 (78%), need a causal mask; ~73% of cold prefill time is still the GEMM",
+    "next": "the GEMM, or causal-masked attention scores"
+   }
   }
  ],
- "next": "Found and fixed the bug that forced last round's revert, and the attention batching now ships.  The diagnosis used a runtime mask, QW_ATTN_BATCH with bit 1 for the q/k norms, bit 2 for the output gate, bit 4 for rope and bit 8 for the kv append, where mask 0 reproduces the pre-batching code exactly and therefore acts as a usable control, plus a fast checker that starts the server, sends a fixed long prompt and compares the output md5 in about forty seconds instead of the ten-minute accept.sh.  Against a baseline md5 of 5b5f6e93 at 182 characters, masks 0, 1, 2 and 4 all matched, mask 8 did not, and mask 15 did not - so the bug was in kv_append_rows alone and the other three were correct all along.  The root cause is that the k and v scratch rows are NOT the same length: scratch.k is shared with the delta-net path and is laid out with key_dim = linear_num_key_heads times linear_key_head_dim = 16 x 128 = 2048 elements per token, while the attention k this kernel copies is only num_key_value_heads times head_dim = 4 x 256 = 1024 of them, and scratch.v is exactly 1024.  The original code used two different expressions for the two offsets, key_dim for k and nkv*hd for v, whereas my batched kernel used a single Hkv*D for both, so k[i] walked into the next token.  The fix adds krow and vrow scalars and addresses k[token*krow + j] and v[token*vrow + j] separately; after it every mask including 15 matches the baseline word for word.  Dispatches per pass fell from 29,682 to 17,490, a 41 per cent cut, the gates pass 19/0, and six interleaved A/B rounds gave a median of 6.066 to 5.952, B winning 6/6 at -2.0 per cent with every difference negative and tightly clustered.  Together with the gdn fusion the cold prefill has come down from 6.69 s to about 5.95 s, roughly 11 per cent.  NEXT: the remaining dispatch hotspots are copy_off and conv1d_silu_ring at 6144 each, 70 per cent of what is left, and attn_scores_softmax and attn_out at 2048 each, which need a causal mask.",
+ "next": "Found the fused convolution kernel already sitting in the tree as dead code and wired it into the prefill path, which removed 70 per cent of the remaining dispatches.  conv1d_silu_ring_tile had a constant defined and a full implementation but no call site at all: its comment says it convolves a whole tile of rows at once, reading the current pass's rows straight from the staging buffer, and folds the ring update in, so it replaces both the per-row copy and the per-row convolution.  Wiring it behind the one_seq guard took copy_off and conv1d_silu_ring from 6,144 each to zero and added 48 conv1d_silu_ring_tile, so dispatches per pass fell from 17,490 to 5,250.  Correctness is argued in the kernel's own comment: every window read in that dispatch is for a position before pos0, at least three slots behind the ones it writes, so no thread reads a slot another is writing.  The gates pass 19/0 and masks 0 and 15 both match the baseline word for word.  Six interleaved A/B rounds gave a median of 6.102 to 6.031, B winning 6/6 at -1.2 per cent.  Across the three rounds the dispatch count has fallen from 41,874 to 5,250, an 87 per cent cut, for a cumulative speedup of only about 6 per cent - which reconfirms that dispatch count is not the bottleneck unless it carries barriers, since the gdn fusion was the most effective precisely because it removed 6,144 barriers at once.  Of the 5,250 dispatches left, attn_scores_softmax and attn_out are 4,096 or 78 per cent and need a causal mask, while the bulk of the cold prefill's time, about 73 per cent, is still the GEMM.  NEXT: turn to the GEMM, or batch the attention scores with a causal mask.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

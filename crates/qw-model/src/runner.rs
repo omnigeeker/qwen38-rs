@@ -38,6 +38,7 @@ struct Kernels {
     attn_scores: Kernel,
     attn_out: Kernel,
     conv1d_ring: Kernel,
+    conv1d_ring_tile: Kernel,
     gdn: Kernel,
     gdn_seq: Kernel,
     rmsnorm_ws_rows: Kernel,
@@ -675,6 +676,7 @@ impl Qwen38 {
                 attn_scores: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_SCORES_SOFTMAX)?,
                 attn_out: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_OUT)?,
                 conv1d_ring: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING)?,
+                conv1d_ring_tile: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_TILE)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
                 gdn_seq: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP_SEQ)?,
                 rmsnorm_ws_rows: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS_ROWS)?,
@@ -1897,6 +1899,32 @@ impl Qwen38 {
                     // each with its own ring).  Each row's raw qkv is first moved out
                     // of the staging buffer into its own ring slot - the single-row
                     // path gets that for free by projecting straight into the window.
+                    if rows.iter().all(|r| r.0 == rows[0].0) {
+                        // conv1d_silu_ring_tile reads the current pass's rows straight
+                        // out of the staging buffer and folds the ring update in, so
+                        // it replaces BOTH the per-row copy and the per-row
+                        // convolution: 12,288 launches per pass become 48.  Every
+                        // window read is for a position before pos0, at least three
+                        // slots behind the ones this dispatch writes, so no thread can
+                        // read a slot another thread is writing.  It only applies when
+                        // the rows are consecutive positions of one sequence; a batch
+                        // pass of unrelated sequences keeps the per-row pair.
+                        b.encode(
+                            Dispatch::new(
+                                &kernels.conv1d_ring_tile,
+                                (n * conv_dim, 1, 1),
+                                (NT, 1, 1),
+                            )
+                            .buf_offset(0, &g.window, rows[0].0 * win_stride)
+                            .buf(1, &g.conv_w)
+                            .buf(2, &scratch.conv_out)
+                            .scalar(3, conv_dim as i32)
+                            .scalar(4, (rows[0].1 % conv_ring) as i32)
+                            .scalar(5, conv_ring as i32)
+                            .buf(6, &scratch.qkv_cur)
+                            .scalar(7, rows[0].1 as i32),
+                        );
+                    } else {
                     for (row, &(seq, pos)) in rows.iter().enumerate() {
                         let slot = pos % conv_ring;
                         let woff = seq * win_stride;
@@ -1918,6 +1946,7 @@ impl Qwen38 {
                                 .scalar(4, slot as i32)
                                 .scalar(5, conv_ring as i32),
                         );
+                    }
                     }
                     b.barrier();
                     b.barrier();

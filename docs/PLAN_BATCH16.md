@@ -5945,3 +5945,48 @@ A/B（6 轮交错，120 s 冷却，A=`/tmp/q.gdseq`，B=`/tmp/q.mask2`）：
 1. **运行时掩码 + 快速校验器**：一次构建、逐位二分，比反复跑 10 分钟门禁快得多；
 2. **掩码 0 作为对照**是这套方法成立的前提 —— 它证明校验器本身没有假阴性；
 3. **测量前必须 `lsof -ti :8199` 确认端口干净**（§72bd 的陷阱）。
+
+### 72bf. **发现并启用死代码 `conv1d_silu_ring_tile`：dispatch 17,490 → 5,250（−70%）**（第 119 轮）
+
+读 GDN 阶段 2 的内核时发现：**`conv1d_silu_ring_tile` 早就写好了，却没有任何调用点**。
+它的注释写得很清楚：
+
+> The same convolution for a whole tile of rows at once: row `r` uses slot `(slot0 + r)`.
+> ... **Fold the ring update in**: the row of this pass that this thread just convolved is
+> exactly the raw row the next pass needs in the ring, so writing it here removes a copy
+> launch per row.
+
+**⇒ 它同时做掉了「复制进 ring」和「逐行卷积」两件事，一次 dispatch 覆盖整个 pass。**
+
+接入 prefill 路径（`one_seq` 守卫）：
+
+| | 前 | 后 |
+|---|---|---|
+| `copy_off` | 6,144 | **0** |
+| `conv1d_silu_ring` | 6,144 | **0** |
+| `conv1d_silu_ring_tile` | 0 | **48** |
+| **每 pass 合计** | **17,490** | **5,250（−70%）** |
+
+**正确性论证**（内核注释里已有）：本次 dispatch 的 window 读取只发生在 `pos < pos0`，
+即**至少落后写入槽位 3 个 slot**，所以没有任何线程会读到别的线程正在写的槽位 ✓。
+
+**结果**：门禁 **19/0 ACCEPTED**，掩码 0/15 与基线**逐字一致**。
+A/B（6 轮交错，120 s 冷却，A=`/tmp/q.mask2`，B=`/tmp/q.convtile`）：
+**6/6 B 胜，中位数 6.102 → 6.031 = −1.2%**
+（−0.063 / −0.085 / −0.040 / −0.186 / −0.102 / −0.067）。
+
+### 三轮累计（第 86 → 89 轮）
+
+| | 每 pass dispatch | 冷 prefill |
+|---|---|---|
+| 起点 | **41,874** | ~6.69 s |
+| +gdn 融合（§72bb） | 29,682 | −3.1% |
+| +注意力批量化（§72be） | 17,490 | −2.0% |
+| +卷积 tile 融合（本轮） | **5,250** | −1.2% |
+
+**⇒ dispatch 总数降了 87%，但累计只快了约 6%。**
+
+**这再次确认：dispatch 数量不是瓶颈**（除非它同时带着 barrier —— gdn 融合之所以最有效，
+是因为它一次消掉了 6,144 个 **barrier**）。
+**⇒ 剩余 5,250 个 dispatch 中，`attn_scores_softmax` + `attn_out` 占 4,096（78%），
+但它们需要因果掩码；而冷 prefill 的时间大头（~73%）仍是 GEMM。**
