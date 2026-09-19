@@ -112,11 +112,18 @@ pub const TILE: usize = 4;
 /// the old value of `TILE` is what lets a prefill amortise the per-pass overhead,
 /// which is a fixed cost of roughly 1216 dependent dispatches that does not care
 /// how many rows ride along.
-pub const PASS_ROWS_MAX: usize = 32;
+// 128, not 32.  The GEMM's grid is (out_f/BM)*128 by rows/BN, so a 32-row pass
+// gives it a single y-slice and only out_f/32 threadgroups - about two waves on
+// 40 SMs - which is exactly where the weight staging collapses to 39 GB/s.  The
+// same kernel at 128 rows reaches 61 GB/s and costs 7.427 ms per token against
+// 11.548, because each weight read is then amortised over four times the tokens.
+// This is the lever the narrow-tile experiment got wrong: what matters is tokens
+// per weight read, not threadgroups on their own.
+pub const PASS_ROWS_MAX: usize = 128;
 
 /// Widest row tile a single pass can carry.  `TILE` is the speculative-verify
 /// width; a batch-serving pass puts one row per sequence in the same structure.
-pub const BATCH_MAX: usize = 32;
+pub const BATCH_MAX: usize = 128;
 
 struct Scratch {
     x: GpuBuffer,

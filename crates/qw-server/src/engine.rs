@@ -38,7 +38,7 @@ const PREFILL_CHUNK: usize = qw_model::runner::PASS_ROWS_MAX;
 /// sequence, which is 4 with the convolution ring at 8, and a wider pass is
 /// rejected outright.  Asking for more is therefore clamped rather than honoured,
 /// and the clamp is logged so the request is not silently ignored.
-const PREFILL_CHUNK_MAX: usize = 32;
+const PREFILL_CHUNK_MAX: usize = 128;
 /// Size the LAST prefill chunk of a request is capped to.
 ///
 /// A boundary is persisted for the chunk that ends at the prompt end (ladder
