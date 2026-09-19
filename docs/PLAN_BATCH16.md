@@ -4923,3 +4923,38 @@ if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
 因为 `grid.y` 偏大只浪费线程，`tok < k` 守卫生效）。已全部改回 32，
 二进制 md5 复原为 **`8469229c523c7c73421c712657ca0295`** ——
 正是本轮门禁 **19/0 ACCEPTED** 所验证的那个构建。`gemm-check` PASSED。
+
+### 72af. 为「按 out_f 选路」加了开关；但**冷 TTFT 测试台失效**，A/B 作废（第 96 轮）
+
+**动机**：§72y/§72ae 说明 GEMM 的并行度由 `grid.x = (out_f/BM)*128` 决定。
+模型里的 `out_f` 只有四种：**48 / 5120 / 17408 / 248320**。
+`out_f = 5120` ⇒ 仅 **160 个 threadgroup**（40 个 SM 上约 2 个波次），
+正是带宽只有 39 GB/s 的区间；而四行 tile kernel 会启动 `out_f*32` 个线程，
+**多 8 倍**，在小张量上可能反而更快。
+
+**已加开关**（默认 0 = 行为完全不变，因此可安全提交）：
+
+```rust
+if rows >= gemm_min_rows() && self.out_f >= gemm_min_out_f() {
+```
+
+`QW_GEMM_MIN_OUT_F` 默认 0，`gemm-check` PASSED（worst rel 3.347e-4，逐位不变）。
+
+### 但冷 TTFT 测试台失效 —— 8 次测量全部 0.06 s
+
+用 `/tmp/pfout.py`（每个进程一份全新随机 430 词 prompt，交替顺序）测：
+
+```
+r1 A 0.066  B 0.061     r3 A 0.061  B 0.065
+r2 B 0.076  A 0.056     r4 B 0.061  A 0.061
+```
+
+**0.06 s 对 550 token 的冷 prefill 是不可能的**（74 tok/s 应是 7.4 s），
+且已确认 `QW_PREFIX_DISK`/`QW_PREFIX_SNAPSHOT` **均未设置**并已在脚本里显式剔除。
+
+**⇒ 测试台测到的是缓存命中或桩响应，这组 A/B 作废。**
+（这正是之前记录过的 Ollama 陷阱的镜像：**必须证明 prefill 真的跑了**。）
+
+**修正方案（下一轮）**：测试台必须**打印并校验 `prompt_eval_count` / `usage.prompt_tokens`**
+（或开 `QW_PREFIX_TIME` 看服务端 prefill 计时），确认每次都是真正的冷 prefill，
+再谈 A/B。**在此之前不采信任何冷 TTFT 数字。**

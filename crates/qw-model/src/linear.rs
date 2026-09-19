@@ -204,7 +204,7 @@ impl<'a> QLinear<'a> {
             // byte-identity with the scalar path.  One dispatch per linear
             // instead of rows/4, and the MACs go through the matrix units: the
             // MMA runs at 36 TFLOPS against the scalar path's 5.4.
-            if rows >= gemm_min_rows() {
+            if rows >= gemm_min_rows() && self.out_f >= gemm_min_out_f() {
                 if let Err(e) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
                     eprintln!("q4_gemm_tile FAILED TO BUILD ({e:?}); its dispatch is skipped and y stays zero");
                 }
@@ -314,6 +314,23 @@ impl<'a> QLinear<'a> {
 /// Row count at or above which `encode_rows` uses the GEMM instead of looping the
 /// four-row tile kernel.  `QW_GEMM_MIN_ROWS` selects it; unset means never, which
 /// is the shipped default because the two paths round differently.
+fn gemm_min_out_f() -> usize {
+    // The GEMM's grid is (out_f / BM) * 128 threads, so a small out_f yields very
+    // few threadgroups: 5120 rows is 160 of them, about two waves across 40 SMs,
+    // and that is exactly the regime where the weight staging only reaches 39 GB/s
+    // against 61 GB/s once there are four times as many.  The four-row tile kernel
+    // launches out_f * 32 threads - eight times as many - so it may well win on the
+    // small tensors.  0 keeps the GEMM everywhere, which is the measured default
+    // until an interleaved A/B says otherwise.
+    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        std::env::var("QW_GEMM_MIN_OUT_F")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 fn gemm_min_rows() -> usize {
     // Read once: this is consulted for every linear of every pass, so a plain
     // `std::env::var` here would be 497 allocations on a prefill's hot path.

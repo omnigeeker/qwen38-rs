@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 155,
+ "round": 156,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3729,9 +3729,30 @@
     "next": "widen the prefill pass from 32 rows to 128 (BATCH_MAX, PASS_ROWS_MAX and the x/y/conv-ring buffers)",
     "consistency_fix": "the previous commit left bench.rs/linear.rs at bn=8 while msl.rs was back at Q4_GEMM_BN 32; all sites are now 32 and the md5 is back to 8469229c523c7c73421c712657ca0295, the build the gates verified"
    }
+  },
+  {
+   "round": 156,
+   "title": "Added an out_f-aware routing switch for the GEMM, then found the cold-TTFT harness is broken so its A/B is void.  The motivation is well grounded: the GEMM's parallelism is grid.x = (out_f/BM)*128 and the model uses only four out_f values - 48, 5120, 17408 and 248320 - so out_f = 5120 yields a mere 160 threadgroups, roughly two waves across 40 SMs, which is precisely the 39 GB/s regime, whereas the four-row tile kernel launches out_f*32 threads, eight times as many, and could well win on the small tensors.  The switch landed as `if rows >= gemm_min_rows() && self.out_f >= gemm_min_out_f()` with QW_GEMM_MIN_OUT_F defaulting to 0, leaving the shipped behaviour bit-for-bit identical, and gemm-check still PASSES at worst rel 3.347e-4.  The measurement, however, came back impossible: /tmp/pfout.py, which starts a fresh server per run with a fresh random 430-word prompt and alternates the order, reported 0.06 s on all eight runs - 0.066/0.061, 0.076/0.056, 0.061/0.065, 0.061/0.061 - when a 550-token cold prefill at 74 tok/s should take about 7.4 s.  QW_PREFIX_DISK and QW_PREFIX_SNAPSHOT are both unset, and I removed them explicitly in the script anyway.  The harness is therefore reading a cache hit or a stub, and the A/B is void: the exact mirror of the Ollama trap recorded earlier, where reusing a prompt produced bogus timings.  Next round the harness must print and verify prompt_eval_count or usage.prompt_tokens, or enable QW_PREFIX_TIME to read server-side prefill timing, and demonstrate that every run is a genuine cold prefill before any A/B is believed.  Until then no cold-TTFT figure should be trusted.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (out_f gate defaults to 0, so the shipped path is bit-for-bit unchanged)",
+   "evidence": {
+    "out_f_values": [
+     48,
+     5120,
+     17408,
+     248320
+    ],
+    "threadgroups_at_5120": 160,
+    "switch": "rows >= gemm_min_rows() && self.out_f >= gemm_min_out_f(); QW_GEMM_MIN_OUT_F default 0",
+    "harness_failure": "all eight runs returned 0.06 s, impossible for a 550-token cold prefill (7.4 s at 74 tok/s)",
+    "cache_env": "QW_PREFIX_DISK and QW_PREFIX_SNAPSHOT both unset and explicitly removed in the script",
+    "verdict": "A/B void - the harness measured a cache hit or a stub",
+    "next": "verify prompt_eval_count / usage.prompt_tokens or QW_PREFIX_TIME before believing any cold-TTFT number"
+   }
   }
  ],
- "next": "BN=8 was CORRECT all along - the fault was a third dispatch site in the test harness.  gemm-check has its own dispatch at bench.rs:527, and I had only been changing bench.rs:395, the one belonging to the bench subcommand.  bench.rs:528 kept bn = 32 while the kernel expected 8, so grid.y came out as ceil(40/32) = 2 and tok0 = tg.y*8 covered only tokens 0..15, leaving 16..39 never written - hence rel ~ 1.0.  With all four dispatch sites corrected, gemm-check PASSES with bit-identical accuracy against BN=32 (1.097e-2/2.715e-4 and so on).  But the measurement kills it anyway: six interleaved rounds (machine drifting 13.7 to 18.5 again) gave BN=32 13.734/14.585/16.209/17.634/17.992/18.060 against BN=8's 14.653/16.510/18.407/18.083/18.465/18.491 - BN=32 won all six, so BN=8 is refuted by measurement.  The reason is plain: at 32 tokens grid.y = 4 means the weights are re-read four times, 57.6 GB instead of 14.4 GB, and the parallelism gain does not cover four times the traffic.  That forces a re-reading of the earlier result: the real lever is not a narrower tile but HOW MANY TOKENS EACH WEIGHT READ FEEDS.  BN=32 at 32 tokens reads the weights once and takes 370 ms per 32 tokens; BN=32 at 128 tokens reads them four times but takes only 238 ms per 32 tokens, because the re-read is amortised over four times the tokens; BN=8 at 32 tokens reads them four times for the same 32 tokens and loses.  Achieved bandwidth rises from 39 to about 60 GB/s once grid.y >= 2, but only pays when each y-slice is filled with 32 tokens.  So the correct direction is candidate 2 from the earlier round: widen the prefill pass from 32 rows to 128, which requires enlarging BATCH_MAX, PASS_ROWS_MAX and the x, y and conv-ring buffers.  BN=8 is reverted; the loud kernel-build error in linear.rs is kept (md5 35fe8f5f -> 8469229c, gates 19/0 ACCEPTED).",
+ "next": "Added the out_f-aware routing switch and then discovered the cold-TTFT harness is broken.  The motivation is solid: the GEMM's parallelism is grid.x = (out_f/BM)*128 and the model only has four out_f values - 48, 5120, 17408 and 248320 - so out_f = 5120 gives just 160 threadgroups, about two waves on 40 SMs, which is exactly the 39 GB/s regime, while the four-row tile kernel launches out_f*32 threads, eight times as many, and may therefore win on the small tensors.  The switch is in: `if rows >= gemm_min_rows() && self.out_f >= gemm_min_out_f()`, with QW_GEMM_MIN_OUT_F defaulting to 0 so the shipped behaviour is bit-for-bit unchanged and gemm-check still PASSES at worst rel 3.347e-4.  But the measurement failed: /tmp/pfout.py, which starts a fresh server per run with a fresh random 430-word prompt and alternates the order, returned 0.06 s in all eight runs (0.066/0.061, 0.076/0.056, 0.061/0.065, 0.061/0.061).  That is impossible for a 550-token cold prefill, which at 74 tok/s should take 7.4 s, and I confirmed QW_PREFIX_DISK and QW_PREFIX_SNAPSHOT are both unset and explicitly removed them in the script.  So the harness is measuring a cache hit or a stub and the A/B is void - the mirror image of the Ollama trap recorded earlier, where a reused prompt produced bogus numbers.  NEXT: the harness must print and check prompt_eval_count / usage.prompt_tokens, or enable QW_PREFIX_TIME to read the server-side prefill timing, and prove every run is a genuine cold prefill before any A/B is believed.  No cold-TTFT number should be trusted until then.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
