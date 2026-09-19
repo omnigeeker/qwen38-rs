@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 165,
+ "round": 166,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3995,9 +3995,31 @@
     "conclusion": "the GEMM is not traffic-bound: halving traffic bought 4.3%, so the staging's cost is the fixed per-iteration expense, not bytes",
     "next": "both instructions and bytes are at diminishing returns - a structurally different kernel is needed"
    }
+  },
+  {
+   "round": 166,
+   "title": "Worked out why Ollama wins and what beating it requires.  Weight traffic per token settles the question: Ollama prefills 581 tokens in 2.3 s and, if it reads the 14.4 GB of weights once for the whole prompt - they fit comfortably in 128 GB of unified memory - the effective rate is only 6.3 GB/s, far too low to be bandwidth-bound, so its prefill is compute-bound at roughly 14.6 TFLOPS (581 x 28.8 G x 2 FLOP = 33.5 TFLOP over 2.3 s against an M5 Max peak near 36) and it reads the weights exactly once.  We move W/BN = 14.4/32 = 0.45 GB per token, independent of pass width as shown earlier, which is 302 GB for a 672-token prompt, 4.95 s at 61 GB/s and consistent with the measured 6.0 s.  The loss is therefore not bandwidth but repetition: 0.45 GB/token against 0.0248, eighteen times as much, and no tenfold bandwidth advantage survives eighteen times the data.  The plan that wins is BN=128 with split-K(4): BN=128 sets grid.y = 1 so each pass reads the weights once, and grid.z = 4 splits K four ways to bring parallelism back to (out_f/32)*4 = 640 threadgroups, precisely the 61 GB/s sweet spot found in the BN sweep.  Traffic per pass falls from 4W = 57.6 GB to W = 14.4 GB, so six passes total 86 GB instead of 345, an estimated 1.4 s against Ollama's 2.3 s - a win.  Implementation: enable split-K only for out_f <= 5120, because out_f >= 17408 already yields at least 544 threadgroups from grid.x, which keeps the partial-sum buffer at 10.5 MB instead of the 508 MB lm_head would demand; the buffer is f32[S][rows][out_f] with S = 4; a light elementwise kernel reduces the four partials into y; and the BN=128 tile is already written and proved bit-identical, recoverable from /tmp/msl9.bak, leaving split-K and the reduction as the only new work.  This is the last route with numbers behind it, so implement it next.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (analysis only; no code change)",
+   "evidence": {
+    "ollama_traffic_per_token": "0.0248 GB (weights read once for the whole prompt)",
+    "ours_traffic_per_token": "0.45 GB = W/BN, independent of pass width",
+    "ratio": "18x more data",
+    "ollama_bound": "compute-bound at ~14.6 TFLOPS, not bandwidth-bound (6.3 GB/s effective)",
+    "plan": "BN=128 + split-K(4): grid.y = 1 (traffic W) with grid.z = 4 (640 threadgroups = the 61 GB/s sweet spot)",
+    "expected": "1.4 s vs Ollama's 2.3 s",
+    "implementation": [
+     "split-K only for out_f <= 5120 to keep the partial buffer at 10.5 MB",
+     "f32[S][rows][out_f], S = 4",
+     "an elementwise reduction kernel into y",
+     "the BN=128 tile is already proved bit-identical and is in /tmp/msl9.bak"
+    ],
+    "next": "implement split-K with the reduction"
+   }
   }
  ],
- "next": "Tested BM=64/BN=64/NT=256, designed so eight simdgroups keep only four accumulators each and the register pressure matches the shipped kernel, which was the flaw that made the earlier BN=64 attempt lose 27 percent.  The weight staging then has exactly BM*nwords = 256 = NT work items and shared comes to 26176 B, inside the 32768 limit.  Accuracy was bit-identical and the gates passed 19/0.  Interleaved after a 300 s cooldown it won the first three rounds - base 6.447/6.448/6.536 against 6.172/6.178/6.044, medians 6.448 to 6.172, about 4.3 percent - but round 4 produced 935.494 s against the base's 5.510 s, a fifteen-minute outlier that no load can explain and that points to an occasional hang or retry in the 256-thread configuration.  NOT ADOPTED, for two reasons: the gain is only 4.3 percent, and there is an unexplained stability risk.  By discipline it is better to forgo 4.3 percent than to ship a default that may intermittently hang.  Reverted, md5 back to 3826791b87de8814392d476370de4612, gemm-check PASSES.  The more important conclusion is that the GEMM is not traffic-bound either: halving the weight traffic bought only 4.3 percent, which alongside the earlier finding that staging is 89 percent of the time means the staging's cost is set by the fixed per-iteration expense - latency, instructions, synchronisation - and not by the number of bytes.  That is consistent with the instruction-count hypothesis having been refuted too: uint2 halved the instructions and bought nothing, BN=64 halved the bytes and bought 4.3 percent, so both dimensions have hit diminishing returns.",
+ "next": "Worked out why Ollama wins and what it takes to beat it.  Comparing weight traffic per token settles it: Ollama prefills 581 tokens in 2.3 s, and if it reads the 14.4 GB of weights once for the whole prompt - they fit in the 128 GB of unified memory - that is an effective 6.3 GB/s, far too low to be bandwidth-bound.  So Ollama's prefill is COMPUTE-bound at about 14.6 TFLOPS (581 tokens x 28.8 G weights x 2 FLOP = 33.5 TFLOP over 2.3 s, against an M5 Max peak near 36), and it reads the weights exactly once.  We, by contrast, move W/BN = 14.4/32 = 0.45 GB per token - independent of the pass width, as established earlier - which is 302 GB for a 672-token prompt, 4.95 s at 61 GB/s and matching the measured 6.0 s.  So we are not losing on bandwidth but on how many times we read the weights: 0.45 GB/token against Ollama's 0.0248, eighteen times as much, and even a tenfold bandwidth advantage cannot overcome eighteen times the data.  THE WINNING PLAN is BN=128 with split-K(4).  BN=128 makes grid.y = 1 so each pass reads the weights once, and grid.z = 4 splits K four ways to restore parallelism to (out_f/32)*4 = 640 threadgroups - exactly the 61 GB/s sweet spot measured in the BN sweep.  Per pass that is W = 14.4 GB instead of 4W = 57.6, so six passes come to 86 GB rather than 345, an estimated 1.4 s against Ollama's 2.3 s, which wins.  Implementation notes: enable split-K only for out_f <= 5120, since out_f >= 17408 already gives at least 544 threadgroups from grid.x alone, which keeps the partial-sum buffer at 4*128*5120*4 B = 10.5 MB rather than the 508 MB lm_head would need; the buffer is f32[S][rows][out_f] with S = 4; a light elementwise reduction kernel sums the four partials into y; and the BN=128 tile was already implemented and proved bit-identical in the earlier round, recoverable from /tmp/msl9.bak, so split-K plus the reduction is the only new work.  This is the only remaining route with numbers behind it, so implement it next.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
