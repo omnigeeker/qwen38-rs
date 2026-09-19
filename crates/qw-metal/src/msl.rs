@@ -702,6 +702,16 @@ Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
 // cycles through every bank while the reads stay coalesced.
 #define Q4_GEMM_XLD (Q4_GEMM_BN + 9)
 
+// Split-K factor.  Weight traffic per token is W/BN and BN cannot grow past 32
+// without either sixteen accumulators per simdgroup or a half-idle weight
+// staging, so the only way to stop re-reading the weights four times per 128-row
+// pass is to cut K instead.  Each z-slice reads K/4 of the weights, and the four
+// partials are summed by `q4_gemm_reduce`.  Traffic per pass falls from 4W to W
+// while grid.z restores the threadgroup count to the 640 that the BN sweep found
+// to be the bandwidth sweet spot.  Fixed rather than a buffer so that every
+// existing dispatch keeps working untouched; `mode == 4` selects the path.
+#define Q4_GEMM_S 4
+
 kernel void q4_gemm_tile(
     device const uint*   w      [[buffer(0)]],
     device const ushort* scales [[buffer(1)]],
@@ -712,13 +722,26 @@ kernel void q4_gemm_tile(
     constant int&        k      [[buffer(6)]],
     constant int&        out_f  [[buffer(7)]],
     constant int&        mode   [[buffer(8)]],   // diagnostic: 0 full, 1 skip dequant, 2 skip MACs
-    uint2 tg   [[threadgroup_position_in_grid]],
+    uint3 tg   [[threadgroup_position_in_grid]],
     uint  tid  [[thread_index_in_threadgroup]],
     uint  sg   [[simdgroup_index_in_threadgroup]])
 {
     const int row0 = (int)tg.x * Q4_GEMM_BM;
     const int tok0 = (int)tg.y * Q4_GEMM_BN;
     const int n_groups = K / GROUP_SIZE;
+    // This slice's K range.  Rounded up to a whole number of BK steps so that
+    // every step stages a full tile; a slice past the end simply loops zero times
+    // and contributes zeros.
+    // ONLY under mode 4.  Applying the slice unconditionally truncates the K loop
+    // for every ordinary dispatch - grid.z is 1 there, so k_hi would come out at
+    // K/4 and the GEMM would quietly compute a quarter of each dot product.  That
+    // is exactly what happened on the first build: the server emitted all
+    // newlines, the A/B looked 27 per cent faster, and the "win" was three
+    // quarters of the work going missing.
+    const bool sk   = (mode == 4);
+    const int kstep = sk ? (((K + Q4_GEMM_S - 1) / Q4_GEMM_S + Q4_GEMM_BK - 1) / Q4_GEMM_BK * Q4_GEMM_BK) : K;
+    const int k_lo  = sk ? ((int)tg.z * kstep) : 0;
+    const int k_hi  = sk ? min(K, k_lo + kstep) : K;
 
     threadgroup half wsh[Q4_GEMM_BM * Q4_GEMM_WLD];
     threadgroup half xsh[Q4_GEMM_BK * Q4_GEMM_XLD];
@@ -732,7 +755,7 @@ kernel void q4_gemm_tile(
     simdgroup_matrix<float, 8, 8> a10 = simdgroup_matrix<float, 8, 8>(0.0f);
     simdgroup_matrix<float, 8, 8> a11 = simdgroup_matrix<float, 8, 8>(0.0f);
 
-    for (int k0 = 0; k0 < K; k0 += Q4_GEMM_BK) {
+    for (int k0 = k_lo; k0 < k_hi; k0 += Q4_GEMM_BK) {
         // One uint per thread, expanded to its eight nibbles.  The obvious loop - one
         // iteration per (row, K) element - loads the whole uint for every nibble in it,
         // so each uint is fetched eight times and the useful bandwidth lands at an
@@ -751,7 +774,7 @@ kernel void q4_gemm_tile(
             const int row = row0 + r;
             const int g0  = k0 + wd * 8;
             half v[8];
-            if (row < out_f && g0 < K) {
+            if (row < out_f && g0 < k_hi) {
                 // mode 5 is a bandwidth probe, not a computation: it reads the weight
                 // at the address a K-major (transposed) layout would put it at.  The
                 // results are wrong on purpose.  The row-major layout gives this tile
@@ -795,7 +818,7 @@ kernel void q4_gemm_tile(
                 const int kk  = idx - t * Q4_GEMM_BK;
                 const int g   = k0 + kk;
                 const int tok = tok0 + t;
-                xsh[kk * Q4_GEMM_XLD + t] = (g < K && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
+                xsh[kk * Q4_GEMM_XLD + t] = (g < k_hi && tok < k) ? x[(size_t)tok * (size_t)K + (size_t)g] : (half)0;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -826,9 +849,30 @@ kernel void q4_gemm_tile(
         const int row = row0 + r;
         const int tok = tok0 + t;
         if (row < out_f && tok < k) {
-            y[(size_t)tok * (size_t)out_f + (size_t)row] = (half)osh[idx];
+            if (mode == 4) {
+                // Split-K partial: y is a scratch here, read as f32 by
+                // `q4_gemm_reduce`, which writes the real half result.
+                ((device float*)y)[(size_t)tg.z * (size_t)k * (size_t)out_f
+                                   + (size_t)tok * (size_t)out_f + (size_t)row] = osh[idx];
+            } else {
+                y[(size_t)tok * (size_t)out_f + (size_t)row] = (half)osh[idx];
+            }
         }
     }
+}
+
+// Sums the Q4_GEMM_S partial products left by the split-K path.  One thread per
+// output element: read S floats, add them in a fixed order, write one half.
+kernel void q4_gemm_reduce(
+    device const float* part [[buffer(0)]],   // [S][n]
+    device half*        y    [[buffer(1)]],   // [n]
+    constant int&       n    [[buffer(2)]],
+    uint i [[thread_position_in_grid]])
+{
+    if ((int)i >= n) return;
+    float acc = 0.0f;
+    for (int s = 0; s < Q4_GEMM_S; ++s) acc += part[(size_t)s * (size_t)n + (size_t)i];
+    y[i] = (half)acc;
 }
 
 // 16 independent activations per weight read: the whole point of batch-16
@@ -1109,6 +1153,7 @@ pub const K_Q4_GEMV_K3_U4HX: &str = "q4_gemv_k3_u4hx";
 pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
 pub const K_Q4_GEMV_K8_U4HX: &str = "q4_gemv_k8_u4hx";
 pub const K_Q4_GEMM_TILE: &str = "q4_gemm_tile";
+pub const K_Q4_GEMM_REDUCE: &str = "q4_gemm_reduce";
 pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";
 pub const K_Q4_GEMV_B16: &str = "q4_gemv_b16";
 pub const K_Q4_GEMV_K3_U4H4: &str = "q4_gemv_k3_u4h4";

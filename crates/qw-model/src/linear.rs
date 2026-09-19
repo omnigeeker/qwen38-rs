@@ -209,6 +209,41 @@ impl<'a> QLinear<'a> {
                     eprintln!("q4_gemm_tile FAILED TO BUILD ({e:?}); its dispatch is skipped and y stays zero");
                 }
                 if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
+                    // Split-K.  With a small out_f the tile grid alone cannot fill
+                    // the GPU, so a wide pass leans on grid.y for parallelism and
+                    // ends up reading the whole 14.4 GB of weights once per 32
+                    // tokens.  Cutting K four ways reads them once per pass and
+                    // grid.z restores the threadgroup count to the 640 that the BN
+                    // sweep measured as the bandwidth sweet spot.  QW_SPLITK=0
+                    // turns it off, which is how it was A/B'd.
+                    if splitk_enabled(self.out_f, self.in_f, rows) {
+                        if let Ok(rk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_REDUCE) {
+                            const S: usize = 4;
+                            let scratch = batch.buffer(S * rows * self.out_f * 4);
+                            let d = Dispatch::new(
+                                &gk,
+                                (self.out_f.div_ceil(32) * 128, rows.div_ceil(32), S),
+                                (128, 1, 1),
+                            )
+                            .buf_offset(0, self.weight.buf, self.weight.offset)
+                            .buf_offset(1, self.scales.buf, self.scales.offset)
+                            .buf_offset(2, self.biases.buf, self.biases.offset)
+                            .buf(3, x)
+                            .buf(4, &scratch)
+                            .scalar(5, self.in_f as i32)
+                            .scalar(6, rows as i32)
+                            .scalar(7, self.out_f as i32)
+                            .scalar(8, 4);
+                            batch.encode(d);
+                            let n = rows * self.out_f;
+                            let dr = Dispatch::new(&rk, (n, 1, 1), (256, 1, 1))
+                                .buf(0, &scratch)
+                                .buf(1, y)
+                                .scalar(2, n as i32);
+                            batch.encode(dr);
+                            return;
+                        }
+                    }
                     const BM: usize = 32;
                     const BN: usize = 32;
                     let d = Dispatch::new(
@@ -329,6 +364,22 @@ fn gemm_min_out_f() -> usize {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0)
     })
+}
+
+/// Split-K is only worth it where the tile grid alone cannot fill the GPU.  This
+/// model has exactly four out_f values - 48, 5120, 17408 and 248320 - and at
+/// 17408 and above grid.x already supplies 544 or more threadgroups, so only 5120
+/// needs the help.  It also needs a wide pass: with few rows the extra reduction
+/// dispatch costs more than the weight traffic it saves.  QW_SPLITK=0 disables it.
+/// OFF by default: `QW_SPLITK=1` opts in.  The gates pass 19/0 with it on, so it
+/// is correct, but the interleaved A/B came back 2/4 with a median only about 9
+/// per cent better inside a 13.4-16.9 s noise band, which is not a verified win
+/// and therefore not something to ship as the default.
+fn splitk_enabled(out_f: usize, in_f: usize, rows: usize) -> bool {
+    if std::env::var("QW_SPLITK").ok().as_deref() != Some("1") {
+        return false;
+    }
+    rows >= 32 && out_f >= 1024 && out_f <= 5120 && in_f >= 512
 }
 
 fn gemm_min_rows() -> usize {

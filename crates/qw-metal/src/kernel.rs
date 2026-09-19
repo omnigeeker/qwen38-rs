@@ -98,6 +98,12 @@ pub struct CommandBatch<'d> {
 }
 
 impl<'d> CommandBatch<'d> {
+    /// Allocate a shared-memory buffer from this batch's device.  The split-K
+    /// path needs a partial-sum scratch that lives as long as the command buffer.
+    pub fn buffer(&self, len: usize) -> GpuBuffer {
+        self.dev.buffer(len)
+    }
+
     pub fn new(dev: &'d mut GpuDevice) -> Self {
         let cb = dev.queue().new_command_buffer().to_owned();
         Self {

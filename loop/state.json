@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 167,
+ "round": 168,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4040,9 +4040,40 @@
     "expected": "traffic per pass 4W -> W; six passes 345 GB -> 86 GB; 6.0 s -> ~1.4 s vs Ollama 2.3 s",
     "next": "implement split-K"
    }
+  },
+  {
+   "round": 168,
+   "title": "Implemented split-K to the checklist and it passes every gate, but the performance case is unproven, so it ships default-OFF.  The kernel takes uint3 tg and under mode 4 slices K by Q4_GEMM_S = 4 writing f32 partials into y as scratch; a new q4_gemm_reduce kernel sums the four partials into the half output; CommandBatch gained buffer() for the scratch; and it engages for out_f in [1024, 5120] with rows >= 32, which here means only out_f = 5120.  Gates: 19 of 19 ACCEPTED with split-K ON, mlx-lm oracle included.  The round's most valuable outcome is a bug it exposed.  The first build applied the K slice unconditionally and, since an ordinary dispatch has grid.z = 1, k_hi came out as K/4, so the GEMM quietly computed a quarter of every dot product.  The deception was near-perfect: the server emitted a string of newlines and pipes - plainly wrong - while the interleaved A/B called it 27 percent FASTER, 3.06 s against 3.87 s, a win that was nothing but three quarters of the arithmetic disappearing.  Gating on const bool sk = (mode == 4) fixed it and the server returned sane text at once.  Prove correctness before claiming speed: had only the A/B numbers been read, a bug dropping 75 percent of the work would have been filed as a 27 percent optimisation, and the oracle gate was the only guard.  With the fix, four interleaved rounds after a 300 s cooldown gave sk0 16.894/16.188/15.435/15.624 against sk1 13.357/13.508/15.781/15.872 - 2 of 4 to split-K, median 16.165 to 14.645, roughly 9 percent, inside a 13.4-16.9 s noise band on a machine that measured 3.0 s and 6.0 s earlier the same day.  That is not a verified win, so split-K is default-OFF behind QW_SPLITK=1, kept and proved correct for a retest on a quiet machine.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (with split-K ON; the shipped default has it OFF)",
+   "evidence": {
+    "implementation": "uint3 tg; mode 4 slices K by Q4_GEMM_S=4; q4_gemm_reduce sums partials; CommandBatch::buffer()",
+    "correctness": "gates 19/0 ACCEPTED with split-K ON, mlx-lm oracle included",
+    "bug_found": "unconditional K slicing gave k_hi = K/4 for grid.z = 1, computing a quarter of each dot; the A/B called it 27% FASTER",
+    "bug_fix": "const bool sk = (mode == 4)",
+    "lesson": "prove correctness before claiming speed - only the oracle gate caught a 75%-of-work-missing bug",
+    "ab": {
+     "sk0": [
+      16.894,
+      16.188,
+      15.435,
+      15.624
+     ],
+     "sk1": [
+      13.357,
+      13.508,
+      15.781,
+      15.872
+     ],
+     "verdict": "2/4, median 16.165 -> 14.645 (~9%), inside a 13.4-16.9 s noise band - not verified"
+    },
+    "decision": "default OFF behind QW_SPLITK=1; implementation kept and proved correct",
+    "next": "retest split-K on a quiet machine"
+   }
   }
  ],
- "next": "Established that BN=128 is structurally blocked before spending a round trying to route around it.  A 32x128 tile is 64 8x8 tiles, so with NT=128 the four simdgroups need sixteen accumulators each, which is the register pressure that measured 73 percent slower earlier; with NT=256 each simdgroup needs eight, but then the weight staging has only BM*nwords = 128 work items for 256 threads, so half the threads idle inside the staging that accounts for 89 percent of the time, and raising BM to 64 to fill them brings the tile count to 128 and the accumulators back to sixteen.  Both ends are blocked, so BN=128 cannot be reached by tuning NT or BM.  The only remaining trick - splitting each word's eight nibbles across two threads for 256 work items - makes every word load twice and is not worth it.  That leaves split-K as the sole route, and the implementation list is now written down concretely: the kernel change is small (read tg.z and, under mode 4, write the final value as an f32 partial into y reinterpreted as float at offset z*k*out_f, so no new buffer binding is needed); a reduction kernel of about fifteen lines sums the S partials into the real half y; the Rust side allocates a 10.5 MB scratch only when out_f <= 5120 and dispatches with grid.z = 4 before the reduction; and correctness is judged by bit-identity where it holds and by the oracle gates otherwise, since summing four f32 partials need not match one running accumulator bit for bit.  Expected effect: traffic per pass falls from 4W to W, six passes from 345 GB to 86 GB, and the cold prefill from 6.0 s to about 1.4 s, which beats Ollama's 2.3 s.  Implement next round.",
+ "next": "Implemented split-K exactly as the checklist specified, and it passes every gate, but the performance case is not made, so it ships OFF by default.  The kernel now takes uint3 tg and under mode 4 slices K by Q4_GEMM_S = 4, writing f32 partials into y as a scratch; a new q4_gemm_reduce kernel sums the four partials into the real half output; CommandBatch grew a buffer() helper for the scratch; and it engages for out_f in [1024, 5120] with rows >= 32, which in this model means only out_f = 5120.  Correctness is established: the gates pass 19 of 19 ACCEPTED with split-K ON, including the mlx-lm oracle.  THE IMPORTANT PART OF THIS ROUND IS A BUG IT EXPOSED.  The first build applied the K slice unconditionally, and because an ordinary dispatch has grid.z = 1 the slice came out as k_hi = K/4, so the GEMM silently computed a quarter of every dot product.  The deception was near-perfect: the server emitted a string of newlines and pipes, which is obviously wrong, yet the interleaved A/B reported it 27 percent FASTER at 3.06 s against 3.87 s - and that win was simply three quarters of the arithmetic going missing.  Gating everything on const bool sk = (mode == 4) fixed it, and the server immediately returned sane text again.  The lesson is to prove correctness before claiming speed: had only the A/B numbers been read, a bug that drops 75 percent of the work would have been filed as a 27 percent optimisation, and the oracle gate was the only thing standing in the way.  With the fix in, four interleaved rounds after a 300 s cooldown gave sk0 16.894/16.188/15.435/15.624 against sk1 13.357/13.508/15.781/15.872 - split-K winning 2 of 4, median 16.165 to 14.645, about 9 percent, inside a noise band of 13.4 to 16.9 s on a machine that also measured 3.0 s and 6.0 s earlier the same day.  Nine percent inside that band is not a verified win, so split-K is default-OFF behind QW_SPLITK=1: the implementation stays, proved correct, for a retest when the machine is quiet, but it is not the default.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
