@@ -4186,3 +4186,21 @@ GEMV 的输出为准），因为 oracle 才是真正的正确性标准。
 然后**以 mlx-lm oracle 而不是以 GEMV 输出作为验收标准**重新基线化：
 跑 `oracle parity 6/6`、`server==cli`（此时 cli 的 `gen` 走单行路径，需要一并
 确认是否也该走 GEMM）、以及 §72b 的 9 长度一致性。**同时要更新 §72b 的结论措辞。**
+
+### 72i. **GEMM 成为默认 prefill 路径，门禁 19/0 ACCEPTED**（第 73 轮）
+
+`QW_GEMM_MIN_ROWS` 默认值从 `usize::MAX` 改为 **8**（`linear.rs`），
+即 `rows >= 8` 的 prefill pass 一律走 GEMM；设成很大的值可回退到标量循环。
+
+**`bash tools/accept.sh` → 19 passed / 0 failed, ACCEPTED。**
+
+这条门禁里有 `oracle parity 6/6`（对 mlx-lm）、`server==cli`、
+`spec==plain`、`chunk 4 与 chunk 32 答案一致`、三条缓存一致性 —— 全部通过，
+说明**以 oracle 为标准的正确性在 GEMM 默认路径下成立**。
+
+依据是 §72h 那张表：同一 harness、同一批 x、同一 CPU 参考下，
+GEMM 在四个张量上 `max_abs` 好 1.3–1.9×、`rel` 好 1.5–1.8×。
+
+**§72b 的措辞已失效**：那次 1/9 分叉应读作「出厂 GEMV 偏离正确答案」，
+而不是「GEMM 破坏等价性」。此后**等价性基准以 mlx-lm oracle 为准**，
+不再以 GEMV 输出为准。

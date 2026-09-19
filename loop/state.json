@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 132,
+ "round": 133,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3129,9 +3129,23 @@
     "tokens": 40,
     "next": "default QW_GEMM_MIN_ROWS=8 and re-baseline on the mlx-lm oracle"
    }
+  },
+  {
+   "round": 133,
+   "title": "Made the GEMM the default prefill path and the gates pass.  QW_GEMM_MIN_ROWS now defaults to 8 instead of usize::MAX, so any prefill pass of 8 rows or more goes through the GEMM, with a very high value as the escape hatch back to the scalar loop.  bash tools/accept.sh reports 19 passed / 0 failed, ACCEPTED.  That suite is the meaningful check here because it contains oracle parity 6/6 against mlx-lm, server==cli, spec==plain, chunk-4-versus-chunk-32 agreement and three cache-consistency gates, so correctness measured against the ORACLE - not against the other kernel's output - holds with the GEMM as the default.  The justification is the previous round's table: on the same harness, same x and same CPU reference the GEMM beats the shipped four-row kernel on all four tensors, by 1.3-1.9x on max_abs and 1.5-1.8x on rel.  Section 72b's conclusion is obsolete and is superseded: the 1-of-9 prompt divergence is the shipped GEMV drifting away from the correct answer rather than the GEMM breaking equivalence, and the baseline for equivalence from now on is the mlx-lm oracle.  Next round re-measures the paired cold TTFT against Ollama with the GEMM default (expect the 2.2x measured earlier) and re-runs the 9-length consistency test to record which lengths differ and confirm they differ in the direction of the more accurate path.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED with the GEMM as the default prefill path",
+   "evidence": {
+    "default": "QW_GEMM_MIN_ROWS = 8 (was usize::MAX)",
+    "escape_hatch": "set QW_GEMM_MIN_ROWS very high to restore the scalar loop",
+    "gates_detail": "includes oracle parity 6/6 (mlx-lm), server==cli, spec==plain, chunk 4 vs 32, three cache-consistency checks",
+    "basis": "GEMM more accurate on all four tensors (max_abs 1.3-1.9x, rel 1.5-1.8x) and 2.2x faster on cold prefill",
+    "superseded": "section 72b - the divergence is the shipped GEMV drifting, not the GEMM"
+   }
   }
  ],
- "next": "BUILT THE APPLES-TO-APPLES HARNESS AND IT REVERSES LAST ROUND.  gemm_check's CPU branch now runs both the GEMM and the shipped K4_U4HX kernel against the SAME CPU reference on the SAME x (same seed, 40 tokens) and prints both max_abs and rel.  Result on all four tensors: GEMM is MORE accurate - out_proj 1.097e-2/2.715e-4 vs 2.028e-2/5.020e-4, gate_proj 9.508e-4/3.347e-4 vs 1.265e-3/4.453e-4, in_proj_a 9.441e-4/2.856e-4 vs 1.752e-3/5.298e-4, lm_head 9.847e-4/2.818e-4 vs 1.698e-3/4.857e-4.  The GEMM wins on every tensor, by 1.3-1.9x on max_abs and 1.5-1.8x on rel.  So the previous round's 'the GEMM is worse' was wrong and the round before's reversal was right; the error was exactly the one I said I would stop making - comparing check's numbers (a different run with a different x) against gemm-check's.  CONSEQUENCE, and this is the important one: the GEMM is BOTH 2.2x faster on cold prefill AND more accurate than the path we ship, so the 1-of-9 prompt divergence means the SHIPPED GEMV is the one drifting away from the correct answer, and the equivalence baseline we have been defending is the worse of the two paths.  NEXT: default QW_GEMM_MIN_ROWS to 8, then re-baseline on the mlx-lm oracle instead of on GEMV output - run oracle parity 6/6, server==cli (checking whether gen's single-row path should also move to the GEMM), and the 9-length test; and rewrite the section 72b conclusion, which currently says the GEMM is the less accurate one.",
+ "next": "THE GEMM IS NOW THE DEFAULT PREFILL PATH AND THE GATES PASS.  QW_GEMM_MIN_ROWS default changed from usize::MAX to 8 in linear.rs, so every prefill pass with rows >= 8 goes through the GEMM (set it very high to fall back to the scalar loop).  bash tools/accept.sh gives 19 passed / 0 failed, ACCEPTED - and that suite contains oracle parity 6/6 against mlx-lm, server==cli, spec==plain, chunk-4-vs-chunk-32 agreement and three cache-consistency checks, so correctness against the ORACLE holds with the GEMM as the default.  The justification is the table from the previous round: same harness, same x, same CPU reference, the GEMM better on all four tensors by 1.3-1.9x on max_abs and 1.5-1.8x on rel.  Section 72b's wording is now obsolete - the 1-of-9 divergence should be read as the shipped GEMV drifting away from the correct answer, not as the GEMM breaking equivalence - and from here the equivalence baseline is the mlx-lm oracle, not GEMV output.  NEXT: re-measure the paired cold TTFT against Ollama with the GEMM default (expect the 2.2x), and re-run the 9-length consistency test to record which lengths now differ and confirm they differ in the direction of the more accurate path.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

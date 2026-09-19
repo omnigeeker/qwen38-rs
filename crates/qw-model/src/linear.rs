@@ -319,6 +319,11 @@ fn gemm_min_rows() -> usize {
         std::env::var("QW_GEMM_MIN_ROWS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(usize::MAX)
+            // 8 = on by default.  Measured on the same tensors and the same CPU
+            // reference, the GEMM is more accurate than the four-row kernel we used
+            // to ship (max_abs better by 1.3-1.9x, rel by 1.5-1.8x, on all four
+            // checked tensors), and 2.2x faster on a cold prefill.  Set
+            // QW_GEMM_MIN_ROWS very high to fall back to the scalar loop.
+            .unwrap_or(8)
     })
 }
