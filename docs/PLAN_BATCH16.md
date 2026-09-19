@@ -5637,3 +5637,41 @@ shared 容量 · 指令发射数 · 并行度（`grid.y>4` 饱和）· 流量/`B
 
 **⇒ 目标只完成了一半，不标记完成。** 剩余工作集中在**冷 prefill 的 kernel 效率**：
 llama.cpp 约 26 TFLOPS（峰值 72%），我们约 7.8 TFLOPS（22%）。
+
+### 72ay. 冷 prefill 的**实测分解**：GEMM 73% / 非 GEMM 27%；以及天花板算术（第 114 轮）
+
+用 `QW_PREFIX_TIME=1` 跑 602-token 冷 prefill，拿到分阶段的真实时间：
+
+```
+prefix cache miss - skipped 0 of 602 prompt tokens (0%)
+prefill 256/602 (42%) after 2.6s      <- 前 256 token 用 2.6 s
+prefill 512/602 (85%) after 5.2s      <- 再 256 token 又用 2.6 s
+prompt in after 6.3s (TTFT, 602 tokens)
+```
+
+**⇒ 每 256 token 恰好 2.6 s（~10.2 ms/token），线性、无异常。**
+
+对照 §72y 的 GEMM 微基准（128-token pass = 0.95 s ⇒ 256 token = 1.9 s）：
+
+| | 每 256 token | 占比 |
+|---|---|---|
+| GEMM | 1.90 s | **73%** |
+| 非 GEMM（conv1d / norm / 门控 / attention） | 0.70 s | **27%** |
+
+**⇒ 非 GEMM 部分比早期估计的 12% 高一倍多**（602 token 约 1.7 s）。
+
+### 天花板算术（重要）
+
+| 假设 | 冷 prefill（602 tok） | 对 llama.cpp 的 1.60 s |
+|---|---|---|
+| 现在 | 6.3 s | 落后 3.9× |
+| GEMM 完美（0 ms） | **1.70 s** | **仍落后 1.06×** |
+| GEMM 快 4× | 2.85 s | 落后 1.8× |
+| GEMM 快 4× 且非 GEMM 减半 | **2.0 s** | 落后 1.25× |
+
+**⇒ 关键结论：即使 GEMM 变成零耗时，我们也只是「打平」llama.cpp。**
+**⇒ 要真正赢，必须同时做两件事**：
+1. **GEMM 结构性提速**（现在 ~7.1 TFLOPS，llama.cpp ~27 TFLOPS）；
+2. **把每 token 的非 GEMM 算子批量化**（现在 27%，约 1.7 s）。
+
+**⇒ 单靠 GEMM 一条线不可能达成目标**，这是本轮最重要的判断。
