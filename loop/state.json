@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 137,
+ "round": 138,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3251,9 +3251,44 @@
     },
     "caveat": "not interleaved, machine state uncontrolled, but all three runs moved together"
    }
+  },
+  {
+   "round": 138,
+   "title": "Interleaved paired cold-TTFT re-measurement, with Ollama's prompt_eval_count printed as proof it re-prefilled rather than hitting its cache: ours 7.44 / 9.23 / 10.46 s against Ollama's 2.87 / 2.11 / 2.08 s, eval_count 455 / 450 / 429.  Cold TTFT is therefore still lost by about 3.4-4.4x, and that is now the accurate baseline.  Our side did improve, from 10.6-14.5 s in the previous valid run to 7.4-10.5 s, but Ollama was also faster this time (2.1-2.9 s against 2.5-3.2 s), so the ratio only moved from 4-5x to 3.5-4x.  One harness leftover: our usage.prompt_tokens still reads 0 because OpenAI-style streaming only includes usage when stream_options.include_usage is set.  Recorded the remaining attackable items on the cold path from the earlier decomposition - weight staging at 212 ms per pass with register prefetch already refuted, the MAC at 60 ms per pass, the per-row non-GEMV ops whose 12 percent ceiling has never been attempted, and the encode overhead of 497 dispatches per pass - and named the per-row non-GEMV batching as the largest untouched item and the next target.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (measurement only)",
+   "evidence": {
+    "interleaved": {
+     "ours_s": [
+      7.44,
+      9.23,
+      10.46
+     ],
+     "ollama_s": [
+      2.87,
+      2.11,
+      2.08
+     ],
+     "ollama_eval_count": [
+      455,
+      450,
+      429
+     ]
+    },
+    "verdict": "cold TTFT still lost by about 3.4-4.4x (was 4-5x)",
+    "harness_leftover": "usage.prompt_tokens reads 0; needs stream_options.include_usage",
+    "remaining_cold_items": [
+     "weight staging 212 ms/pass (register prefetch refuted)",
+     "MAC 60 ms/pass",
+     "per-row non-GEMV ops, 12% ceiling, never started",
+     "497 dispatches per pass encode overhead"
+    ],
+    "next": "per-row non-GEMV batching"
+   }
   }
  ],
- "next": "Implemented the x-staging fix from the previous round's analysis and it is a real win.  Q4_GEMM_XLD changed from Q4_GEMM_BN+8 (40) to Q4_GEMM_BN+9 (41), and the staging loop now gives each lane consecutive K instead of consecutive tokens: t = idx / Q4_GEMM_BK, kk = idx - t*Q4_GEMM_BK.  So a warp reads 64 contiguous bytes of x instead of striding 10240 bytes, and because 41 is coprime with 32 the shared write bank (kk*41 + t) % 32 cycles through every bank with no conflict - which is exactly what went wrong when XLD was 40 and the swap caused a 4-way conflict and a 40 percent regression.  Correctness: gemm-check's four tensors report bit-identical max_abs and rel to before the change, so simdgroup_load accepts the odd leading dimension of 41 and the change only reorders the loads.  Gates 19 passed / 0 failed, ACCEPTED.  Cold prefill on three fresh 300-word prompts read from the server log: 7.1 / 6.6 / 6.6 s against 14.52 / 10.62 / 11.31 s before the change - about 1.7x, taking prefill throughput from roughly 46 to roughly 74 tok/s.  Caveat recorded: that is not an interleaved A/B and machine state was uncontrolled, but all three runs moved together and by far more than the noise.  NEXT: an interleaved paired cold-TTFT re-measurement against Ollama (220-260 tok/s), and fix the harness defect from two rounds ago where usage only appears in the final streaming chunk.",
+ "next": "Interleaved paired cold TTFT re-measured, with Ollama's prompt_eval_count as the no-cache proof: ours 7.44 / 9.23 / 10.46 s against Ollama 2.87 / 2.11 / 2.08 s (eval_count 455 / 450 / 429).  So cold TTFT is still lost by about 3.4-4.4x.  That is the accurate baseline now: our side improved from 10.6-14.5 s to 7.4-10.5 s, but Ollama also came in faster this time (2.1-2.9 s) than in the earlier valid run (2.5-3.2 s), so the ratio only moved from 4-5x to 3.5-4x.  Harness leftover: our usage.prompt_tokens still reads 0 because OpenAI-style streaming only carries usage when stream_options.include_usage is set.  Remaining attackable items on the cold path, from the round-33/72 decomposition: weight staging at 212 ms per pass (register prefetch already refuted), the MAC at 60 ms per pass, the per-row non-GEMV ops with a 12 percent ceiling that has never been started, and the encode overhead of 497 dispatches per pass.  The per-row non-GEMV batching is the largest untouched item, so that is the next target.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

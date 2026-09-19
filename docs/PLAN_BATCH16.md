@@ -4315,3 +4315,26 @@ const int t = idx / Q4_GEMM_BK;  const int kk = idx - t * Q4_GEMM_BK;
 
 **下一轮**：与 Ollama 做**交错配对**的冷 TTFT 复测（Ollama 侧 220–260 tok/s），
 并把 §72k 的 harness 缺陷（usage 只在最后一个 chunk）修掉。
+
+### 72n. **交错配对的冷 TTFT 复测：仍输约 3.5–4×**（第 78 轮）
+
+300 词全新随机 prompt，我们/Ollama 交错，Ollama 侧带 `prompt_eval_count` 校验：
+
+| 轮 | 我们 | Ollama | Ollama `eval_count` |
+|---|---|---|---|
+| 1 | 7.44 s | 2.87 s | 455 |
+| 2 | 9.23 s | 2.11 s | 450 |
+| 3 | 10.46 s | 2.08 s | 429 |
+
+**⇒ 冷 TTFT 仍输约 3.4–4.4×**（上一轮有效的非交错数字是 4–5×）。
+`eval_count` 429–455 证明 Ollama 每次都真的重新 prefill，无缓存命中。
+
+**这是目前冷路径的准确基线。** 我们这一侧从 10.6–14.5 s 降到 7.4–10.5 s，
+但 Ollama 这次也更快（2.1–2.9 s），所以倍数只从 4–5× 收窄到 3.5–4×。
+
+harness 遗留：我们的 `usage.prompt_tokens` 仍读到 0 —— 需要
+`stream_options: {"include_usage": true}` 才会在流式响应里带上 usage。
+
+**冷路径剩余可攻击项**（按 §67/§72 的分解）：
+权重 staging 212 ms/pass（register prefetch 已证无效）、MAC 60 ms/pass、
+非 GEMV 的 per-row 操作（12% 上限，未做）、以及 497 次 dispatch 的编码开销。
