@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 170,
+ "round": 171,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4128,9 +4128,45 @@
     "cold_ttft": "2.6x behind",
     "next": "decisive measurement in the quiet window"
    }
+  },
+  {
+   "round": 171,
+   "title": "Tested BN=128 together with split-K - the combination the analysis pointed to, where each pass reads the weights once and grid.z restores 640 threadgroups - and it is 72 per cent slower, ending the BN=128 route for good.  Both halves were correct: the BN=128 tile is bit-identical and the gates pass 19/0 with sane server output, yet six interleaved rounds gave A 5.903/5.870/5.901/5.632/5.865/27.602 against B 10.127/10.113/11.586/28.586/9.978/9.977, so B won 1 of 6 and the median went 5.886 to 10.120, 72 per cent worse.  The BN sweep is complete: 8 lost 6/6, 32 is optimal, 64 lost 4/4 by 27 per cent, 64 with NT=256 won 3/3 by just 4.3 per cent with a 935 s outlier, 128 lost 4/4 by 73 per cent and 128 with split-K lost 5/6 by 72 per cent.  Reducing weight traffic is definitively refuted - sixteen accumulators per simdgroup, and a bandwidth collapse at 160 threadgroups, always cost more than the traffic saved.  Pricing the staging properly produced a new lead.  For out_f=5120, K=6144, rows=128, BM=BN=32, weight staging is (rows/BN)*out_f*K*0.5 = 62.9 MB and activation staging is (out_f/BM)*K*BN*2 = 62.9 MB, exactly equal: the activations are only 1.57 MB but are re-read 160 times, once per out_f block, and although L2 residency keeps the DRAM cost low they still cost shared writes and barrier time, with staging already known to be 89 per cent of the time.  Raising BM from 32 to 64 halves the activation staging, 80 blocks instead of 160, cutting total staging from 126 MB to 94 MB, 25 per cent less, while doubling the MMA work per threadgroup for better latency amortisation; shared comes to wsh 5120 + xsh 2624 + osh 8192 = 15936 B, comfortably inside the limit.  BM=64 sits in the refuted list from an earlier round but with no recorded data and in a different combination, so it warrants a clean retest on this explicit motivation.  Reverted to the shipped build, md5 restored, gemm-check PASSES.  Next: test BM=64 with BN=32.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BN=128+split-K reverted; the shipped build is restored)",
+   "evidence": {
+    "A": [
+     5.903,
+     5.87,
+     5.901,
+     5.632,
+     5.865,
+     27.602
+    ],
+    "B": [
+     10.127,
+     10.113,
+     11.586,
+     28.586,
+     9.978,
+     9.977
+    ],
+    "verdict": "1/6, median 5.886 -> 10.120 = 72% slower; BN=128 route closed",
+    "bn_sweep_closed": {
+     "8": "0/6",
+     "32": "optimal",
+     "64": "0/4, -27%",
+     "64_NT256": "3/3 but only +4.3% with a 935 s outlier",
+     "128": "0/4, -73%",
+     "128_splitK": "1/6, -72%"
+    },
+    "new_lead": "activation staging equals weight staging at 62.9 MB each; BM 32 -> 64 halves it, total staging 126 -> 94 MB (-25%)",
+    "next": "test BM=64 with BN=32"
+   }
   }
  ],
- "next": "Fixed the head-to-head harness and in doing so discovered that our otps figure had been wrong all along: the old script computed (chunks-1)/(last-first), which is chunks per second, while Ollama's side used its own eval_count/eval_duration, which really is tokens per second, so the two were measured on different scales and the recorded 1.377x advantage was not meaningful.  The new tools/duel.py uses the streaming request only for TTFT - stopping on the first NON-EMPTY content chunk, because the server emits a role-only chunk about 60 ms in and stopping there yields a bogus 0.06 s - and takes the token count from a second non-streaming request's usage.completion_tokens, since stream_options.include_usage does nothing on this server but the non-streaming path does return usage; otps is then (completion_tokens-1)/(last-first).  Ollama keeps eval_count/eval_duration and also prints a chunk-rate cross-check.  This incidentally closes a long-standing gap: usage.prompt_tokens is available on the non-streaming response - 565 in the validation run - so a genuine cold prefill no longer has to be inferred from server logs.  A one-round validation at gen=64 gave ours cold TTFT 6.102 s and otps 26.27 against Ollama's 2.338 s and 24.99, so otps still wins but by only 1.05x rather than the 1.377x on record, Ollama's chunk-rate of 24.60 closely matching its 24.99 and confirming the two sides are now on the same scale, while cold TTFT remains 2.6x behind.  The corrected conclusion is that the otps advantage is far smaller than recorded - 5 percent, not 38 - and that even this was measured with the GPU 84-99 percent busy, so the decisive measurement waits on the quiet window the user has agreed to provide.  NEXT: run tools/duel.py and the paired A/B in a quiet window and re-establish the objective's true standing.",
+ "next": "Tested the combination the analysis pointed to - BN=128 together with split-K, so that each pass reads the weights once while grid.z restores the threadgroup count to 640 - and it is 72 per cent slower, which ends the BN=128 route for good.  Both pieces were correct: the BN=128 tile is bit-identical and the gates pass 19/0 with the server emitting sane text, but six interleaved rounds gave A 5.903/5.870/5.901/5.632/5.865/27.602 against B 10.127/10.113/11.586/28.586/9.978/9.977, so B won 1 of 6 and the median went from 5.886 to 10.120, 72 per cent worse.  The BN sweep is now complete - 8 lost 6/6, 32 is optimal, 64 lost 4/4 by 27 per cent, 64 with NT=256 won 3/3 by only 4.3 per cent with a 935 s outlier, 128 lost 4/4 by 73 per cent, and 128 with split-K lost 5/6 by 72 per cent - so reducing weight traffic is definitively refuted: sixteen accumulators per simdgroup and a bandwidth collapse at 160 threadgroups always eat more than the saved traffic.  A new lead emerged from pricing the staging properly.  For out_f=5120, K=6144, rows=128 and BM=BN=32, the weight staging is (rows/BN)*out_f*K*0.5 = 62.9 MB and the activation staging is (out_f/BM)*K*BN*2 = 62.9 MB - exactly equal.  The activations are only 1.57 MB in total but get re-read 160 times, once per out_f block; being L2-resident they cost little DRAM bandwidth, but they cost shared-memory writes and barrier time, and staging was already shown to be 89 per cent of the time.  So raising BM from 32 to 64 halves the activation staging - 80 blocks instead of 160 - taking total staging from 126 MB to 94 MB, 25 per cent less, and doubling the MMA work per threadgroup for better latency amortisation, with wsh 5120 + xsh 2624 + osh 8192 = 15936 B comfortably inside the limit.  BM=64 appears in the refuted list from an earlier round but with no data recorded and in a different combination, so it deserves a clean retest on this explicit motivation.  Reverted to the shipped build, md5 restored, gemm-check PASSES.  NEXT: test BM=64 with BN=32.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

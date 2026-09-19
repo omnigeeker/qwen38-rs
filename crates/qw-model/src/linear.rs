@@ -371,12 +371,15 @@ fn gemm_min_out_f() -> usize {
 /// 17408 and above grid.x already supplies 544 or more threadgroups, so only 5120
 /// needs the help.  It also needs a wide pass: with few rows the extra reduction
 /// dispatch costs more than the weight traffic it saves.  QW_SPLITK=0 disables it.
-/// OFF by default: `QW_SPLITK=1` opts in.  The gates pass 19/0 with it on, so it
-/// is correct, but the interleaved A/B came back 2/4 with a median only about 9
-/// per cent better inside a 13.4-16.9 s noise band, which is not a verified win
-/// and therefore not something to ship as the default.
+/// ON by default, because the GEMM now tiles 128 tokens wide: without split-K a
+/// wide tile leaves grid.y = 1 and only 160 threadgroups for out_f = 5120, which
+/// measured 73 per cent slower.  The two changes are complementary - the wide tile
+/// removes the weight re-reads and split-K puts the parallelism back.  Splitting K
+/// while BN was still 32 measured a flat 1 per cent, exactly as the traffic
+/// algebra predicts, since W*(rows/BN) does not depend on how K is cut.
+/// `QW_SPLITK=0` turns it off for A/B.
 fn splitk_enabled(out_f: usize, in_f: usize, rows: usize) -> bool {
-    if std::env::var("QW_SPLITK").ok().as_deref() != Some("1") {
+    if std::env::var("QW_SPLITK").ok().as_deref() == Some("0") {
         return false;
     }
     rows >= 32 && out_f >= 1024 && out_f <= 5120 && in_f >= 512
