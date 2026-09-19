@@ -221,7 +221,7 @@ impl<'a> QLinear<'a> {
                     .scalar(5, self.in_f as i32)
                     .scalar(6, rows as i32)
                     .scalar(7, self.out_f as i32)
-                    .scalar(8, 0);
+                    .scalar(8, std::env::var("QW_GEMM_MODE").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0));
                     batch.encode(d);
                     return;
                 }

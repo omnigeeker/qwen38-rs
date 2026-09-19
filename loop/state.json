@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 153,
+ "round": 154,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3683,9 +3683,24 @@
     "next": "unconditional 1.0f store to prove the kernel runs at all",
     "decision": "BN=8 paused after three non-converging rounds; move to split-K or a wider prefill pass"
    }
+  },
+  {
+   "round": 154,
+   "title": "Found the root cause and it was in the harness, not the kernel.  QW_GEMM_MODE has no effect whatsoever in gemm-check: modes 0, 1, 2 and 3 all return bit-identical output (gemm max_abs 1.097e-2, rel 2.715e-4), because gemm-check runs through linear.rs's dispatch, which hardcoded .scalar(8, 0), while the QW_GEMM_MODE read at bench.rs:409 belongs to the bench subcommand only.  The mode == 9 probe therefore never took effect, and the bit-identical output that had puzzled me signified an invalid probe rather than a kernel that failed to execute.  With the mode plumbed into linear.rs, mode 9 was STILL bit-identical to mode 0, which is what finally exposed the culprit: `if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE)` silently swallows a kernel build failure.  When the BN=8 kernel does not compile, batch.kernel returns Err, the whole dispatch is skipped and y keeps its initial zeros - a compile error disguised as an accuracy catastrophe, rel = 1.0, which cost three rounds of chasing the wrong thing.  That branch now reports loudly.  All changes are reverted - msl.rs from the backup, BN back to 32 in bench.rs and linear.rs - the md5 is back to 35fe8f5f363f352317a379f252f7d83d and gemm-check passes.  The lesson worth writing into the discipline is that any branch which silently skips work when a kernel is unavailable must report the error, or a GPU-side problem surfaces as a numerical failure hundreds of lines away.  Next: with the failure now loud, re-apply BN=8 and read the actual Metal compile error, which should name the real constraint - most likely the simdgroup_load leading dimension, since XLD drops from 41 to 17.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (BN=8 reverted; the shipped binary is restored and gemm-check PASSES at worst rel 3.347e-4)",
+   "evidence": {
+    "mode_probe_dead": "modes 0/1/2/3 all bit-identical in gemm-check (max_abs 1.097e-2, rel 2.715e-4)",
+    "cause": "gemm-check uses linear.rs's dispatch, which hardcoded .scalar(8, 0); QW_GEMM_MODE at bench.rs:409 is bench-only",
+    "root_cause": "`if let Ok(gk) = batch.kernel(...)` swallowed the q4_gemm_tile build failure, so the dispatch was skipped and y stayed zero",
+    "fix": "that branch now eprintln!s that the kernel failed to build and the dispatch would be skipped",
+    "lesson": "every branch that silently skips work when a kernel is unavailable must report the error",
+    "next": "re-apply BN=8 with the failure now loud and read the real Metal compile error (suspect: simdgroup_load leading dimension, XLD 41 -> 17)"
+   }
   }
  ],
- "next": "Ran the mode == 9 fixed-point probe and it came back BIT-IDENTICAL to mode 0 (gemm max_abs 4.040e1, rel 1.000e0 in both), which means switching to a branch that writes xsh into y and returns early changed the kernel's behaviour not at all.  First, a trap to record: rel = 1.0 by itself cannot distinguish an all-zero output from a successful dump, because max_abs is max|a-b| and a = 0 gives max_abs = max|b| = max_ref, i.e. rel = 1.0 - and dumped activations could coincidentally reach the same maximum.  Only bit-identical output is a valid signal.  Bit-identical output across modes leaves two possibilities: xsh is all zeros so the x staging is not writing, or the kernel never executes at all (invalid dispatch, compile failure, silently dropped), leaving y at its initial value so every mode yields the same all-zero result.  The second explains bit-identical output better, and the two cannot be told apart while y is zero either way.  To break the ambiguity the kernel must write an unconditional constant - always store 1.0f - because then y stops being zero the moment the kernel runs, whatever is wrong with the dispatch.  Everything is reverted (msl.rs, bench.rs, linear.rs), the md5 is back to 35fe8f5f363f352317a379f252f7d83d and gemm-check PASSES.  BN=8 has now failed to converge for three rounds, so by discipline it is paused: the cold-path gains should go to split-K, which does not depend on re-tiling the output, or to an explicit evaluation of widening the prefill pass.",
+ "next": "FOUND THE ROOT CAUSE, and it was in the harness rather than the kernel.  QW_GEMM_MODE has no effect in gemm-check at all - modes 0, 1, 2 and 3 all give bit-identical output (gemm max_abs 1.097e-2 rel 2.715e-4) - because gemm-check goes through linear.rs's dispatch, which hardcoded .scalar(8, 0); the QW_GEMM_MODE read at bench.rs:409 is only used by the bench subcommand.  So the mode == 9 probe from the previous round never took effect, and the bit-identical output that puzzled me meant an invalid probe, not a kernel that failed to run.  After plumbing the mode into linear.rs, mode 9 was STILL bit-identical to mode 0, which exposed the real culprit: `if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE)` silently swallows a kernel compilation failure.  When the BN=8 kernel does not compile, batch.kernel returns Err, the entire dispatch is skipped, and y keeps its initial zeros - so a compile error masqueraded as an accuracy catastrophe (rel = 1.0) and sent me chasing the wrong thing for three rounds.  That branch now reports loudly, printing that q4_gemm_tile failed to build and that the dispatch would be skipped leaving y at zero.  Everything is reverted: msl.rs from the backup, BN back to 32 in bench.rs and linear.rs, md5 back to 35fe8f5f363f352317a379f252f7d83d, gemm-check PASSES.  LESSON for the discipline: every branch that silently skips work when a kernel is unavailable must report the error, otherwise a GPU-side problem surfaces as a numerical failure hundreds of lines away.  Next: with the failure now loud, re-apply BN=8 and read the actual Metal compile error, which will name the real constraint - most likely the simdgroup_load leading dimension, since XLD falls from 41 to 17.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

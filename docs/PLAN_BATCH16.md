@@ -4840,3 +4840,36 @@ kernel 的行为完全没有变化**。两种可能：
 
 **结论**：BN=8 这条路线**连续三轮没有收敛**，按纪律暂停 —— 冷路径的收益
 应转向**不依赖 tile 重划分**的 split-K，或直接评估「加宽 prefill pass」。
+
+### 72ad. **根因找到：`if let Ok(gk)` 静默吞掉了 kernel 编译失败**（第 94 轮）
+
+`QW_GEMM_MODE` 在 `gemm-check` 里**完全不起作用** —— 四个 mode 的输出逐位相同：
+
+```
+mode 0/1/2/3: gemm max_abs 1.097e-2 rel 2.715e-4   ← 四个全一样
+```
+
+原因：`gemm-check` 走的是 **`linear.rs` 的 dispatch**，而那里写死了
+`.scalar(8, 0)`。`bench.rs` 里读 `QW_GEMM_MODE` 的那处（第 409 行）只在
+`bench` 子命令里用到。**所以 §72ac 的 `mode == 9` 探针根本没有生效** ——
+上一轮的「逐位相同」是探针无效，不是 kernel 没跑。
+
+把 mode 接进 `linear.rs` 后再测，**mode 9 仍然与 mode 0 逐位相同**，
+于是真正的根因浮出来：
+
+```rust
+if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
+```
+
+**这个 `if let` 会静默吞掉 kernel 编译失败。** `BN=8` 的 kernel 编译不过时，
+`batch.kernel(...)` 返回 `Err`，整个 dispatch 被跳过，`y` 保持全零 ——
+于是**一个编译错误伪装成了「精度灾难」**（`rel = 1.0`），
+害我连查三轮。
+
+**已改为响亮报错**（失败时 `eprintln!` 并提示「dispatch 会被跳过、y 会留在零」）。
+
+**已全部回退**：`msl.rs` 从备份复原，`bench.rs`/`linear.rs` 的 `BN` 改回 32，
+二进制 md5 复原 **`35fe8f5f363f352317a379f252f7d83d`**，`gemm-check` PASSED。
+
+**教训（值得写进纪律）**：**任何「kernel 拿不到就跳过」的分支都必须报错**，
+否则 GPU 侧的问题会以「数值全错」的形式出现在几百行之外。
