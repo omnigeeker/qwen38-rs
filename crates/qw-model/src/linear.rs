@@ -196,6 +196,36 @@ impl<'a> QLinear<'a> {
         } else if rows <= crate::runner::TILE {
             self.encode_tile(batch, tile_k, x, y, rows);
         } else {
+            // Matrix units, when asked for.  Off by default because the two paths
+            // round differently - the GEMM's worst relative error over all 497
+            // linears is 9.662e-4 and the tile kernel's max_abs runs 5.0e-4 to
+            // 1.6e-3 on the same reference - so switching changes the emitted
+            // text.  The acceptance test is therefore the mlx-lm oracle, not
+            // byte-identity with the scalar path.  One dispatch per linear
+            // instead of rows/4, and the MACs go through the matrix units: the
+            // MMA runs at 36 TFLOPS against the scalar path's 5.4.
+            if rows >= gemm_min_rows() {
+                if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
+                    const BM: usize = 32;
+                    const BN: usize = 32;
+                    let d = Dispatch::new(
+                        &gk,
+                        (self.out_f.div_ceil(BM) * 128, rows.div_ceil(BN), 1),
+                        (128, 1, 1),
+                    )
+                    .buf_offset(0, self.weight.buf, self.weight.offset)
+                    .buf_offset(1, self.scales.buf, self.scales.offset)
+                    .buf_offset(2, self.biases.buf, self.biases.offset)
+                    .buf(3, x)
+                    .buf(4, y)
+                    .scalar(5, self.in_f as i32)
+                    .scalar(6, rows as i32)
+                    .scalar(7, self.out_f as i32)
+                    .scalar(8, 0);
+                    batch.encode(d);
+                    return;
+                }
+            }
             // More rows than the tile kernel's fixed four.  `K4_U4HX` is unrolled
             // over four tokens and IGNORES the `k` scalar, so a partial chunk still
             // computes four rows and still writes four rows of `y`; the x and y
@@ -276,4 +306,19 @@ impl<'a> QLinear<'a> {
         }
         Ok(out)
     }
+}
+
+/// Row count at or above which `encode_rows` uses the GEMM instead of looping the
+/// four-row tile kernel.  `QW_GEMM_MIN_ROWS` selects it; unset means never, which
+/// is the shipped default because the two paths round differently.
+fn gemm_min_rows() -> usize {
+    // Read once: this is consulted for every linear of every pass, so a plain
+    // `std::env::var` here would be 497 allocations on a prefill's hot path.
+    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        std::env::var("QW_GEMM_MIN_ROWS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(usize::MAX)
+    })
 }

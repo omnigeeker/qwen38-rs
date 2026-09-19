@@ -3959,3 +3959,37 @@ GEMM 并不比出厂路径差。** 而出厂 GEMV 带着同样的误差通过了
 ⚠️ 但要注意：**即使 GEMM 数值上可用，它现在也只比 GEMV 快 1.17×**
 （272 ms vs 317 ms 每 32-token pass），因为 staging 占 212 ms。
 所以这只是「让 GEMM 线重新可用」的前提，本身还不足以赢冷 TTFT。
+
+---
+
+## 72. GEMM 接进宽 prefill：冷 prefill 端到端快 2.2×，输出逐字节相同（第 66 轮）
+
+### 接线
+
+`Linear::encode_rows` 的 `rows > TILE` 分支里加了一条 GEMM 路径（`encode_tile`
+之外）：`QW_GEMM_MIN_ROWS`（`OnceLock` 只读一次，避免每 linear 一次 env 查询）
+以上时改为**一次 dispatch**，grid `(out_f/32*128, ceil(rows/32), 1)`，
+threadgroup `(128,1,1)`，标量 `5=in_f 6=rows 7=out_f 8=0`（mode）。
+**默认不启用**（`usize::MAX`），因为两条路径的舍入不同。
+
+### 实测
+
+**同 prompt、同 64 token，服务端 GEMM vs 标量：输出逐字节相同**（`cmp` IDENTICAL）。
+
+**冷 prefill 配对计时**（390 token prompt，每轮换新前缀避免命中，交替）：
+
+| 轮 | 标量 | GEMM |
+|---|---|---|
+| 1 | 21.32 s | **12.09 s** |
+| 2 | 28.81 s | **11.56 s** |
+
+**⇒ 约 2.2× 快，而且方差小得多**（标量 21–29 s 抖，GEMM 11.6–12.1 s 稳）。
+这也比此前最好的标量冷 prefill（14.2 s）快。比 bench 里单 kernel 的 1.17× 好得多，
+原因是**每 linear 的 dispatch 数从 rows/4 降到 1**，encoder 链的开销随之消失。
+
+### 状态
+
+门禁 **19 passed / 0 failed, ACCEPTED**（GEMM 默认关闭，所以门禁仍测标量路径）。
+**下一步**：把 `QW_GEMM_MIN_ROWS` 的默认值从 `usize::MAX` 改成 8（或让服务端自己
+设），并用 `server==cli` 与 `oracle parity 6/6` 作为验收；现在只有 1 个 prompt
+的逐字节证据，需要多 prompt、多长度的等价性专测（照 `/tmp/ce_equiv.py` 的做法）。

@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 124,
+ "round": 125,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -2930,9 +2930,31 @@
     "spec_plain_flake": "230 of 300 differed once under load 72-100; 3x MATCH 300/300 on re-test",
     "gemm_vs_gemv_speed": "272 vs 317 ms per 32-token pass = 1.17x; staging is 212 of the 272 ms"
    }
+  },
+  {
+   "round": 125,
+   "title": "Wired the GEMM into the wide prefill path and it is 2.2x faster end to end.  Linear::encode_rows now takes a GEMM branch when rows >= QW_GEMM_MIN_ROWS (read once through a OnceLock so the default path does not pay 497 env lookups a pass): one dispatch per linear instead of rows/4, grid (out_f/32*128, ceil(rows/32), 1), threadgroup (128,1,1), scalars 5=in_f, 6=rows, 7=out_f, 8=mode.  It is OFF by default (usize::MAX) because the two paths round differently and the acceptance test has to be the oracle, not byte-identity.  Paired cold-prefill timing on a 390-token prompt with a fresh prefix each round: scalar 21.32 / 28.81 s against GEMM 12.09 / 11.56 s - about 2.2x, far more stable, and better than the best scalar cold prefill ever recorded (14.2 s).  The gain is much larger than the 1.17x the isolated bench predicted because the dispatch count per linear drops from rows/4 to 1, so the whole per-pass encoder chain disappears.  On the one prompt tested the server's 64-token answer with the GEMM is BYTE-IDENTICAL to the scalar path.  Gates 19 passed / 0 failed ACCEPTED, though since the GEMM is off by default they still only exercise the scalar path.  Deliberately not made default yet: one prompt is not evidence.  Next round turns it on and proves equivalence over many prompts and lengths the way the cached-end test did, then re-runs oracle parity and server==cli with it enabled.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (GEMM off by default, so the gates still test the scalar path)",
+   "evidence": {
+    "cold_prefill_scalar_s": [
+     21.32,
+     28.81
+    ],
+    "cold_prefill_gemm_s": [
+     12.09,
+     11.56
+    ],
+    "cold_prefill_gain_x": 2.2,
+    "prompt_tokens": 390,
+    "gemm_vs_scalar_text": "byte-identical on the one prompt tested (64 generated tokens)",
+    "env": "QW_GEMM_MIN_ROWS (default usize::MAX = off), cached in a OnceLock",
+    "isolated_bench_ratio": "1.17x (272 vs 317 ms per 32-token pass); end-to-end is 2.2x because dispatch count per linear drops from rows/4 to 1"
+   }
   }
  ],
- "next": "Two results.  (1) Cold path back to net-zero: dropped offset 0 from PREFIX_LADDER (the prompt-end snapshot supersedes it) and moved DiskPrefix::store into the prompt-end block, so a cold prompt exports once again instead of twice AND the disk cache now stores the v2 blob, i.e. cross-process hits also recompute nothing.  Gates 19/0 ACCEPTED.  (2) BIG: the 'GEMM is numerically unusable' conclusion from rounds 28-29 is REFUTED.  A full 497-tensor sweep (QW_GEMM_CHECK_ALL=1 gemm-check) gives worst relative error 9.662e-4, all PASS, while the shipped GEMV path reports max_abs 5.0e-4-1.6e-3 on the same CPU reference - the same order, so the GEMM is not less accurate than what we ship, and the shipped GEMV passes oracle parity 6/6 carrying that error.  The right test for the GEMM is oracle parity, not byte-identity with the GEMV.  Caveat recorded: even numerically usable the GEMM is only 1.17x faster than the GEMV (272 vs 317 ms per 32-token pass) because staging is 212 of those 272 ms, so it is a prerequisite for the cold-prefill line, not a win by itself.  NEXT: wire the GEMM into the wide prefill path behind a rows threshold and run the oracle parity gate on it.",
+ "next": "The GEMM is now WIRED into the wide prefill path and is 2.2x faster end-to-end.  Linear::encode_rows takes a GEMM branch when rows >= QW_GEMM_MIN_ROWS (OnceLock, read once), one dispatch per linear instead of rows/4, grid (out_f/32*128, ceil(rows/32), 1), tg (128,1,1), scalars 5=in_f 6=rows 7=out_f 8=mode.  Default is usize::MAX = OFF, because the two paths round differently.  Paired cold-prefill timing on a 390-token prompt: scalar 21.32 / 28.81 s against GEMM 12.09 / 11.56 s, about 2.2x and far more stable, and better than the best scalar run ever recorded (14.2 s); the gain is larger than the 1.17x the isolated bench showed because the dispatch count per linear drops from rows/4 to 1.  Server output with the GEMM is BYTE-IDENTICAL to the scalar path on the one prompt tested (64 tokens).  Gates 19/0 ACCEPTED (the GEMM is off by default so they still exercise the scalar path).  NEXT: turn it on by default (or have the server set it), then prove equivalence over many prompts and lengths the way /tmp/ce_equiv.py does, and re-run the oracle parity and server==cli gates with it enabled - one prompt is not enough evidence to ship it.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
