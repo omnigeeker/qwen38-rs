@@ -39,6 +39,7 @@ struct Kernels {
     attn_out: Kernel,
     conv1d_ring: Kernel,
     gdn: Kernel,
+    gdn_seq: Kernel,
     copy: Kernel,
     round_bf16: Kernel,
 }
@@ -657,6 +658,7 @@ impl Qwen38 {
                 attn_out: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_OUT)?,
                 conv1d_ring: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
+                gdn_seq: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP_SEQ)?,
                 copy: b.kernel(msl_ops::GDN, msl_ops::K_COPY)?,
                 round_bf16: b.kernel(msl_ops::GDN, msl_ops::K_ROUND_BF16)?,
             }
@@ -1830,7 +1832,42 @@ impl Qwen38 {
                             .scalar(8, hk as i32),
                     );
                     b.barrier();
-                    // Phase 3: the recurrence itself, one row at a time.
+                    // Phase 3: the recurrence itself.  Every row of a prefill pass
+                    // is a consecutive position of ONE sequence, so the rows share a
+                    // single state slice and must be applied in order - which the
+                    // fused kernel does internally, with no barrier between tokens
+                    // because each thread owns its own slice.  A batch pass of
+                    // unrelated sequences has no such ordering and keeps the
+                    // per-row loop.
+                    let one_seq = rows.iter().all(|r| r.0 == rows[0].0);
+                    if one_seq {
+                        b.encode(
+                            Dispatch::new(&kernels.gdn_seq, (hv * dv, 1, 1), (dv, 1, 1))
+                                .buf(0, &scratch.q)
+                                .buf(1, &scratch.k)
+                                .buf_offset(2, &scratch.conv_out, 2 * key_dim * 2)
+                                .buf(3, &scratch.a)
+                                .buf(4, &scratch.b)
+                                .buf(5, &g.a_log)
+                                .buf(6, &g.dt_bias)
+                                .buf_offset(7, &g.state, rows[0].0 * st_stride)
+                                .buf(8, &scratch.gdn_y)
+                                .scalar(9, hk as i32)
+                                .scalar(10, hv as i32)
+                                .scalar(11, dk as i32)
+                                .scalar(12, dv as i32)
+                                .buf_offset(13, &g.snap, rows[0].0 * snap_stride)
+                                .scalar(14, if self.spec_snap { 1 } else { 0 })
+                                .scalar(15, n as i32)
+                                .scalar(16, (nh * hd) as i32)
+                                .scalar(17, key_dim as i32)
+                                .scalar(18, conv_dim as i32)
+                                .scalar(19, hv as i32)
+                                .scalar(20, value_dim as i32)
+                                .scalar(21, (snap_stride / n) as i32),
+                        );
+                        b.barrier();
+                    } else {
                     for (row, &(seq, _)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.gdn, (hv * dv, 1, 1), (dv, 1, 1))
@@ -1859,6 +1896,7 @@ impl Qwen38 {
                                 .scalar(14, if self.spec_snap { 1 } else { 0 }),
                         );
                         b.barrier();
+                    }
                     }
                     // The gated norm has no cross-row dependency, so it comes out
                     // of the recurrence loop entirely: one dispatch over all n rows

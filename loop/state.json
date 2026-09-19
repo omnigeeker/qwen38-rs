@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 177,
+ "round": 178,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -4337,9 +4337,46 @@
     "lesson": "GPU overlaps dispatches far better than the 8.4 us/dispatch estimate implied",
     "next": "the GEMM is still the only substantial lever; investigate why our per-token work is fragmented"
    }
+  },
+  {
+   "round": 178,
+   "title": "Found and fixed the real fragmentation: not the dispatch count but a barrier per token.  A prefill pass issued 128 gdn_step dispatches and 128 barriers per GDN layer - 6,144 barriers per pass over 48 layers - repeatedly draining the GPU.  The gdn_step kernel has no threadgroup_barrier at all, each thread (hv, dv) owns its own state slice at state + (hv*Dv+dv)*Dk, and threads never communicate, so the token loop fuses into the kernel with no barrier between consecutive tokens.  The new gdn_step_seq wraps the body in a loop over t and advances each buffer by a per-token stride (s_q, s_k, s_v, s_ab and s_y in half elements, s_snap through a char* so its unit cannot be misread), and the caller guards with one_seq, rows.iter().all(|r| r.0 == rows[0].0): a prefill pass's n rows are consecutive positions of ONE sequence sharing a single state slice and must be applied in order, which the fused kernel does internally, while a batch pass of unrelated sequences keeps the per-row loop.  Dispatches per pass fell from 35,778 to 29,682, a 29 per cent cut from the original 41,874, GDN barriers went from 6,144 to zero, gates passed 19/0, and the output is word-for-word identical.  Six interleaved A/B rounds put A at a 6.201 median against B at 6.071, B winning 6/6 at -3.1 per cent with every difference negative and tightly clustered.  The real lever is not issuing fewer dispatches but draining the GPU less often.  The largest remaining target is copy_off 6,144 plus conv1d_silu_ring 6,144, 41 per cent of what is left, both entirely independent per token and fusible the same way.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (output word-for-word identical)",
+   "evidence": {
+    "dispatches": {
+     "original": 41874,
+     "after_rmsnorm_batch": 35778,
+     "after_gdn_fusion": 29682,
+     "cut": "29%"
+    },
+    "gdn_barriers_per_pass": {
+     "before": 6144,
+     "after": 0
+    },
+    "A": [
+     6.072,
+     6.052,
+     6.415,
+     6.158,
+     6.573
+    ],
+    "B": [
+     5.879,
+     5.863,
+     6.12,
+     6.072,
+     6.38
+    ],
+    "verdict": "6/6 B wins, median 6.201 -> 6.071 = -3.1%, all diffs negative",
+    "key_insight": "the lever is draining the GPU less often, not issuing fewer dispatches",
+    "guard": "one_seq - a batch pass of unrelated sequences keeps the per-row loop",
+    "next": "fuse copy_off and conv1d_silu_ring over tokens (41% of what remains)"
+   }
   }
  ],
- "next": "Acted on the dispatch-count lead from last round by hoisting rmsnorm_gated out of the per-token recurrence loop and batching it over all n rows: the kernel gained a stride scalar at buffer 6 where stride == 0 reproduces the old one-row-per-dispatch mapping exactly, so the decode path only needed a .scalar(6, 0), while the prefill path dispatches a one-dimensional grid of hv * n * NT and decomposes tg into (token, tile) inside.  MSL refuses to mix scalar and vector input declarations, so a uint2 tg alongside uint lane failed to compile and the final form is a plain 1-D grid.  The dispatches per pass fell from 41,874 to 35,778, a 14.6 per cent cut, the gates passed 19/0 and the output is word-for-word identical, but the six interleaved A/B rounds came out 6.312/6.277, 6.367/6.313, 6.104/6.087, 6.372/6.214, 6.684/6.663 and 6.783/6.742 - B winning 6/6 with the median moving only 6.369 to 6.295, a 0.6 per cent gain.  So the dispatch-count hypothesis is refuted: removing 6,096 dispatches should have saved about 4 per cent at the 8.4 microseconds per dispatch I inferred, and it saved 0.6, which means the GPU overlaps dispatches far better than I estimated and the 27 per cent is real if fragmented GPU work rather than launch overhead.  The change is kept because it is verified, risk-free, cuts dispatches by 14.6 per cent and moves in the right direction, but it is not a lever that changes the conclusion.  NEXT: the GEMM is still the only substantial lever, and the ceiling arithmetic says even an instantaneous GEMM only draws level, so the real target is why our per-token work is fragmented where llama.cpp's is not.",
+ "next": "Found and fixed the real fragmentation: it was never the dispatch count but the barrier per token.  A prefill pass issued 128 gdn_step dispatches and 128 barriers per GDN layer, 6,144 barriers per pass across 48 layers, repeatedly draining the GPU.  The gdn_step kernel has no threadgroup_barrier at all, each thread (hv, dv) owns its own state slice at state + (hv*Dv+dv)*Dk, and threads never communicate - so the token loop fuses into the kernel with no barrier between consecutive tokens.  The new gdn_step_seq wraps the body in a loop over t and advances each buffer by a per-token stride (s_q, s_k, s_v, s_ab and s_y in half elements, s_snap through a char* so its unit cannot be misread).  The caller guards with one_seq, rows.iter().all(|r| r.0 == rows[0].0): a prefill pass's n rows are consecutive positions of ONE sequence sharing a single state slice and must be applied in order, which the fused kernel does internally, while a batch pass of unrelated sequences keeps the per-row loop.  Dispatches per pass fell from 35,778 to 29,682, a 29 per cent cut from the original 41,874, the GDN barriers went from 6,144 to zero, gates passed 19/0 and the output is word-for-word identical.  Six interleaved A/B rounds gave A 6.201 median against B 6.071, B winning 6/6 at -3.1 per cent with every difference negative and tightly clustered (-0.173, -0.193, -0.189, -0.296, -0.086, -0.193).  So the real lever is not issuing fewer dispatches but draining the GPU less often.  The largest remaining target is copy_off 6,144 plus conv1d_silu_ring 6,144, 41 per cent of what is left, and both are entirely independent per token so they fuse the same way.  NEXT: fuse copy_off and conv1d_silu_ring over tokens.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {

@@ -329,6 +329,74 @@ kernel void gdn_step(
     }
 }
 
+// The gdn recurrence with the token loop fused into the kernel.  Every thread
+// owns one (head, value column) state slice and touches nothing another thread
+// touches, so consecutive tokens need no barrier at all - and the caller stops
+// paying one dispatch plus one command-buffer barrier per token.  A 128-token
+// prefill pass went from 6,144 launches and 6,144 barriers to 48 launches and
+// none.  The per-token strides are in `half` elements; the snapshot stride is in
+// bytes because it is applied through a char* so its unit cannot be misread.
+kernel void gdn_step_seq(
+    device const half*  q       [[buffer(0)]],
+    device const half*  k       [[buffer(1)]],
+    device const half*  v       [[buffer(2)]],
+    device const half*  a       [[buffer(3)]],
+    device const half*  b       [[buffer(4)]],
+    device const float* A_log   [[buffer(5)]],
+    device const float* dt_bias [[buffer(6)]],
+    device float*       state   [[buffer(7)]],
+    device half*        y       [[buffer(8)]],
+    constant int&       Hk      [[buffer(9)]],
+    constant int&       Hv      [[buffer(10)]],
+    constant int&       Dk      [[buffer(11)]],
+    constant int&       Dv      [[buffer(12)]],
+    device float*       snap    [[buffer(13)]],
+    constant int&       snap_on [[buffer(14)]],
+    constant int&       n       [[buffer(15)]],
+    constant int&       s_q     [[buffer(16)]],
+    constant int&       s_k     [[buffer(17)]],
+    constant int&       s_v     [[buffer(18)]],
+    constant int&       s_ab    [[buffer(19)]],
+    constant int&       s_y     [[buffer(20)]],
+    constant int&       s_snap  [[buffer(21)]],
+    uint hv [[threadgroup_position_in_grid]],
+    uint dv [[thread_index_in_threadgroup]])
+{
+    const int reps = Hv / Hk;
+    const int hk = (int)hv / reps;
+    device float* S = state + ((size_t)hv * Dv + dv) * Dk;
+    const float alog = exp(A_log[hv]);
+    const float bias = dt_bias[hv];
+    for (int t = 0; t < n; ++t) {
+        device const half* kt = k + (size_t)t * s_k;
+        device const half* qt = q + (size_t)t * s_q;
+        device const half* vt = v + (size_t)t * s_v;
+        const float x = (float)a[(size_t)t * s_ab + hv] + bias;
+        const float sp = max(x, 0.0f) + log(1.0f + exp(-fabs(x)));
+        const float g = exp(-alog * sp);
+        const float beta = 1.0f / (1.0f + exp(-(float)b[(size_t)t * s_ab + hv]));
+        device const half* kp = kt + (size_t)hk * Dk;
+        device const half* qp = qt + (size_t)hk * Dk;
+        float kv = 0.0f;
+        for (int d = 0; d < Dk; ++d) {
+            S[d] *= g;
+            kv += S[d] * (float)kp[d];
+        }
+        const float delta = ((float)vt[(size_t)hv * Dv + dv] - kv) * beta;
+        float acc = 0.0f;
+        for (int d = 0; d < Dk; ++d) {
+            S[d] += delta * (float)kp[d];
+            acc += S[d] * (float)qp[d];
+        }
+        y[(size_t)t * s_y + (size_t)hv * Dv + dv] = (half)acc;
+        if (snap_on) {
+            device float* SP = (device float*)((device char*)snap + (size_t)t * (size_t)s_snap)
+                               + ((size_t)hv * Dv + dv) * Dk;
+            for (int d = 0; d < Dk; ++d) SP[d] = S[d];
+        }
+    }
+}
+
 // RMSNorm over `D` with an explicit input row stride and an output scale.
 // `has_weight == 1` multiplies by `w` first. Used for
 //   * delta-net q/k:  no weight, scale = inv or inv^2
@@ -480,6 +548,7 @@ pub const K_CONV1D_SILU_RING_TILE: &str = "conv1d_silu_ring_tile";
 pub const K_RMSNORM_TILE: &str = "rmsnorm_nw_tile";
 pub const K_CONV1D_SILU: &str = "conv1d_silu";
 pub const K_GDN_STEP: &str = "gdn_step";
+pub const K_GDN_STEP_SEQ: &str = "gdn_step_seq";
 pub const K_RMSNORM_WS: &str = "rmsnorm_s";
 pub const K_RMSNORM_NW: &str = "rmsnorm_s";
 pub const K_GATE_MUL: &str = "gate_mul";
