@@ -1,6 +1,6 @@
 {
  "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
- "round": 129,
+ "round": 130,
  "milestone": "M4",
  "hardware": {
   "chip": "Apple M5 Max",
@@ -3035,9 +3035,31 @@
     "mechanism": "GEMV multiplies-adds in half (half4 * sh + bh); GEMM dequantises in f32 and rounds once",
     "next": "same-tensor CPU comparison of both kernels, then decide whether to make the GEMM default and re-baseline on the oracle"
    }
+  },
+  {
+   "round": 130,
+   "title": "Decisive same-tensor same-reference comparison, and it refutes the reversal I proposed last round.  On layers.0.mlp.gate_proj the GEMV's max_abs against the CPU is 5.0e-4 versus the GEMM's 9.508e-4; on layers.0.linear_attn.out_proj it is 1.6e-3 versus 1.097e-2.  The GEMM is 1.9x and 6.9x worse respectively, so it really is the less accurate path and keeping it opt-in is the right call - my previous round's idea that the GEMV might be the inaccurate one is wrong.  The cause was the same normalisation error for the third round running: comparing the GEMM's rel (normalised by max_ref) against the GEMV's max_abs.  Fixed a rule in the doc: cross-path comparisons use max_abs only.  The out_proj row is the clearest demonstration of why - rel reads 2.715e-4 while max_abs reads 1.097e-2, because the denominator max|y| is large, so rel hides absolute error.  With the whi+wlo weight split proven useless, the next precision lead is the output side rather than the weights or the accumulation: out_proj has the shortest K of the checked tensors (6144) yet the largest error, which points at the f16 output intermediate - osh is half and simdgroup_store rounds into it before y is written.  Next experiment: make that path f32 with a single rounding, then re-measure out_proj against the CPU and re-run the 9-length equivalence test.",
+   "tok_s": null,
+   "end_to_end": null,
+   "gates": "19 passed / 0 failed, ACCEPTED (no engine change)",
+   "evidence": {
+    "same_tensor_max_abs_vs_cpu": {
+     "layers.0.mlp.gate_proj": {
+      "gemv": 0.0005,
+      "gemm": 0.0009508
+     },
+     "layers.0.linear_attn.out_proj": {
+      "gemv": 0.0016,
+      "gemm": 0.01097
+     }
+    },
+    "verdict": "the GEMM is the less accurate path; opt-in stays",
+    "rule_fixed": "cross-path comparisons use max_abs only, never rel vs max_abs",
+    "next": "out_proj has the shortest K yet the largest error, so suspect the f16 output intermediate (osh); try f32 with a single rounding"
+   }
   }
  ],
- "next": "Implemented the whi+wlo weight split from the previous round's plan and it changed NOTHING: QW_GEMM_CHECK_ALL=1 gemm-check still reports worst rel 9.662e-4, the same tensor, and the change was confirmed present in the binary (strings | grep -c wsh2 = 8).  Reverted (no benefit, 2x MMA, +4.6 KB shared).  So the ~1e-3 gap between the GEMM and K4_U4HX is NOT weight rounding.  That exposed a reversal worth testing: side by side against the SAME CPU reference, the GEMM is at 3.347e-4 while the shipped GEMV/K4_U4HX is at 5.0e-4 to 1.6e-3 - the GEMM looks MORE accurate than the path we ship, which would mean most of the 9.662e-4 is the GEMV's own error and the 35-token divergence may be the GEMV drifting rather than the GEMM.  Mechanism that would explain it: the GEMV does its multiply-add in half (half4 * sh + bh, msl.rs:634-637) while the GEMM dequantises in f32 and rounds once.  NEXT, the decisive experiment: measure K4_U4HX and the GEMM against the CPU reference on the SAME set of tensors (the two existing numbers come from different scans over different tensor sets).  If the GEMM really is closer to the CPU, then the right move is to make it the default and re-baseline on the mlx-lm oracle, because the oracle - not the GEMV's output - is the correctness standard.",
+ "next": "Ran the decisive same-tensor, same-CPU-reference comparison and it kills the reversal I proposed last round: on layers.0.mlp.gate_proj the GEMV's max_abs is 5.0e-4 against the GEMM's 9.508e-4, and on layers.0.linear_attn.out_proj it is 1.6e-3 against 1.097e-2 - the GEMM is 1.9x and 6.9x WORSE, so it is genuinely the less accurate path and the GEMM staying opt-in is correct.  The cause of my error was the same normalisation mistake for the third round running: comparing the GEMM's rel (divided by max_ref) with the GEMV's max_abs.  Rule now fixed in the doc: cross-path comparisons use max_abs only.  The out_proj row shows why rel is misleading here - rel 2.715e-4 with max_abs 1.097e-2, because the denominator max|y| is large, so rel HIDES absolute error.  The whi+wlo weight split is proven useless, so the next precision lead is the x side and the accumulation: out_proj has the SHORTEST K (6144) yet the LARGEST error, which points at an output-side f16 intermediate - osh is half and simdgroup_store rounds to half before y is written - rather than at accumulation.  NEXT experiment: make the osh path and the final write f32 with a single rounding, then re-measure out_proj's max_abs against the CPU and re-run the 9-length equivalence test.",
  "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
  "open_issues": [
   {
