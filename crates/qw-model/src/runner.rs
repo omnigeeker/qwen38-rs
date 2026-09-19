@@ -909,14 +909,41 @@ impl Qwen38 {
         Ok(out)
     }
 
+    /// [`Self::export_prefix`], plus the logits the pass that consumed the final
+    /// prompt row produced.
+    ///
+    /// A blob exported here describes the state *at the prompt end*, so a request
+    /// that restores it has nothing left to prefill - but it still needs the first
+    /// generated token, and those logits lived only in a scratch buffer that the
+    /// plain export does not copy.  That is precisely why the cache used to stop
+    /// one chunk short of the end, which cost every hit a re-prefill of the last
+    /// chunk: one weight sweep, measured at 40-50 ms and half of warm
+    /// time-to-first-token.  Carrying the logits removes that.
+    ///
+    /// The magic changes to `Q38PFX2` so [`Self::import_prefix`] can tell a blob
+    /// that has the tail from one that does not.
+    pub fn export_prefix_with_logits(&mut self, seq: usize, pos: usize, row: usize) -> Result<Vec<u8>> {
+        anyhow::ensure!(row < TILE, "logits row {row} is past the {TILE}-row tile");
+        let mut blob = self.export_prefix(seq, pos)?;
+        blob[0..8].copy_from_slice(b"Q38PFX2\0");
+        blob.extend_from_slice(&self.scratch.logits.read_at(row * self.vocab * 2, self.vocab * 2));
+        Ok(blob)
+    }
+
     /// Inverse of [`Self::export_prefix`].  Only positions `0..pos` are written;
     /// everything past `pos` is left as it was and is overwritten by the prefill
     /// that follows, which is why the KV cache needs no clearing.
+    ///
+    /// A `Q38PFX2` blob also carries the first generated token's logits, which are
+    /// installed at row 0 for the caller to sample.
     pub fn import_prefix(&mut self, seq: usize, pos: usize, blob: &[u8]) -> Result<()> {
         let nkv = self.cfg.num_key_value_heads;
         let hd = self.cfg.head_dim;
         anyhow::ensure!(blob.len() >= 16, "prefix blob: too short");
-        anyhow::ensure!(&blob[0..8] == b"Q38PFX1\0", "prefix blob: bad magic");
+        anyhow::ensure!(
+            &blob[0..8] == b"Q38PFX1\0" || &blob[0..8] == b"Q38PFX2\0",
+            "prefix blob: bad magic"
+        );
         let stored = u64::from_le_bytes(blob[8..16].try_into().unwrap()) as usize;
         anyhow::ensure!(
             stored == pos,
@@ -948,7 +975,22 @@ impl Qwen38 {
                 }
             }
         }
+        if self.blob_has_logits(blob) {
+            let n = self.vocab * 2;
+            anyhow::ensure!(o + n <= blob.len(), "prefix blob: truncated logits");
+            self.scratch.logits.write_at(0, &blob[o..o + n]);
+        }
         Ok(())
+    }
+
+    /// Does this prefix blob end with the first generated token's logits?
+    ///
+    /// True for a blob written by [`Self::export_prefix_with_logits`], which
+    /// describes the state *at the prompt end* and can therefore be resumed with
+    /// no prefill at all.  A `Q38PFX1` blob stops one chunk short of the end and
+    /// always needs that chunk recomputed.
+    pub fn blob_has_logits(&self, blob: &[u8]) -> bool {
+        blob.len() >= 8 && &blob[0..8] == b"Q38PFX2\0"
     }
 
     fn copy_seq(&mut self, seq: usize, restore: bool) -> Result<()> {

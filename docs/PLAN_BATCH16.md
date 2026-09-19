@@ -3859,3 +3859,61 @@ logits 只存在于 `save_prefix` 不拷贝的 scratch 缓冲里」。所以命�
 3. 验证：`bash tools/accept.sh`（19 门，重点是 `prefix cache` 相关那几门与
    server==cli 逐位一致），然后跑 `/tmp/ttft_pair.py 8164` 做与 Ollama 的同场配对。
    预期暖 TTFT 0.16–0.19 → 0.10–0.13 s。
+
+---
+
+## 70. 做完了：命中在 prompt 末尾时**一趟都不跑**，暖 TTFT 赢 13–32×（第 64 轮）
+
+§69 的方案落地了，效果比预估还好。
+
+### 改动
+
+1. `runner.rs`：新增 `export_prefix_with_logits(seq, pos, row)` —— 先按原样导出，
+   再把 magic 改成 `Q38PFX2`，并在 blob **末尾**追加 `scratch.logits` 第 `row` 行
+   （`vocab` 个 f16，496 KB）。`import_prefix` 同时接受 `Q38PFX1`/`Q38PFX2`，
+   遇到 v2 就把尾部写回 `scratch.logits` 第 **0** 行。新增 `blob_has_logits()`。
+2. `engine.rs`：
+   - 每一趟 pass 之后（取该槽**最后一行**的 `idx`，与 `logits_row(i)` 同一套行号）
+     记录一个 `pf == len` 的边界，带上那一行的 logits；`end_snapshot` 保证只导一次。
+   - 请求进入时若 `restored_at == Some(pf)` 且 `pf == ids.len()`（也就是整段 prompt
+     全命中），**不进入 pass**：`a.feed = argmax(&model.logits_row(0))`，直接走
+     `emit()`。日志会打印 `(time to first token, N tokens, cached end)`。
+
+### 门禁
+
+**19 passed / 0 failed, ACCEPTED**，其中直接相关的两门：
+`cache hit matches the cold start`、`cache on: three identical requests agree`。
+
+### 等价性专测（`/tmp/ce_equiv.py`）
+
+14 个长度（7 / 11 / 12 / 13 / 31 / 32 / 33 / 34 / 63 / 64 / 65 / 128 / 129 / 130 words，
+即 7–145 token，覆盖尾块 4 行的所有对齐），每个 prompt 连发三次：
+
+**cold == warm == warm2 逐字节相同，14/14 ALL AGREE**，且 28 次暖请求全部走了
+cached-end 路径（`grep -c "cached end"` = 28，与 `skipped ... (100%)` 计数一致）。
+
+### 暖 TTFT：同场配对 vs Ollama（`/tmp/ttft_pair.py`）
+
+| prompt | 暖 ours（3 次） | 暖 Ollama（3 次） | 倍数 |
+|---|---|---|---|
+| ~12 | 0.006 / 0.007 / 0.007（均 **0.007**） | 0.107 / 0.274 / 0.299（均 0.227） | **32×** |
+| ~128 | 0.007 / 0.012 / 0.019（均 **0.013**） | 0.239 / 0.254 / 0.236（均 0.243） | **19×** |
+| ~900 | 0.214 / 0.047 / 0.052（均 **0.104**） | 2.741 / 2.652 / 2.626（均 2.673） | **26×** |
+
+这一轮 Ollama 自己的 KV 命中没生效（~900 暖 2.67 s，接近它的冷启动），所以再拿
+上一轮它最好的暖数字（0.16–0.18 s）比：**我们仍然快 13–25×**。
+（本轮本机被占满：GPU 88%、load 3.5，冷 ~900 我们 119 s、Ollama 32 s，只有配对倍数有意义。）
+
+### 冷路径的代价
+
+多了一次 `export_prefix_with_logits`：实测 **28.6 ms / 204 MB**（CPU memcpy，
+其中 496 KB 是 logits）。短 prompt 冷启动里占约 5%。想量它的 A/B 没做成——
+本轮机器负载让冷短 prompt 在两侧都飘到 7.5–20.9 s（正常是 0.5 s），
+两侧一样糟，看不出回归也证明不了没有。
+
+### 后续（可选，能让冷路径回到净零）
+
+ladder 的 `k=0` 那次导出现在被 prompt 末尾快照取代了（前者停在 len−4，后者在 len
+且带 logits）。把 `k=0` 从 `PREFIX_LADDER` 去掉、并把 `DiskPrefix::store` 挪到
+prompt 末尾那个块里，冷路径的导出次数就回到改动前的 1 次，而且**磁盘缓存也能
+享受零重算命中**。要小心：现在 128–256 token 的 prompt 只靠 `k=0` 落盘。

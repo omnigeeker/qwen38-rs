@@ -382,6 +382,13 @@ struct Active {
     /// pure waste - measured, 17.8 ms and a 208 MB clone on every hit, against
     /// the 3.5 ms the restore itself costs.
     restored_at: Option<usize>,
+    /// The blob this request restored carried the first generated token's logits,
+    /// which means it was taken at the prompt end and there is nothing left to
+    /// prefill: the first token is sampled straight from row 0.
+    restored_end_logits: bool,
+    /// This request has already stored a prompt-end snapshot, so a later decode
+    /// pass does not export the same boundary again.
+    end_snapshot: bool,
     /// The client went away, so this slot is nobody's work any more.
     dead: bool,
     all: Vec<u32>,
@@ -561,6 +568,7 @@ fn prepare(
         other => other,
     };
     let mut restored_at: Option<usize> = None;
+    let mut restored_logits = false;
     let skip = match reuse {
         Reuse::None => 0,
         Reuse::Live(n) | Reuse::Boundary(n) | Reuse::Disk(n, _) => n,
@@ -584,6 +592,7 @@ fn prepare(
             // positions 0..n are touched; the prefill that follows overwrites
             // anything past n, so no clearing is needed.
             restored_at = Some(n);
+            restored_logits = model.blob_has_logits(blob);
             let _t = std::time::Instant::now();
             if let Err(e) = model.import_prefix(slot, n, blob) {
                 let _ = job.pieces.send(Err(e.to_string()));
@@ -608,6 +617,7 @@ fn prepare(
             restored_at = Some(n);
             let restored = match cache.blob[slot].as_ref() {
                 Some(b) => {
+                    restored_logits = model.blob_has_logits(b);
                     let _t = std::time::Instant::now();
                     let r = model.import_prefix(slot, n, b);
                     if std::env::var_os("QW_PREFIX_TIME").is_some() {
@@ -710,6 +720,8 @@ fn prepare(
         feed_emitted: false,
         restored: did_restore,
         restored_at,
+        restored_end_logits: restored_logits,
+        end_snapshot: false,
         dead: false,
         all: Vec::new(),
         sent_len: 0,
@@ -909,6 +921,28 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     );
                 }
                 a.dead = true;
+                continue;
+            }
+            // A hit can land exactly on the prompt end when the snapshot carries the
+            // logits the final pass produced.  Then there is nothing to compute: the
+            // first generated token is already decided, so it is sampled here and the
+            // slot goes straight to the decode path on the next round.  Without this
+            // the hit has to re-run the pass that consumed the last prompt row - one
+            // weight sweep, measured at 40-50 ms and half of warm time-to-first-token.
+            if !a.ready && a.pf > 0 && a.pf == a.ids.len() && a.restored_end_logits {
+                a.ready = true;
+                a.feed = argmax(&model.logits_row(0));
+                tracing::info!(
+                    "slot {slot}: prompt in after {:.1}s (time to first token, {} tokens, cached end)",
+                    a.started.elapsed().as_secs_f64(),
+                    a.ids.len()
+                );
+                if a.emitted < a.max_tokens && !tok.is_eos(a.feed) {
+                    a.all.push(a.feed);
+                    a.emitted += 1;
+                    a.feed_emitted = true;
+                }
+                emit(tok, a, false);
                 continue;
             }
             if a.pf < a.ids.len() {
@@ -1205,6 +1239,37 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 a.feed_emitted = true;
             }
             emit(tok, a, false);
+        }
+
+        // The pass that just consumed the last prompt row left that row's logits in
+        // the scratch buffer, and those logits decide the first generated token.
+        // Storing them with the state at the prompt end gives the cache a boundary a
+        // repeat request can resume from with NOTHING left to compute; the boundary
+        // the ladder records stops one chunk short instead, and that chunk is a whole
+        // weight sweep on every hit.  Exporting is a CPU copy of the recurrent state
+        // (measured 28.6 ms for 204 MB), so it happens once per request, on the pass
+        // that finishes the prompt, and never again.
+        if boundary && snapshot {
+            for (idx, &slot) in row_slot.iter().enumerate() {
+                if row_slot[idx + 1..].contains(&slot) {
+                    continue;
+                }
+                let Some(a) = slots[slot].as_mut() else {
+                    continue;
+                };
+                if a.pf != a.ids.len() || a.end_snapshot || a.restored_at == Some(a.pf) {
+                    continue;
+                }
+                match model.export_prefix_with_logits(slot, a.pf, idx) {
+                    Ok(blob) => {
+                        if blob.len() <= PREFIX_BLOB_MAX_MB * 1024 * 1024 {
+                            cache.record_boundary(slot, a.ids.clone(), Some(blob));
+                            a.end_snapshot = true;
+                        }
+                    }
+                    Err(e) => tracing::warn!("prompt-end snapshot failed: {e}"),
+                }
+            }
         }
 
         // ---- QW_PREFIX_DUMP: is a resume equivalent to a cold prefill? ----
