@@ -8372,3 +8372,46 @@ bench 自己对别的档位就有警告（「--rows 5：累加器按 NK 展开�
 所以 tokens=4 配 `K3_U4` 的 30.5 ms **很可能只算了 3 行**，不能直接用。
 **下一轮第一件事**：确认 `K3_U4` 在 `rows=4` 时到底算几行（读它的 MSL，
 或让 runner 用它跑一次 4 行 pass 再和 `K4_U4HX` 比数值与时间）。
+
+### 72dh. 上一轮那条「最强线索」**已被现有文档关闭**（第 172 轮）
+
+我先按上轮的计划验证 `K3_U4` 的行数：
+
+* `Q4_GEMV_KS_U4(q4_gemv_k3_u4, 3)` —— **NK=3 是编译期常量**，
+  所以 bench 里 `--tokens 4 --rows 2` 的 30.5 ms **确实只算了 3 行**，不能用。
+* 三个家族互不相同：`U4`（只有 NK=3）、`U4H`（NK=3/4/6）、
+  **`U4HX`（NK=3/4/8/16，真实路径用的 `q4_gemv_k4_u4hx` 属于这一族）**。
+  **bench 从来只测 `U4`，不测 `U4H` / `U4HX`。**
+
+于是我直接在真实路径上做了 A/B：把 `match TILE { 4 => K4_U4HX }` 换成 `K4_U4H`，
+交错两轮，n=4、4 行 pass 的均值：
+
+| 变体 | rep1 | rep2 |
+|---|---|---|
+| `U4HX`（现状） | 47.9 ms（301 GB/s） | 49.2 ms（293 GB/s） |
+| `U4H` | 49.6 ms（290 GB/s） | 49.9 ms（289 GB/s） |
+
+**`U4H` 没有更好，已还原（工作树干净）。**
+
+**然后读 `encode_tile` 的文档注释，发现这条路早就被走过并证伪了：**
+
+> Row blocking was tried here - `TILE_ROWS` output rows per threadgroup, which
+> divides the x load traffic by that factor - and **measured about 5% SLOWER
+> end-to-end in the model over 8 tightly interleaved pairs** (6 of 8 slower),
+> even though the isolated sweep behind `bench --rows 9` preferred it. The sweep
+> reuses one input buffer for all 497 linears, so **x stays cache-hot there and
+> the very traffic row blocking removes is understated**; in the model the kernel
+> also has to cover linears with tiny `out_f` (the GDN a/b projections are 48
+> rows), **where blocking leaves the grid nearly empty**.
+
+**⇒ bench 里那个 472 GB/s 的 `--rows 2` 正是「行阻塞」变体，它在模型里已经测过：
+8 对交错里 6 对更慢，端到端约慢 5%。**
+原因是 bench 让 497 个 linear 共用同一个 x 缓冲区（x 常驻 cache），
+**把行阻塞本该省下的 x 流量严重低估了**；而模型里还有 `out_f=48` 的 GDN a/b 投影，
+阻塞后网格几乎空掉。
+
+**⇒ 我上一轮把「bench 的 472 GB/s」当成线索是错的：那是隔离口径的假象，
+代码注释里已经写明它在真实模型里是负收益。这条路关闭。**
+
+**教训（第三次同类）**：`bench` 的隔离口径**系统性地偏向**减少 x 流量的优化，
+因为它的 x 常驻 cache。**任何基于 bench 的收益都必须先在模型里做交错 A/B。**
