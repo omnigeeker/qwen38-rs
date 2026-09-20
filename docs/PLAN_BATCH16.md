@@ -7991,3 +7991,38 @@ if spec_ok && Some(slot) == spec_slot { ... }
 一次 verify 同时验证多个序列的 draft 块（真正的 multi-sequence verify）。
 现在 `spec_step` 是「一个序列 draft TILE-1 个、一次 verify TILE 行」的单序列形状，
 和这个目标不是一个量级的改动。**聚合 52 vs Splash 170 的缺口仍在。**
+
+### 72cw. **并发聚合 ≈ 单流，因为两者都被「一次 4 行 pass 只产出约 4 个 token」卡住**（第 161 轮）
+
+这一轮推翻了前面几轮关于并发缺口的方向判断。
+
+先看事实（短 prompt，`QW_STEP_TIME` 逐 pass 记录）：
+
+* **n=1（投机开启）根本没有 1 行 pass** —— 单流走 `spec_step`，
+  每次都是 **4 行**的 verify。124 ms 的 pass 产出 **4.32 个 token**（接受率接近上限）。
+* **n=4 的 pass 也是 4 行**（4 个 slot 各 1 行），一次产出**恰好 4 个 token**。
+
+**⇒ 两者的「每次 pass 产出 token 数」几乎相同（4.32 vs 4.00），
+所以聚合吞吐 ≈ 单流吞吐（27.22 vs 34.84）。并发加 slot 几乎不涨。**
+
+把 pass 成本代进去：
+
+| 4 行 pass 成本 | n=4 聚合 | n=1 单流 |
+|---|---|---|
+| 38.4 ms（= 1 行 pass 的成本） | **104 tok/s** | 112 tok/s |
+| 60.9 ms（实测短跑） | 65.7 tok/s | 70.6 tok/s |
+| 124.0 ms（实测本轮） | 32.3 tok/s | 34.7 tok/s |
+
+**⇒ 唯一的杠杆是「让 4 行 pass 的成本接近 1 行 pass」。**
+现在 1 行 38.4 ms、4 行 60.9-124 ms（1.58-3.2 倍），
+**把它压到 1.0 倍就是 104 tok/s 聚合 —— 超过现在 52 的两倍，也逼近 Splash 的 170。**
+
+**战略修正：**
+* **不需要**为并发做 multi-sequence verify 重设计（第 72cv 节留的尾巴）——
+  n=4 已经拿到每次 pass 4 个 token，投机在 n=4 上几乎加不了东西。
+* 真正要攻的是 **4 行 pass 的行摊薄**：权重扫描只读 14.4 GB 一次（约 30 ms 下限），
+  为什么 4 行要 60-124 ms？多出来的部分是每行的非 GEMM 工作
+  （attention / GDN state 与卷积环 / norm / KV append）没有摊薄。
+* 附带：1 行 pass 本身 38.4 ms 也离 30 ms 下限有 28% 的距离。
+
+**这解释了为什么前几轮在 spec 上投入收效有限 —— 瓶颈不在 token 产出效率，在 pass 成本。**
