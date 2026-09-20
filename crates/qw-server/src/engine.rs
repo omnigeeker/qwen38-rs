@@ -479,6 +479,23 @@ impl Engine {
     }
 }
 
+/// Diagnostic only: wall-clock nanos since process start when the current request
+/// entered `prepare`, so the forward pass can report how much of the request was
+/// spent before the model was ever asked to do anything.
+static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static REQ_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ns() -> u64 {
+    T0.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
+}
+
+/// Stamp the moment a request enters the HTTP surface.  `prepare` runs on the
+/// worker thread and can be reached by the startup warmup, so stamping there
+/// reported the warmup's time instead of the request's.
+pub fn stamp_request() {
+    REQ_NS.store(now_ns(), std::sync::atomic::Ordering::Relaxed);
+}
+
 fn argmax(v: &[f32]) -> u32 {
     let mut best = 0usize;
     for (i, x) in v.iter().enumerate() {
@@ -528,6 +545,7 @@ fn prepare(
     cache: &mut PrefixCache,
     snapshot: bool,
 ) -> Option<Active> {
+    REQ_NS.store(now_ns(), std::sync::atomic::Ordering::Relaxed);
     let text = match &job.prompt {
         Prompt::Text(s) => s.clone(),
         Prompt::Chat(msgs) => tok.apply_chat_template(msgs),
@@ -1141,6 +1159,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         if rows.is_empty() {
             break 'pass;
         }
+        let _t_fwd = std::time::Instant::now();
         let mut failed = match model
             .set_tokens(&toks)
             .and_then(|_| model.forward_rows(&rows))
@@ -1148,6 +1167,15 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             Ok(()) => None,
             Err(e) => Some(e.to_string()),
         };
+        if std::env::var_os("QW_STEP_TIME").is_some() {
+            let pre = now_ns().saturating_sub(REQ_NS.load(std::sync::atomic::Ordering::Relaxed));
+            eprintln!(
+                "step time: {} rows, {} ms before the first forward, forward {:?}",
+                rows.len(),
+                pre / 1_000_000,
+                _t_fwd.elapsed()
+            );
+        }
         for (i, &slot) in row_slot.iter().enumerate() {
             let Some(a) = slots[slot].as_mut() else {
                 continue;

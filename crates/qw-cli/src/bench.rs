@@ -896,3 +896,110 @@ pub fn mpp_test() -> Result<()> {
     println!("mpp-test: PASSED");
     Ok(())
 }
+
+/// Replay every quantised linear's prefill GEMM on the real weights and time the
+/// whole batch.
+///
+/// This exists because every other way of splitting a prefill into "the GEMMs"
+/// and "everything else" that we tried turned out to be invalid.  Skipping a
+/// kernel with `QW_SKIP_KERNEL`, or skipping the matmul inside `q4_mpp_mm` with
+/// `QW_GEMM_MODE=2`, both change what the *later* kernels read, and reading
+/// garbage is cheaper than reading real values - `QW_GEMM_MODE=6` claimed the
+/// writeback was worth 0.36 s and the honest implementation of it was 1.8 %
+/// *slower*.  Replaying the same 497 dispatches in isolation costs nothing that
+/// the real pass also pays, so its number can be subtracted from a prefill.
+pub fn gemm_bench(model_dir: &Path, tokens: usize, iters: usize) -> Result<()> {
+    let mut dev = GpuDevice::new()?;
+    let store = WeightStore::load_dir(&dev, model_dir)?;
+
+    let mut names: Vec<String> = store
+        .names()
+        .filter(|n| n.ends_with(".weight"))
+        .filter(|n| !n.contains("embed_tokens"))
+        .filter(|n| store.has(&n.replace(".weight", ".scales")))
+        .cloned()
+        .collect();
+    names.sort();
+
+    let mut ls: Vec<QLinear> = Vec::with_capacity(names.len());
+    for n in &names {
+        let l = QLinear::from_store(&store, n)?;
+        if l.in_f % 64 != 0 {
+            continue;
+        }
+        ls.push(l);
+    }
+    let max_in = ls.iter().map(|l| l.in_f).max().unwrap();
+    let max_out = ls.iter().map(|l| l.out_f).max().unwrap();
+    let flops: f64 = ls
+        .iter()
+        .map(|l| 2.0 * tokens as f64 * l.in_f as f64 * l.out_f as f64)
+        .sum();
+
+    let x = dev.buffer(tokens * max_in * 2);
+    let y = dev.buffer(tokens * max_out * 2);
+    let src = qw_metal::msl::mpp_src();
+    let [_, nra, nrb, nt] = qw_metal::msl::mpp_tiles();
+    let (nra, nrb, nt) = (nra as usize, nrb as usize, nt as usize);
+
+    println!(
+        "gemm-bench: {} linears, {tokens} tokens, {:.1} GFLOP/pass, tile NRA={nra} NRB={nrb} NT={nt}",
+        ls.len(),
+        flops / 1e9
+    );
+
+    let mut best = f64::MAX;
+    for it in 0..iters {
+        let mut b = qw_metal::CommandBatch::new(&mut dev);
+        let mk = b.kernel(&src, "q4_mpp_mm")?;
+        for l in &ls {
+            b.encode(
+                qw_metal::Dispatch::new(
+                    &mk,
+                    (tokens.div_ceil(nrb) * nt, l.out_f.div_ceil(nra), 1),
+                    (nt, 1, 1),
+                )
+                .buf_offset(0, l.weight.buf, l.weight.offset)
+                .buf_offset(1, l.scales.buf, l.scales.offset)
+                .buf_offset(2, l.biases.buf, l.biases.offset)
+                .buf(3, &x)
+                .buf(4, &y)
+                .scalar(5, l.in_f as i32)
+                .scalar(6, tokens as i32)
+                .scalar(7, l.out_f as i32)
+                .scalar(8, 0),
+            );
+            b.barrier();
+        }
+        let t = Instant::now();
+        b.finish(true);
+        let s = t.elapsed().as_secs_f64();
+        if s < best {
+            best = s;
+        }
+        println!("  iter {it}: {s:.4} s  {:.1} TFLOPS", flops / s / 1e12);
+    }
+    println!("  best: {best:.4} s  {:.1} TFLOPS", flops / best / 1e12);
+    Ok(())
+}
+
+/// Time a real cold prefill in this same process, so it can be compared against
+/// `gemm_bench` without the HTTP request, the tokenizer or the sampler in the way.
+/// The difference between the two is the honest non-GEMM share.
+pub fn prefill_bench(model_dir: &Path, tokens: usize, iters: usize) -> Result<()> {
+    let mut m = qw_model::runner::Qwen38::load_batch(model_dir, 1020, 1)?;
+    let rows: Vec<(usize, usize)> = (0..tokens).map(|i| (0usize, i)).collect();
+    let mut best = f64::MAX;
+    for it in 0..iters {
+        m.reset();
+        let t = Instant::now();
+        m.forward_rows(&rows)?;
+        let s = t.elapsed().as_secs_f64();
+        if s < best {
+            best = s;
+        }
+        println!("  iter {it}: {s:.4} s");
+    }
+    println!("  best: {best:.4} s for {tokens} tokens");
+    Ok(())
+}

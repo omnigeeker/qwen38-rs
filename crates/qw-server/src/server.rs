@@ -333,6 +333,7 @@ async fn chat_completions(
     State(st): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
+    crate::engine::stamp_request();
     let Some(engine) = st.engine.clone() else {
         return not_ready_openai("engine is still loading the 4-bit weights");
     };

@@ -7268,3 +7268,45 @@ noenc 的方差小得多但**并不更快**（干净轮次里反而更慢），
 比值随争用**变差**（1.110/1.129/1.130 → 1.181），
 **⇒ 我们比 llama.cpp 更怕机器被占用**，这也解释了为什么单进程 1.53 s
 在配对里会变成 2.3–2.9 s。安静窗口的价值就在这里。
+
+### 72cd. 第一次诚实地切开 prefill：GEMM 0.83 s，模型内非 GEMM 只有 0.22 s，**请求路径上另有 0.4 s**（第 142 轮）
+
+前面所有关于「GEMM 占多少」的说法都是推断，因为两种减法都被证明无效
+（`QW_SKIP_KERNEL` 跳过 kernel、`QW_GEMM_MODE=2/6` 跳过计算，都会改变后续
+kernel 读到的数据）。这一轮加了两个命令，用**回放**代替减法：
+
+* `qwen38 gemm-bench` —— 把 497 个 linear 的 prefill GEMM 按真实权重、真实
+  tile 在一个 command buffer 里重放一遍并计时。这是真实 pass 也要付的全部代价，
+  所以它的数字可以直接从 prefill 里减掉。
+* `qwen38 prefill-bench` —— 同进程内 `reset()` + `forward_rows()` 计时一次真正的
+  冷 prefill，绕开 HTTP、分词器和采样器。
+
+```
+gemm-bench    : 497 linears, 602 tokens, 30848.8 GFLOP/pass
+                best 0.830-0.845 s   ->  36.6-37.2 TFLOPS
+prefill-bench : best 1.050 s  (iter 0 = 1.160 s, 之后稳定 1.048-1.055)
+```
+
+**⇒ 模型内的非 GEMM 只有 0.22 s（21%），GEMM 是 0.83 s（79%），张量单元跑到
+37 TFLOPS。** 这推翻了「非 GEMM 是 0.69 s」的旧估算。
+
+**但是 HTTP 冷 TTFT 是 1.56-1.61 s，而服务器自己记录的 `forward_rows` 合计
+只有 1.16 s（598 行 1.12 s + 4 行 0.043 s）。**
+
+```
+coldenv (HTTP)                 1.591 / 1.564 / 1.599 / 1.607 / 1.604 s
+server-side forward_rows 合计  1.161 s
+                                        =>  约 0.40-0.45 s 在模型之外
+```
+
+**⇒ 请求路径上有 0.4 s 不归模型管，这比内核里任何一项都大。**
+另外 602 个 token 被切成 **598 + 4**：最后一个 chunk 被刻意压到 4 行
+（`PREFILL_CHUNK_MAX` 的注释说明这是为了让 prefix-cache 命中只重做一次权重扫描），
+代价是冷 prefill 多付一次完整权重扫描（43 ms）。
+
+诊断用的 `QW_STEP_TIME=1`（默认关闭）已经加在 engine 的 forward 前后，
+但它的时间戳对不上（`pre` 报 1281/1591 ms，而 598 行的 forward 自己就跑了
+1132 ms，两者不可能同属一个顺序执行的请求），说明**请求路径上还有并发或排队**，
+下一轮要从这里继续查。
+
+`fastchk` md5 不变、`gemm-check` PASSED，两个新命令都只在显式调用时运行。

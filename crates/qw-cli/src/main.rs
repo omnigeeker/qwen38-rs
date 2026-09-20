@@ -51,6 +51,25 @@ enum Cmd {
     /// Prove the MetalPerformancePrimitives matmul call pattern against a CPU
     /// reference.  No model needed; a few hundred milliseconds.
     MppTest,
+    /// Time a real cold prefill in-process, for comparison against GemmBench.
+    PrefillBench {
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
+        #[arg(long, default_value_t = 602)]
+        tokens: usize,
+        #[arg(long, default_value_t = 5)]
+        iters: usize,
+    },
+    /// Replay every quantised linear's prefill GEMM in isolation, to split a
+    /// prefill honestly into the GEMMs and everything else.
+    GemmBench {
+        #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
+        model_dir: PathBuf,
+        #[arg(long, default_value_t = 602)]
+        tokens: usize,
+        #[arg(long, default_value_t = 5)]
+        iters: usize,
+    },
     /// Benchmark decode throughput (tok/s).
     Bench {
         #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
@@ -164,6 +183,16 @@ fn main() -> Result<()> {
         } => cmd_serve(model_dir, port, model_id, max_ctx),
         Cmd::GemmCheck { model_dir } => bench::gemm_check(&model_dir),
         Cmd::MppTest => bench::mpp_test(),
+        Cmd::GemmBench {
+            model_dir,
+            tokens,
+            iters,
+        } => bench::gemm_bench(&model_dir, tokens, iters),
+        Cmd::PrefillBench {
+            model_dir,
+            tokens,
+            iters,
+        } => bench::prefill_bench(&model_dir, tokens, iters),
         Cmd::Bench {
             model_dir,
             iters,
