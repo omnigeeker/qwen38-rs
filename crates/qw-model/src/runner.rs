@@ -923,6 +923,27 @@ impl Qwen38 {
         Ok(())
     }
 
+    /// Keep the GPU out of its deepest idle state with a trivial dispatch.
+    ///
+    /// A server idle for a couple of seconds pays roughly 0.27 s of clock ramp on
+    /// its next request - measured by removing the harness's two-second pause,
+    /// which took a 602-token cold request from 1.783 s to 1.467 s and the
+    /// `reset_seq` inside it from 205 ms to 5.8 ms.  Reissuing a few bytes every
+    /// 100 ms stops the GPU from downclocking that far.  It is off by default
+    /// because it is a continuous idle-power cost.
+    pub fn keepwarm_tick(&mut self) -> Result<()> {
+        let mut b = CommandBatch::new(&mut self.dev);
+        let k = b.kernel(qw_metal::msl_ops::GDN, qw_metal::msl_ops::K_ZERO_HALF)?;
+        b.encode(
+            Dispatch::new(&k, (1, 1, 1), (256, 1, 1))
+                .buf(1, &self.scratch.logits)
+                .scalar(2, 8)
+                .scalar(4, 0),
+        );
+        b.finish(true);
+        Ok(())
+    }
+
     /// Copy one slot's recurrent state and convolution window aside, so the position
     /// it is currently at can be returned to later.
     ///

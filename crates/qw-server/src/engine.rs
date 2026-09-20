@@ -813,6 +813,19 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
     // bandwidth: a one-row pass still has to stream all 14.4 GB of weights, so
     // feeding it a single token pays that whole read for one token.  QW_PREFILL_CHUNK
     // overrides it, and 1 restores the old behaviour for comparison.
+    // Keep-warm window, in seconds after the last request.  A server idle for a
+    // couple of seconds pays about 0.27 s of GPU clock ramp on its next request
+    // (measured: removing the harness's two-second pause took a 602-token cold
+    // request from 1.783 s to 1.467 s).  Ticking a few bytes every 100 ms during
+    // that window removes it - 1.421/1.261/1.304 s against 2.160/1.492/1.439 s in
+    // an A/B - and stopping after the window means a genuinely unused server
+    // costs nothing.  QW_KEEPWARM=0 turns it off, a number sets the window.
+    let keepwarm_secs: u64 = match std::env::var("QW_KEEPWARM").ok().as_deref() {
+        Some("0") | Some("off") => 0,
+        Some(v) => v.parse().unwrap_or(30),
+        None => 30,
+    };
+    let mut last_busy = std::time::Instant::now();
     let chunk_cap = std::env::var("QW_PREFILL_CHUNK")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -894,10 +907,29 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         // Block only when there is nothing at all to do.  Otherwise take whatever
         // has already arrived, so a burst is batched instead of serialised.
         if waiting.is_empty() && slots.iter().all(|s| s.is_none()) {
-            match rx.recv() {
-                Ok(j) => waiting.push_back(j),
-                // Every sender is gone, so the server is shutting down.
-                Err(_) => return,
+            let warm = keepwarm_secs > 0
+                && last_busy.elapsed() < std::time::Duration::from_secs(keepwarm_secs);
+            if warm {
+                match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(j) => {
+                        last_busy = std::time::Instant::now();
+                        waiting.push_back(j);
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        let _ = model.keepwarm_tick();
+                        continue;
+                    }
+                    // Every sender is gone, so the server is shutting down.
+                    Err(_) => return,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(j) => {
+                        last_busy = std::time::Instant::now();
+                        waiting.push_back(j);
+                    }
+                    Err(_) => return,
+                }
             }
         }
         while let Ok(j) = rx.try_recv() {
