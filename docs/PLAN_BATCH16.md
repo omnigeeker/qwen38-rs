@@ -7173,3 +7173,36 @@ llama.cpp 的 `mul_mm` 用一句 `cT.store(tD.slice(ra, rb))` 写进 **fp32** �
 所以 0.36 s 是上界；要做的是 fp32 scratch + `cT.store()` + 一个窄化 kernel
 （多 8 B/元素的流量 ≈ 16 GB ≈ 0.033 s），并保留 `out_f % NRA != 0`（48 那 96 个张量）
 时的标量回退，因为 `store` 的边界检查在 `slice` 保留下无法保证不越界写坏相邻 token。
+
+### 72ca. 写回不是瓶颈：批量 `cT.store()` 实测更慢，已回退（第 140 轮）
+
+§72bz 用 `QW_GEMM_MODE=6`（跳过写回循环）量到写回值 0.36 s（4/4 更低），
+于是按 llama.cpp 的做法实现了 fp32 staging：
+
+* `q4_mpp_mm` 加 `device float* yf [[buffer(9)]]`，`mode == 7` 时改用
+  `cT.store(tD.slice(row0, tok0))`，`tD = tensor(yf, dextents(2)(out_f, k), {1, out_f})`；
+* `Scratch` 加 fp32 `yf`（`vocab*4*tile` = 1.0 GB）；
+* 再用已有的 `q4_store_half` 把 fp32 窄化成 half；
+* 只在 `out_f % NRA == 0` 时启用，因为 `slice` 下 store 的边界检查不能保证
+  不越过残块写坏相邻 token（`out_f = 48` 那 96 个张量保留标量循环）。
+
+**数值完全正确**：`QW_MPP_STORE=0 / 未设 / =1` 三种都逐字节复现
+`5b5f6e931dddd4cc943589f4380e2325` len 182。
+
+**但是更慢**：
+
+| 轮 | 逐元素循环（`QW_MPP_STORE=0`） | 批量 store + 窄化 |
+|---|---|---|
+| 1 | 1.506 | 1.534 |
+| 2 | 1.503 | 1.532 |
+| 3 | 1.522 | 1.540 |
+| 4 | 1.520 | 1.553 |
+
+**4/4 全输，均值 1.513 → 1.540（慢 1.8%）。**
+
+**⇒ 结论：写回循环的 0.36 s 不是可回收的时间，它和其他工作重叠掉了。**
+`QW_GEMM_MODE=6` 之所以更快，是因为它让 `y` 留下垃圾值，下游读到垃圾比读到真实值便宜 ——
+**凡是「跳过某段计算」的减法，只要改变了后续读到的数据，数字就不可信。**
+这条和 §72by 的「只有配对测量算数」是同一类错误，记在这里。
+
+代码已 `git checkout` 回退，`fastchk` 复现基线。
