@@ -6988,3 +6988,101 @@ NRB 上不去，权重就只能扫 5 遍 —— 这条路到此为止。
 `2×2.88e10×602 / 0.78 = 44 TFLOPS`，是 `simdgroup_matrix` 22 TFLOPS 的两倍。**
 **⇒ 2.51 s 里剩下的 1.73 s 是「非矩阵乘」：注意力 / GDN / norm / conv + 反量化 + 写回 + 发射。**
 **⇒ 下一个瓶颈已经不是 GEMM 了。**
+
+### 72bx. **GDN 扫描状态常驻寄存器：2.11 s → 1.54 s，冷 prefill 首次低于 llama.cpp**（第 137 轮）
+
+#### 先定位：`gdn_step_seq` 占掉非矩阵乘的 43%
+
+用 `QW_SKIP_KERNEL` 逐个屏蔽（全部在 `QW_GEMM_MODE=2`「跳过张量乘法」下测，基线 1.45 s）：
+
+| 屏蔽 | 冷 TTFT | 省下 |
+|---|---|---|
+| 无 | 1.446 / 1.492 | — |
+| **gdn** | **0.818 / 0.856** | **0.63 s** |
+| conv1d | 1.492 / 1.467 | 0 |
+| attn | 1.368 / 1.394 | 0.07 |
+| rmsnorm | 1.589 / 1.605 | 0（噪声） |
+| rope | 1.449 / 1.918 | 0（噪声） |
+
+**⇒ 48 个 GDN 层各花 13 ms，合计 0.63 s，是 GEMM 之外最大的一块。**
+
+#### 原因：状态在 device 内存里被读写两遍
+
+老内核一个线程管一个 `(hv, dv)`，`S[Dk]` 留在 device 内存：
+
+```metal
+for (int d = 0; d < Dk; ++d) { S[d] *= g; kv += S[d] * kp[d]; }   // 读128 写128
+...
+for (int d = 0; d < Dk; ++d) { S[d] += delta*kp[d]; acc += S[d]*qp[d]; }  // 读128 写128
+```
+
+每个线程每 token：**读 384 B、写 256 B**（第二圈还要再读一遍 S）。
+4096 线程 × 602 token × 48 层 × 640 B = **303 GB**，按 481 GB/s 正好 0.63 s —— 实测与算术吻合到 5%，
+所以这个内核是**被状态带宽卡死**的，不是算力。
+
+#### 做法：一个线程group 覆盖 DVQ 个 value，每个 value 的 Dk 归约拆到 Q 条 lane 上
+
+`gdn_step_seq4`：threadgroup = `DVQ × Q` 个线程，一个线程持有 `Dk/Q` 个状态元素在**寄存器**里，
+整个 token 循环内不再碰 device 内存。两个点积变成 Q 条 lane 的蝶形归约
+（`simd_shuffle_xor`，Q 条 lane 是连续且对齐的，所以 3 步搞定）：
+
+```metal
+float S[DKS];                                   // DKS = Dk/Q，编译期常量
+for (int i = 0; i < DKS; ++i) S[i] = Sd[i];     // 进循环前读一次
+for (int t = 0; t < n; ++t) {
+    ... g, beta ...
+    for (int i = 0; i < DKS; ++i) { S[i] *= g; kv += S[i]*kp[i]; }
+    for (int m = 1; m < Q; m <<= 1) kv += simd_shuffle_xor(kv, (ushort)m);
+    const float delta = (v[...] - kv) * beta;
+    for (int i = 0; i < DKS; ++i) { S[i] += delta*kp[i]; acc += S[i]*qp[i]; }
+    for (int m = 1; m < Q; m <<= 1) acc += simd_shuffle_xor(acc, (ushort)m);
+    if (qq == 0) y[...] = (half)acc;
+}
+for (int i = 0; i < DKS; ++i) Sd[i] = S[i];     // 出循环后写一次
+```
+
+`Dk/Q` 必须是编译期数组长度，所以它和 `Q`、`DVQ` 一起做成 `#define`，由 `gdn_src()` 从环境重写，
+和 MPP 那套一样：**扫 tile 不用重编译**。
+
+#### 一个坑：dispatch 的 grid 是**线程数**不是 threadgroup 数
+
+第一版写成 `grid = (hv * (dv/DVQ), 1, 1)`，于是 Q=8 时只发了 256 个线程、
+Q=1 时只发了 32 个线程，比 threadgroup 还小 —— 结果是**每个 Q 都算错**，
+而且错得看不出方向。正确写法是
+
+```rust
+grid = (hv * dv * Q, 1, 1)          // = Hv * (Dv/DVQ) 个 threadgroup × (DVQ*Q) 个线程
+threadgroup = (DVQ * Q, 1, 1)
+```
+
+修好之后 **Q = 1 / 4 / 8 / 16 全部逐字节复现基线 md5 `5b5f6e93…` len 182**，
+说明归约顺序的改变在这里不产生任何可见差异。
+
+#### 结果
+
+| 配置 | 冷 TTFT |
+|---|---|
+| `QW_GDN_SEQ4=0`（老内核） | 2.120 / 2.104 / 2.110 |
+| **Q=8 / DVQ=16（新默认）** | **1.547 / 1.556 / 1.584** |
+| Q=4 / DVQ=32 | 1.563 / 1.550 / 1.539 / 1.549 |
+| Q=16 / DVQ=8 | 1.572 / 1.596 / 1.576 |
+
+Q=4 与 Q=8 打平（4 轮交错，1.550 vs 1.556），取 Q=8（每线程寄存器更少）。
+
+```
+冷 prefill   2.110 -> 1.550 s   (27%, 3/3 交错)
+fastchk md5  5b5f6e931dddd4cc943589f4380e2325 len 182  (不变)
+accept.sh    19 passed, 0 failed, ACCEPTED
+```
+
+#### 累计
+
+| 阶段 | 冷 TTFT |
+|---|---|
+| 本轮开始（手写 GEMM，19 遍权重扫描） | 5.59 s |
+| MPP 张量路径（§72bw） | 2.51 s |
+| 注意力按行批处理 | 2.22 s |
+| **GDN 状态常驻寄存器** | **1.54 s** |
+
+**1.54 s < llama.cpp 的 1.60 s —— 冷 prefill 首次进入领先。**
+剩余预算：张量乘法 0.90 s（44.5 TFLOPS，接近峰值）+ 其余 0.58 s。

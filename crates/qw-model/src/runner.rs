@@ -39,6 +39,7 @@ struct Kernels {
     attn_out: Kernel,
     attn_scores_rows: Kernel,
     attn_out_rows: Kernel,
+    gdn_seq4: Kernel,
     conv1d_ring: Kernel,
     conv1d_ring_tile: Kernel,
     gdn: Kernel,
@@ -49,6 +50,19 @@ struct Kernels {
     rope_rows: Kernel,
     copy: Kernel,
     round_bf16: Kernel,
+}
+
+/// Lanes per GDN value in `gdn_step_seq4`; also sets the compiled state-array
+/// size, so it is fixed for the life of the process.
+fn gdn_q() -> usize {
+    static Q: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *Q.get_or_init(|| msl_ops::gdn_tiles()[0].max(1) as usize)
+}
+
+/// Whether the register-resident GDN scan is used.
+fn gdn_seq4_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QW_GDN_SEQ4").ok().as_deref() != Some("0"))
 }
 
 /// Whether the row-batched attention kernels are used.  Read once: this is
@@ -692,6 +706,10 @@ impl Qwen38 {
                 attn_out: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_OUT)?,
                 attn_scores_rows: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_SCORES_SOFTMAX_ROWS)?,
                 attn_out_rows: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_OUT_ROWS)?,
+                gdn_seq4: b.kernel(
+                    &msl_ops::gdn_src((cfg.linear_key_head_dim / gdn_q()) as i32),
+                    msl_ops::K_GDN_STEP_SEQ4,
+                )?,
                 conv1d_ring: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING)?,
                 conv1d_ring_tile: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_TILE)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
@@ -2049,7 +2067,50 @@ impl Qwen38 {
                     // unrelated sequences has no such ordering and keeps the
                     // per-row loop.
                     let one_seq = rows.iter().all(|r| r.0 == rows[0].0);
-                    if one_seq {
+                    // The register-resident scan needs Dk and Dv to divide its
+                    // tile; both are 128 here, but a different checkpoint need
+                    // not be, and the old kernel is always correct.
+                    let gq = gdn_q();
+                    let gdvq = msl_ops::gdn_tiles()[1].max(1) as usize;
+                    let seq4 = gdn_seq4_enabled()
+                        && one_seq
+                        && gq > 0
+                        && dk % gq == 0
+                        && dv % gdvq == 0;
+                    if seq4 {
+                        b.encode(
+                            // The grid is in THREADS, not threadgroups:
+                            // Hv * (Dv/DVQ) threadgroups of DVQ*Q threads.
+                            Dispatch::new(
+                                &kernels.gdn_seq4,
+                                (hv * dv * gq, 1, 1),
+                                ((gdvq * gq) as usize, 1, 1),
+                            )
+                                .buf(0, &scratch.q)
+                                .buf(1, &scratch.k)
+                                .buf_offset(2, &scratch.conv_out, 2 * key_dim * 2)
+                                .buf(3, &scratch.a)
+                                .buf(4, &scratch.b)
+                                .buf(5, &g.a_log)
+                                .buf(6, &g.dt_bias)
+                                .buf_offset(7, &g.state, rows[0].0 * st_stride)
+                                .buf(8, &scratch.gdn_y)
+                                .scalar(9, hk as i32)
+                                .scalar(10, hv as i32)
+                                .scalar(11, dk as i32)
+                                .scalar(12, dv as i32)
+                                .buf_offset(13, &g.snap, rows[0].0 * snap_stride)
+                                .scalar(14, if self.spec_snap { 1 } else { 0 })
+                                .scalar(15, n as i32)
+                                .scalar(16, (nh * hd) as i32)
+                                .scalar(17, key_dim as i32)
+                                .scalar(18, conv_dim as i32)
+                                .scalar(19, hv as i32)
+                                .scalar(20, value_dim as i32)
+                                .scalar(21, (snap_stride / n) as i32),
+                        );
+                        b.barrier();
+                    } else if one_seq {
                         b.encode(
                             Dispatch::new(&kernels.gdn_seq, (hv * dv, 1, 1), (dv, 1, 1))
                                 .buf(0, &scratch.q)

@@ -1,6 +1,6 @@
 {
   "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
-  "round": 199,
+  "round": 200,
   "milestone": "M4",
   "hardware": {
     "chip": "Apple M5 Max",
@@ -4937,9 +4937,13 @@
     {
       "round": 199,
       "what": "MPP tensor path is real and is now the default GEMM: cold prefill 5.59 -> 2.51 s (2.23x), output byte-identical, 497-tensor sweep worst rel 4.668e-4, accept.sh 19/0"
+    },
+    {
+      "round": 200,
+      "what": "GDN state resident in registers: 2.11 -> 1.54 s cold prefill (27%), byte-identical, accept 19/0; cumulative 5.59 -> 1.54 s, now below llama.cpp's 1.60 s"
     }
   ],
-  "next": "MPP tensor path works and is now the default GEMM. The decisive fact: ggml-metal-device.m:1131 gates llama.cpp's tensor kernels on [device supportsFamily:MTLGPUFamilyMetal4] (5002), and a Swift probe shows Metal4=true on this M5 Max - so llama.cpp's 1.60 s cold prefill IS the tensor path. Round 134's 'MPP never executes here' was an API-misuse artifact: run() wants left=(K,M), right=(K,N) under transpose_right, dest=(N,M), and NON-const operands; our q4_mpp_probe passed A as (M,K) while declaring NT, so the reduction axis was read off the wrong dimension. Proved the primitive first with `qwen38 mpp-test` (256x128x96 half matmul, nonzero 32768/32768, max_abs 6.184e-7, rel 1.811e-7). New kernel q4_mpp_mm mirrors llama.cpp's tile (M tokens=128, N rows=64, K=64, 128 threads), stages ONLY the weight tile (4-8 KB shared) and lets the tensor op read activations straight from device memory. Cold prefill 5.567/5.603/5.590 -> 2.505/2.533/2.503 s (2.23x, 3/3 interleaved); fastchk md5 5b5f6e931dddd4cc943589f4380e2325 len 182 unchanged; gemm-check max_abs identical to the hand-written kernel on all four shapes; QW_GEMM_CHECK_ALL sweep of all 497 linears worst rel 4.668e-4, over-tol 0, FAIL 0; tools/accept.sh 19 passed / 0 failed ACCEPTED. Tile sweep: only KT=64 helps (3%); NRB=256/512, NRA=128, NT=256, KT=128 all much worse because the tensor accumulator is M*N/NT fp32 registers and M=128/N=64/NT=128 is already 64/thread. Decomposition at KT=64: total 2.51 = non-matmul 1.73 + tensor op 0.78; dequant is now ~0.1 s and the tensor op runs at 44 TFLOPS against simdgroup_matrix's 22. NEXT: the bottleneck is no longer the GEMM - it is the 1.73 s of non-matmul work (attention/GDN/norm/conv + dequant + writeback + dispatch), against llama.cpp's 1.60 s total.",
+  "next": "Two structural fixes in a row, and the cold prefill is now under llama.cpp. (1) attn_scores_softmax + attn_out were emitted once per query token per full-attention layer - 19,136 of 20,290 dispatches; attn_scores_softmax_rows / attn_out_rows give each threadgroup a (row, head) pair so a pass is one dispatch each, with the causal mask as a shorter loop bound. Dispatches 20,290 -> 1,186 (-94%), 2.49 -> 2.22 s. (2) QW_SKIP_KERNEL isolation showed gdn_step_seq was 0.63 s of the 1.45 s spent outside the matmul: its state was read 384 B and written 256 B per thread per token because S could not be held across the two loops, which is 303 GB over the pass and exactly the 0.63 s at 481 GB/s. gdn_step_seq4 splits each value's Dk reduction across Q lanes so a thread keeps Dk/Q state elements in registers for the whole token loop, with two simd_shuffle_xor butterflies replacing the dot products. 2.11 -> 1.54 s (27%), byte-identical md5, accept.sh 19/0. Cumulative: 5.59 -> 2.51 (MPP) -> 2.22 (attention rows) -> 1.54 s. That is BELOW llama.cpp's 1.60 s. Remaining: the tensor op is 0.90 s at 44.5 TFLOPS (near peak) and everything else is 0.58 s. GOTCHA WORTH REMEMBERING: Dispatch's first argument is a grid in THREADS, not threadgroups - my first gdn_seq4 grid was 32 threads with a 128-thread threadgroup, which made every Q produce wrong output with no obvious direction. NEXT: re-measure the three-way duel interleaved (tools/tri.py) to confirm the cold-TTFT win against llama.cpp and Ollama on the same session, and keep attacking the 0.58 s of non-GEMM.",
   "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
   "open_issues": [
     {

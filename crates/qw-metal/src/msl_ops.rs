@@ -305,6 +305,14 @@ pub const GDN: &str = r#"
 #include <metal_simdgroup>
 using namespace metal;
 
+// Register-resident GDN scan tile.  A threadgroup covers DVQ delta-net values
+// and splits each value's Dk reduction across Q lanes, so one thread owns
+// Dk/Q state elements in registers for the whole token loop.  Rewritten from
+// the environment by `gdn_src()` so a tile sweep costs one process start.
+#define QW_GDN_Q   8
+#define QW_GDN_DVQ 16
+#define QW_GDN_DKS 16
+
 // Depth-wise causal conv1d (kernel = 4) followed by SiLU.
 // window is [4][conv_dim]: 3 carried rows followed by the current token's row.
 kernel void conv1d_silu(
@@ -550,6 +558,94 @@ kernel void gdn_step_seq(
     }
 }
 
+// Same recurrence as `gdn_step_seq`, but with the state in registers.
+//
+// The old kernel gave every (hv, dv) pair its own thread and kept S in device
+// memory, so each token read the state twice and wrote it twice: 384 bytes read
+// and 256 written per thread per token.  Over a 602-token pass that is 303 GB,
+// and at 481 GB/s it accounts for the entire 0.63 s the scan costs - which is
+// 43% of everything the pass spends outside the matmul.
+//
+// Here a threadgroup covers QW_GDN_DVQ values and splits each value's Dk
+// reduction across QW_GDN_Q lanes, so a thread holds Dk/Q state elements in
+// registers and never touches device memory inside the loop.  The two dot
+// products become butterfly reductions across the Q lanes, which sit in one
+// aligned group of consecutive lanes, so three `simd_shuffle_xor` steps do it.
+kernel void gdn_step_seq4(
+    device const half*  q       [[buffer(0)]],
+    device const half*  k       [[buffer(1)]],
+    device const half*  v       [[buffer(2)]],
+    device const half*  a       [[buffer(3)]],
+    device const half*  b       [[buffer(4)]],
+    device const float* A_log   [[buffer(5)]],
+    device const float* dt_bias [[buffer(6)]],
+    device float*       state   [[buffer(7)]],
+    device half*        y       [[buffer(8)]],
+    constant int&       Hk      [[buffer(9)]],
+    constant int&       Hv      [[buffer(10)]],
+    constant int&       Dk      [[buffer(11)]],
+    constant int&       Dv      [[buffer(12)]],
+    device float*       snap    [[buffer(13)]],
+    constant int&       snap_on [[buffer(14)]],
+    constant int&       n       [[buffer(15)]],
+    constant int&       s_q     [[buffer(16)]],
+    constant int&       s_k     [[buffer(17)]],
+    constant int&       s_v     [[buffer(18)]],
+    constant int&       s_ab    [[buffer(19)]],
+    constant int&       s_y     [[buffer(20)]],
+    constant int&       s_snap  [[buffer(21)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]])
+{
+    constexpr int Q   = QW_GDN_Q;
+    constexpr int DVQ = QW_GDN_DVQ;
+    // Dk/Q has to be a compile-time array size, so it arrives as a define.
+    constexpr int DKS = QW_GDN_DKS;
+    const int dvb = (int)tg % (Dv / DVQ);
+    const int hv  = (int)tg / (Dv / DVQ);
+    const int dv  = dvb * DVQ + (int)(lane / (uint)Q);
+    const int qq  = (int)(lane % (uint)Q);
+    const int d0  = qq * DKS;
+    const int reps = Hv / Hk;
+    const int hk = hv / reps;
+
+    device float* Sd = state + ((size_t)hv * Dv + dv) * Dk + d0;
+    float S[DKS];
+    for (int i = 0; i < DKS; ++i) S[i] = Sd[i];
+
+    const float alog = exp(A_log[hv]);
+    const float bias = dt_bias[hv];
+    for (int t = 0; t < n; ++t) {
+        const float x = (float)a[(size_t)t * s_ab + hv] + bias;
+        const float sp = max(x, 0.0f) + log(1.0f + exp(-fabs(x)));
+        const float g = exp(-alog * sp);
+        const float beta = 1.0f / (1.0f + exp(-(float)b[(size_t)t * s_ab + hv]));
+        device const half* kp = k + (size_t)t * s_k + (size_t)hk * Dk + d0;
+        device const half* qp = q + (size_t)t * s_q + (size_t)hk * Dk + d0;
+        float kv = 0.0f;
+        for (int i = 0; i < DKS; ++i) {
+            S[i] *= g;
+            kv += S[i] * (float)kp[i];
+        }
+        // butterfly reduction across the Q lanes of this value
+        for (int m = 1; m < Q; m <<= 1) kv += simd_shuffle_xor(kv, (ushort)m);
+        const float delta = ((float)v[(size_t)t * s_v + (size_t)hv * Dv + dv] - kv) * beta;
+        float acc = 0.0f;
+        for (int i = 0; i < DKS; ++i) {
+            S[i] += delta * (float)kp[i];
+            acc += S[i] * (float)qp[i];
+        }
+        for (int m = 1; m < Q; m <<= 1) acc += simd_shuffle_xor(acc, (ushort)m);
+        if (qq == 0) y[(size_t)t * s_y + (size_t)hv * Dv + dv] = (half)acc;
+        if (snap_on) {
+            device float* SP = (device float*)((device char*)snap + (size_t)t * (size_t)s_snap)
+                               + ((size_t)hv * Dv + dv) * Dk + d0;
+            for (int i = 0; i < DKS; ++i) SP[i] = S[i];
+        }
+    }
+    for (int i = 0; i < DKS; ++i) Sd[i] = S[i];
+}
+
 // RMSNorm over `D` with an explicit input row stride and an output scale.
 // `has_weight == 1` multiplies by `w` first. Used for
 //   * delta-net q/k:  no weight, scale = inv or inv^2
@@ -763,6 +859,7 @@ pub const K_RMSNORM_TILE: &str = "rmsnorm_nw_tile";
 pub const K_CONV1D_SILU: &str = "conv1d_silu";
 pub const K_GDN_STEP: &str = "gdn_step";
 pub const K_GDN_STEP_SEQ: &str = "gdn_step_seq";
+pub const K_GDN_STEP_SEQ4: &str = "gdn_step_seq4";
 pub const K_RMSNORM_WS: &str = "rmsnorm_s";
 pub const K_RMSNORM_WS_ROWS: &str = "rmsnorm_s_rows";
 pub const K_RMSNORM_NW: &str = "rmsnorm_s";
@@ -772,3 +869,28 @@ pub const K_COPY: &str = "copy_off";
 pub const K_ROUND_BF16: &str = "round_bf16";
 pub const K_RMSNORM_GATED: &str = "rmsnorm_gated";
 pub const K_SIGMOID_MUL: &str = "sigmoid_mul";
+
+/// (Q, DVQ) for `gdn_step_seq4`, overridable from the environment so the tile
+/// can be swept without a rebuild.
+pub fn gdn_tiles() -> [i32; 2] {
+    static T: std::sync::OnceLock<[i32; 2]> = std::sync::OnceLock::new();
+    *T.get_or_init(|| {
+        fn one(k: &str, d: i32) -> i32 {
+            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+        }
+        [one("QW_GDN_Q", 8), one("QW_GDN_DVQ", 16)]
+    })
+}
+
+/// The GDN source with the `gdn_step_seq4` tile substituted in.  The pipeline
+/// cache is keyed on the source text, so each tile is its own pipeline.
+pub fn gdn_src(dks: i32) -> String {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        let [q, dvq] = gdn_tiles();
+        GDN.replace("#define QW_GDN_Q   8", &format!("#define QW_GDN_Q   {q}"))
+            .replace("#define QW_GDN_DVQ 16", &format!("#define QW_GDN_DVQ {dvq}"))
+            .replace("#define QW_GDN_DKS 16", &format!("#define QW_GDN_DKS {dks}"))
+    })
+    .clone()
+}
