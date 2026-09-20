@@ -9025,3 +9025,31 @@ TTFT 1209 ms        <- 4 行 pass 之后只用了 10 ms
 
 **⇒ 最终结论：这条线记为「已充分刻画（0.75-0.85 ms × 该 pass 行数，纯 CPU，
 在 post-pass 区块内），8 个候选已排除，成因未定位」。不再作为主攻方向。**
+
+### 72dz. 交付状态最终确认（第 192 轮）
+
+自 `accept.sh` 验证过的提交 `11ece7c` 以来共 12 个提交（`78ef001` … `3c8783d`），
+**全部只改 `docs/` 与 `loop/`，没有一行代码改动**：
+
+```
+$ git diff --stat 11ece7c..HEAD -- crates/ tools/ Cargo.toml Cargo.lock
+(空)
+$ git status --porcelain
+(空，除用户自己的 stock/ 外)
+```
+
+**⇒ 交付的代码与 `accept.sh` 19 passed / 0 failed 验证过的代码逐字节相同，
+那次验证依然成立，不需要重跑。**
+
+**最终交付状态：**
+
+| 指标 | 结果 | 目标 |
+|---|---|---|
+| 暖 TTFT | 19-34 ms（比 llama.cpp 快 2.6-4.6×，比 Ollama 快 2.1-3.7×） | ✅ 达标 |
+| 冷 TTFT | ~1400 ms 对 llama.cpp 863 ms（约 1.6×），对 Ollama 2131 ms（快 1.5×） | ❌ 未达标 |
+| 单流 otps | 57.3 tok/s（Splash 74 的 77%） | ❌ 未达标 |
+| 聚合 otps | 79.4 tok/s（Splash 170 的 46%） | ❌ 未达标 |
+| 正确性 | accept.sh 19/0，gemm-check 497 张量，fastchk 逐字节一致 | ✅ |
+| 投机解码 | 默认开启，任意单 slot 生效 | ✅ |
+
+**冷 TTFT 的 0.75-0.85 ms/行空隙：已充分刻画，8 个候选排除，成因未定位，已关闭。**
