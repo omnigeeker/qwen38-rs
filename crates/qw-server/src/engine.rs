@@ -1175,7 +1175,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     // simply not emitted, and `next` is always the model's own
                     // prediction from the row that broke the run.
                     let mut out: Vec<u32> = Vec::new();
-                    match model.spec_step(a.pos, a.feed, &mut out) {
+                    match model.spec_step(a.pos, a.feed, &mut out, slot) {
                         Ok((np, ntok, _draft_s, _pass_s)) => {
                             let mut stop = false;
                             // The first element is the token at `pos` again.  Drop it
@@ -1287,7 +1287,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     // Warming is a throughput aid, not a correctness one, so a failure
                     // must not take the request down: the next verify simply rejects
                     // the drafts it produced.
-                    if let Err(e) = model.mtp_step_at(i, t, p + 1, false) {
+                    if let Err(e) = model.mtp_step_at(i, t, p + 1, false, 0) {
                         tracing::warn!("draft-head warm failed at row {i}: {e}");
                     }
                 }

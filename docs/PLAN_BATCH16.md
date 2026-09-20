@@ -7906,3 +7906,39 @@ TILE=6 那三次很可能正好落在吵的窗口里。这个 A/B 无效，两�
 
 **方法学**：以后所有性能断言一律 A/B/A/B 交错 + 成对中位数。
 `tools/` 里应该把这个固化成脚本，而不是每次手搓。
+
+### 72cu. 第 1 步落地：MTP 的 k/v cache 可以按序列偏移了，**零 kernel 改动**（第 159 轮）
+
+原计划是「给 MTP 的 k/v cache 加 slot 偏移」。做的过程中发现
+**`Dispatch` 已经有 `buf_offset(index, buffer, byte_offset)`**（kernel.rs:66，
+本来是给 zero-copy 权重用的），于是**两侧都不用改 kernel**：
+
+```rust
+// cache 分配是 batch * nkv * max_t * hd 个 half，而 kernel 按
+// hk * maxT * D + pos * D + d 寻址，永远只看得到序列 0 的那一片。
+// 按 seq * (每序列字节数) 绑定 buffer，每个序列就各得一片 —— 布局正好塞满分配。
+let koff = seq * self.mtp_cache_stride();   // = k_cache.len_bytes() / batch
+...
+.buf_offset(2, &m.k_cache, koff)
+.buf_offset(3, &m.v_cache, koff)
+.buf_offset(1, &m.k_cache, koff)   // attn_scores 读
+.buf_offset(1, &m.v_cache, koff)   // attn_out 读
+```
+
+`mtp_cache_stride()` 直接用 `m.k_cache.len_bytes() / self.batch` 推出来，
+不依赖任何字段名，分配变了它自动跟着变。
+
+`seq` 贯通了 `mtp_step_at` / `mtp_step` / `spec_step` 及全部调用点
+（CLI 的 4 处、`spec_warm`、`spec_step` 内部两处、`gen.rs` 一处），
+**目前一律传 0，所以行为与改动前逐字节相同 —— `accept.sh` 19 passed / 0 failed。**
+
+**注意：这一步本身不产生收益。** `spec_ok` 仍然只允许 slot 0，
+所以真正解锁并发的是第 2、3 步：
+
+* **第 2 步**：`forward2` 的 verify 要按 slot 取行（现在硬编码 sequence 0）；
+* **第 3 步**：`commit_row(row)` 加 `seq`（现在只写 sequence 0 的递归状态）。
+
+**只有这三步都做完，才能把 `spec_ok` 从「唯一 slot 且必须是 slot 0」
+放宽到「唯一 slot」，让并发/非零 slot 也吃到投机。**
+第 3 步碰的是第 155 轮那个 bug 的同一处代码，必须靠 `spec--plain` 与
+`server==cli` 两条门禁守住。

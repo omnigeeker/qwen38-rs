@@ -2437,8 +2437,16 @@ impl Qwen38 {
     ///
     /// With `want_logits == false` the head only advances its cache (the final
     /// head sweep is skipped), which is what prefill wants.
+    /// Bytes of k (and of v) per sequence in the draft head's cache.
+    fn mtp_cache_stride(&self) -> usize {
+        match &self.mtp {
+            Some(m) => m.k_cache.len_bytes() / self.batch.max(1),
+            None => 0,
+        }
+    }
+
     pub fn mtp_step(&mut self, next_token: u32, pos: usize, want_logits: bool) -> Result<Vec<f32>> {
-        self.mtp_step_at(0, next_token, pos, want_logits)
+        self.mtp_step_at(0, next_token, pos, want_logits, 0)
     }
 
     /// `mtp_step`, but reading the decoder's hidden state from row `hrow` of the
@@ -2453,16 +2461,26 @@ impl Qwen38 {
     /// offset is for.  Rows must be warmed in increasing order, because the
     /// head writes its own internal norm back into row 0's slot; every row
     /// above 0 is untouched by that write.
+    /// `seq` selects which sequence's k/v region the head reads and writes.
+    ///
+    /// The cache is allocated `batch * nkv * max_t * hd` halves, but the kernels
+    /// address it as `hk * maxT * D + pos * D + d`, i.e. they only ever see
+    /// sequence 0's slice.  Binding the buffer at a byte offset of
+    /// `seq * nkv * max_t * hd * 2` gives every sequence its own region without
+    /// touching a single kernel - the layout already fits the allocation exactly.
     pub fn mtp_step_at(
         &mut self,
         hrow: usize,
         next_token: u32,
         pos: usize,
         want_logits: bool,
+        seq: usize,
     ) -> Result<Vec<f32>> {
         let e = self.embed_row(next_token)?;
         let max_t = self.max_t as i32;
         let vocab = self.vocab;
+        // Computed before `self` is destructured below.
+        let koff = seq * self.mtp_cache_stride();
         let Self {
             cfg,
             dev,
@@ -2579,8 +2597,8 @@ impl Qwen38 {
             Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
                 .buf(0, &scratch.k)
                 .buf(1, &scratch.pv)
-                .buf(2, &m.k_cache)
-                .buf(3, &m.v_cache)
+                .buf_offset(2, &m.k_cache, koff)
+                .buf_offset(3, &m.v_cache, koff)
                 .scalar(4, pos as i32)
                 .scalar(5, max_t)
                 .scalar(6, nkv as i32)
@@ -2590,7 +2608,7 @@ impl Qwen38 {
         b.encode(
             Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
                 .buf(0, &scratch.q)
-                .buf(1, &m.k_cache)
+                .buf_offset(1, &m.k_cache, koff)
                 .buf(2, &scratch.scores)
                 .scalar(3, t)
                 .scalar(4, max_t)
@@ -2603,7 +2621,7 @@ impl Qwen38 {
         b.encode(
             Dispatch::new(&kernels.attn_out, (nh * hd, 1, 1), (hd, 1, 1))
                 .buf(0, &scratch.scores)
-                .buf(1, &m.v_cache)
+                .buf_offset(1, &m.v_cache, koff)
                 .buf(2, &scratch.attn_out)
                 .scalar(3, t)
                 .scalar(4, max_t)
@@ -2770,6 +2788,7 @@ impl Qwen38 {
         pos: usize,
         next: u32,
         out: &mut Vec<u32>,
+        seq: usize,
     ) -> Result<(usize, u32, f64, f64)> {
         use std::time::Instant;
         out.push(next);
@@ -2777,7 +2796,7 @@ impl Qwen38 {
         let mut d = [0u32; TILE - 1];
         for i in 0..TILE - 1 {
             let tok_in = if i == 0 { next } else { d[i - 1] };
-            d[i] = Self::argmax_of(&self.mtp_step_at(0, tok_in, pos + i, true)?);
+            d[i] = Self::argmax_of(&self.mtp_step_at(0, tok_in, pos + i, true, seq)?);
         }
         let draft = t_draft.elapsed().as_secs_f64();
         let t_verify = Instant::now();
@@ -2833,7 +2852,7 @@ impl Qwen38 {
         // it actually needs.  Dropping this costs 6 points of acceptance.
         if k >= 1 {
             self.promote_hidden(k - 1)?;
-            self.mtp_step_at(0, d[k - 1], pos + k, false)?;
+            self.mtp_step_at(0, d[k - 1], pos + k, false, seq)?;
         }
         self.promote_hidden(k)?;
         if std::env::var("QW_TAIL").is_ok() {

@@ -390,7 +390,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
                 out.push(next);
                 break;
             }
-            let (p, n, dd, vv) = model.spec_step(pos, next, &mut out)?;
+            let (p, n, dd, vv) = model.spec_step(pos, next, &mut out, 0)?;
             t_draft += dd;
             t_pass += vv;
             pos = p;
