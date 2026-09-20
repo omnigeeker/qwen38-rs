@@ -527,11 +527,20 @@ fn gemm_min_rows() -> usize {
         std::env::var("QW_GEMM_MIN_ROWS")
             .ok()
             .and_then(|v| v.parse().ok())
-            // 8 = on by default.  Measured on the same tensors and the same CPU
+            // 32 = on by default.  Measured on the same tensors and the same CPU
             // reference, the GEMM is more accurate than the four-row kernel we used
             // to ship (max_abs better by 1.3-1.9x, rel by 1.5-1.8x, on all four
             // checked tensors), and 2.2x faster on a cold prefill.  Set
             // QW_GEMM_MIN_ROWS very high to fall back to the scalar loop.
-            .unwrap_or(8)
+            //
+            // It was 8, which sent an eight-row pass - the shape a four-slot decode
+            // actually uses - into the MPP tensor path.  That path's tile is
+            // M(tokens)=128, so at eight rows it runs 16x oversized and wastes
+            // almost all of the tensor work: an eight-row pass cost 385.4 ms at 8
+            // and 99.5 ms at 32, a 3.9x difference, and the four-slot aggregate went
+            // from 19.40 to 59.80 tok/s.  At 32 the GEMM still wins for the shapes
+            // it was chosen for, because 1020 (never use it) gives 100.3 ms for the
+            // same eight-row pass and only 47.16 aggregate.
+            .unwrap_or(32)
     })
 }
