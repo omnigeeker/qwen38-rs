@@ -9091,3 +9091,37 @@ batch: CPU encode 57.11 ms | commit+wait 348.95 ms | 1186 dispatches in 898 enco
 **下一步**：定位这 290 ms 的来源。候选：`rows>4` 分支里的某次全量清零/状态复制、
 `encode_b`/`q4_gemv_b16` 的固定开销、或每次 pass 重建的某个缓冲区。
 这是聚合方向唯一剩下的、有数据支撑的杠杆。
+
+### 72eb. `rows>4` 固定开销的来源：`mpp_src()` 只占 54 ms，其余 ~236 ms 未知（第 194 轮）
+
+上轮定位到 `rows>4` 路径有约 290 ms 固定 GPU 成本。读 `encode_rows` 的 `else` 分支
+（linear.rs:200-240）发现一个可疑点：**每个 linear、每次 pass** 都会调用
+
+```rust
+if let Err(e) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) { ... }
+if let Err(e) = batch.kernel(msl::MPP, "q4_mpp_probe") { ... }
+let src = msl::mpp_src();                       // 构造整个 MPP 源字符串
+if let Err(e) = batch.kernel(&src, "q4_mpp_mm") { ... }
+```
+
+**而 pipeline 缓存的键是 `(fxhash(source), entry)`**，所以每次调用都要
+**构造并哈希整个 MSL 源字符串**。497 个 linear × 每次 pass——**这与行数无关，
+正好像是「固定开销」。**
+
+**决定性测试：`QW_MPP=0` 会跳过 `mpp_src()`。**（注意：环境变量必须设在
+`conc.py` 进程上，因为 `conc.py` 自己启动服务——这是我这轮先犯的一个测量错误。）
+
+| 变体 | 8 行 pass | 聚合 otps |
+|---|---|---|
+| `QW_MPP=3`（默认，调 `mpp_src()`） | **379.9 ms** | 19.70 |
+| `QW_MPP=0`（跳过） | **326.3 ms** | 21.05 |
+
+**⇒ 只省了 53.6 ms（14%）。`mpp_src()` 确实有成本，但只占那 290 ms 里的 54 ms。**
+
+**⇒ 其余约 236 ms 的固定成本在别处，尚未定位。**
+
+**注意 `QW_MPP=0` 会换掉 kernel、改变数值输出**（GEMM 与 tile 核的舍入不同），
+所以它不是一个可以直接采用的开关，**只能作为测量手段**。
+
+**这轮的净结果**：把 290 ms 里的 54 ms 归因清楚（每 linear 的 `mpp_src()` 构造 + 哈希），
+**剩余 236 ms 仍未知**；同时更正了一个测量方法错误（环境变量必须设在 `conc.py` 上）。
