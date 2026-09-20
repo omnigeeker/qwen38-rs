@@ -9550,3 +9550,50 @@ copy_off 每 pass 96 次）**全部作废**。**
 （例如按内核类型分别计时，而不是数派发次数）。**
 
 **未做改动，未验证。**
+
+### 72en. **找到真凶：批解码走的是「逐行拷贝 + 逐行卷积」的慢路径**（第 206 轮）
+
+§72em 我判定直方图不可信。**本轮找到了那个派发点，直方图其实是对的，
+§72em 的「不可信」结论本身是错的——再次撤回。**
+
+**派发点在 `forward_rows` 的 runner.rs:2093（我此前用 `grep copy_dispatch` 漏了它）：**
+
+```rust
+if rows.iter().all(|r| r.0 == rows[0].0) {
+    // conv1d_silu_ring_tile reads the current pass's rows straight out of the
+    // staging buffer and folds the ring update in, so it replaces BOTH the
+    // per-row copy and the per-row convolution:
+    //     12,288 launches per pass become 48.
+    // ...It only applies when the rows are consecutive positions of one
+    //    sequence; a batch pass of unrelated sequences keeps the per-row pair.
+    b.encode(Dispatch::new(&kernels.conv1d_ring_tile, (n * conv_dim, 1, 1), (NT, 1, 1)) ...);
+} else {
+    for (row, &(seq, pos)) in rows.iter().enumerate() {
+        copy_dispatch(&mut b, &kernels.copy, &scratch.qkv_cur, row * conv_dim,
+                      &g.window, woff / 2 + slot * conv_dim, conv_dim);   // 逐行拷贝
+    }
+    // 然后还有逐行卷积
+}
+```
+
+**⇒ 快路径的条件是 `rows.iter().all(|r| r.0 == rows[0].0)`——**所有行必须来自同一个序列**。**
+
+**⇒ 而一个 4 slot 的**解码** pass，4 行来自 **4 个不同序列** ⇒ 条件不成立
+⇒ 走 `else` 分支 ⇒ **逐行拷贝 + 逐行卷积**。**
+
+**⇒ 这就是 `copy_off` 96 次的来源（48 个 GDN 层 x 每行一次），
+也就是 4 行 pass 那 16.3 ms 非 GEMV 开销的主要来源。**
+
+**⇒ 注释自己给出了量级：「12,288 launches per pass become 48」——
+慢路径是快路径的 256 倍派发数。**
+
+**⇒ 这是聚合方向上一个**真实、具体、代码里已注明障碍**的目标：
+让 `conv1d_ring_tile` 支持「多序列、每个序列各自一个 ring」，
+就能把批解码的逐行拷贝与逐行卷积一起折成约 48 次派发。**
+
+**⇒ 障碍也已写明：tile 核假设「同一序列的连续位置」。
+4 个不同序列的行，ring slot 互不相同、且各序列的 pos0 不同——
+需要让核按行取自己的 ring 基址，而不是假设连续。**
+
+**未做改动，未验证。这是下一步的方向，而且它是本轮唯一一个
+「代码注释直接给出了收益量级」的目标。**
