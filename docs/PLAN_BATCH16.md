@@ -8842,3 +8842,44 @@ prefix 快照（28.6 ms 且已禁用）、tail pipeline 编译（A/B 证伪）�
 则排空假设成立。**这是纯诊断，不碰 kernel。**
 
 **本轮到此为止：不再在没有确认这个问题的情况下继续二分，因为两种解释指向完全不同的方向。**
+
+### 72du. **排空假设被证伪**：`finish(true)` 确实等待 GPU（第 187 轮）
+
+上一轮留下的未决问题——空隙是 CPU 工作还是 GPU 排空——**已判定。**
+
+`forward_rows` 的最后一行是 `b.finish(true)`（runner.rs:2380），
+而 `CommandBatch::finish`（kernel.rs:207）：
+
+```rust
+let t_commit = std::time::Instant::now();
+self.cb.commit();
+if wait {
+    self.cb.wait_until_completed();   // <- wait=true 时真的等
+}
+```
+
+**⇒ `forward_rows` 会阻塞到 GPU 完成。所以 `step time` 里的 `took` 已经包含 GPU 时间，
+空隙 823 -> 1180 ms **不是**排空，而是**真实的 CPU 侧工作**。**
+
+**⇒ 排空假设证伪。0.85 ms/prompt 行是真实的 CPU 开销。**
+
+**顺带用已有的 `QW_ENCODE_TIME` 诊断量了 pass 内部构成**
+（349 行、1186 dispatches、898 encoders）：
+
+```
+batch: CPU encode 61.21 ms | commit+wait 391.03 ms | 1186 dispatches in 898 encoders
+batch: CPU encode 63.03 ms | commit+wait 317.39 ms | 1186 dispatches in 898 encoders
+batch: CPU encode  0.64 ms | commit+wait  45.53 ms | 1186 dispatches in 898 encoders
+```
+
+**两个新事实：**
+
+1. **CPU encode 是 ~61 ms / 1186 dispatches = 0.05 ms 每次派发。**
+   898 个 encoder 的拆分开销是实打实的，但**只有 61 ms，不足以解释 293 ms 的空隙**。
+2. **这些 batch 的 encode+wait 之和（452 / 380 / 46 ms）与 `step time` 报的
+   737.7 ms 对不上**——**pass 内部还有 ~250-300 ms 未被这两项覆盖**。
+   这是一个新的、独立的线索。
+
+**⇒ 下一步**：`forward_rows` 内部在 `finish` 之外还有别的耗时
+（例如 `set_tokens`、行/槽位准备、或多次 batch 提交之间的间隙）。
+应在 `forward_rows` 内部按阶段打点，而不是在它外面。
