@@ -7689,3 +7689,45 @@ MPP 通路本身在多行上可能也是线性放大的。**这是下一轮的�
 先量出这 132.2 − 38.4 ≈ 94 ms 里各占多少（attention / GDN / KV / norm），
 再决定从哪一个下手。注意 GDN 每层每 slot 的 state 3.1 MB + 卷积窗口 21 MB，
 48 层就是 1.16 GB/pass —— 4 个 slot 就是 4.6 GB/pass，这一项最可疑。
+
+### 72co. dispatch 数在 1 slot 和 4 slot 下**完全相同**（第 153 轮）
+
+上一轮把缺口定位到「每序列工作不跨 slot 摊薄」。这一轮用 `QW_DISPATCH_HIST`
+数了 dispatch，结论要再修正一次：
+
+```
+n=1: 1186 dispatches      n=4: 1186 dispatches
+  q4_mpp_mm                497       497      (42%)
+  rmsnorm                  129       129
+  ewise_add                128       128
+  rmsnorm_nw_tile           96        96
+  silu_mul                  64        64
+  conv1d_silu_ring_tile     48        48
+  gdn_step_seq4             48        48
+  rmsnorm_gated             48        48
+  rmsnorm_s_rows            32        32
+  rope_partial_rows         32        32
+  kv_append_rows            16        16
+  attn_scores_softmax_rows  16        16
+  attn_out_rows             16        16
+  gate_mul_rows             16        16
+```
+
+**每个 kernel 的 dispatch 数比例都是 1.00。**
+所以调度层**已经**把 4 个 slot 合进了同一次 dispatch —— 不是「每 slot 各发一次」。
+
+**⇒ 问题在 kernel 内部。** 1 行 pass 38.4 ms、4 行 pass 132.2 ms，
+差 93.8 ms / 3 行 = **每多一行 31 ms**。而 GEMM 那 497 个 dispatch 是平的，
+所以这 31 ms 全在非 GEMM 的 kernel 里（GDN、卷积环、attention、norm）。
+
+如果非 GEMM 是「每行线性」，1 行时它只占约 8 ms（38.4 − 30 GEMM），
+4 行应该是 30 + 32 = 62 ms，实测 132 ms。**每行的代价比线性还高 4 倍。**
+
+**最可能的解释：这 4 行来自 4 个不同的 slot，于是 GDN 的 state/卷积窗口、
+KV cache 的访问地址在行与行之间是**分散**的，合并访存被打散、cache 命中率塌掉。**
+（GDN 每层每 slot 的 state 3.1 MB + 卷积窗口 21 MB，48 层 1.16 GB/pass；
+4 个 slot 的地址互不相邻。）
+
+**下一轮**：拿一个非 GEMM kernel（先 `gdn_step_seq4` 或 `conv1d_silu_ring_tile`）
+单独做 rows=1 vs rows=4（4 个不同 slot 基址）的微基准，确认是不是访存分散，
+再决定是改布局（把 state 按 [row][layer] 交错）还是改 kernel 的遍历顺序。
