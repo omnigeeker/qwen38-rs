@@ -8956,3 +8956,41 @@ fn emit(tok: &Tokenizer, a: &mut Active, flush: bool) {
 这是纯诊断，但需要更多轮次。
 
 **诊断代码未做改动，工作树干净，交付树仍是第 180 轮验证过的状态。**
+
+### 72dx. 空隙定位：再排除 emit 循环，成因仍未确证（第 190 轮）
+
+在 post-pass 区块内打点，量 `row_slot` 的 emit 循环：
+
+```
+step time: 349 rows, took 771.5 ms, ended at  898 ms
+post-pass: emit loop (349 rows) took 0.03 ms
+step time:   4 rows, took  39.3 ms, ended at 1199 ms
+post-pass: emit loop   (4 rows) took 0.02 ms
+空隙 = 1160 - 898 = 262 ms
+```
+
+**⇒ emit 循环 349 行只要 0.03 ms。不是它。**
+
+**该区块的其余部分也排除：**
+
+* `if boundary && snapshot { ... }` —— **349 行的 pass 并没有结束 prompt（349/353），
+  所以 `boundary` 为假，整块跳过**；
+* `row_slot[idx + 1..].contains(&slot)` 的 O(n²) 扫描 —— 上一轮估算约 0.3 ms，
+  量级不够（而且它就在 emit 循环的**判断条件**里，emit 循环整体 0.03 ms，
+  **直接证明它也不是**）。
+
+**⇒ 累计已排除（8 项）**：
+`logits_row`+argmax（0.5 ms）、逐行采样（已修）、prefix 快照（已禁用）、
+tail pipeline 编译（A/B 证伪）、按 pass 的固定开销（分块实验证伪）、
+GPU 排空（`finish(true)` 证伪）、pass 内部（`fwd split` 对账）、
+**emit 循环 + O(n²) 扫描（本轮，0.03 ms）**。
+
+**⇒ 成因仍未确证。**
+
+**诚实的阶段结论**：这条线已经投入约 15 轮，把「357 ms 神秘空隙」
+收敛为「**0.85-1 ms × prompt 行数，纯 CPU，在 post-pass 区块与循环头之间**」，
+排除了 8 个候选，**但没有定位**。
+
+**成本收益判断**：冷 TTFT 本身噪声 ±19%，而空隙约占 25%，**信噪比差**；
+每次二分需要重建 + 启服务约 2-3 分钟。**继续投入的期望收益已经低于成本。**
+**建议把这条线记为「已充分刻画、未定位」，不再作为主攻方向。**
