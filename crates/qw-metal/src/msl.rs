@@ -1289,8 +1289,8 @@ using namespace mpp::tensor_ops::__tensor_ops_detail;
 // sweep costs one process start instead of one rebuild - the pipeline cache is
 // keyed on the source text, so each tile is its own pipeline.
 #define Q4_MPP_KT  64
-#define Q4_MPP_NRA 64
-#define Q4_MPP_NRB 128
+#define Q4_MPP_NRA 32
+#define Q4_MPP_NRB 256
 #define Q4_MPP_NT  128
 #define Q4_MPP_RELAXED 1
 
@@ -1659,8 +1659,8 @@ fn mpp_tiles_uncached() -> [i32; 4] {
     }
     [
         one("QW_MPP_KT", 64),
-        one("QW_MPP_NRA", 64),
-        one("QW_MPP_NRB", 128),
+        one("QW_MPP_NRA", 32),
+        one("QW_MPP_NRB", 256),
         one("QW_MPP_NT", 128),
     ]
 }
