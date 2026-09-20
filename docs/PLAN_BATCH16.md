@@ -8331,3 +8331,44 @@ encoder split（免费）、CPU/派发（免费）、occupancy/合并访存等�
 最可能的是：threadgroup 数从 `out_f` 降到 `out_f/4`，对小 `out_f` 的 linear
 （GDN 的 dk/dv=128 等）并行度只剩 32 个 threadgroup，GPU 喂不饱。
 验证方法：按 `out_f` 分桶统计 4 行 pass 的时间，看是否小 `out_f` 的线性层特别慢。
+
+### 72dg. **找到带宽效率 472 GB/s 的多行 kernel：`K_Q4_GEMV_K3_U4`**（第 171 轮）
+
+`bench --rows` 的映射（bench.rs:332-349）：
+
+| `--rows` | kernel | 说明 |
+|---|---|---|
+| 0 | round-3 核 | 现状基线 |
+| 1 | `K_Q4_GEMV_K3` | k=3 |
+| **2** | **`K_Q4_GEMV_K3_U4`** | **k=3，16 字节权重加载** |
+| 3 | `K_Q4_GEMV_K3_R2` | k=3，每 threadgroup 两行输出（x 读一次用两次） |
+| 4 | `K_Q4_GEMV_K3_R4` | k=3，每 threadgroup 四行输出 |
+
+**tokens=3（对 K3 家族合法）的实测：**
+
+| rows | 每次扫描 | 带宽 |
+|---|---|---|
+| 0 | 61.3 ms | 235 GB/s |
+| 1 | 34.7 ms | 416 GB/s |
+| **2** | **30.5 ms** | **472 GB/s** |
+| 3 | 37.5 ms | 385 GB/s |
+| 4 | 40.0 ms | 360 GB/s |
+
+**⇒ `K_Q4_GEMV_K3_U4` 是 30.5 ms = 472 GB/s，正好在带宽下限上，
+比 round-3 核（61.3 ms / 235 GB/s）快 2 倍。**
+
+**而且它在 1 token 时也不差（32.0 ms vs round-3 的 32.7 ms）。**
+
+**对比现状**：真实 4 行 pass 是 50.8 ms = 284 GB/s，用的是 `K4_U4HX`
+（`match TILE { 4 => K4_U4HX }`，runner.rs:700）。**bench 里没有直接测 `K4_U4HX` 的档位**，
+所以「真实路径的核」和「bench 里最快的核」目前不是同一个。
+
+**若能把多行路径换到 `K3_U4` 这一档的效率：**
+4 行 pass 从 50.8 ms → 约 31 ms，**聚合 78.8 → 约 129 tok/s（Splash 的 76%）**，
+单流同步受益。
+
+**注意陷阱**：`K3_*` 是 **k=3** 的核，累加器按 NK 展开。
+bench 自己对别的档位就有警告（「--rows 5：累加器按 NK 展开，所以 --tokens 必须是 6」）。
+所以 tokens=4 配 `K3_U4` 的 30.5 ms **很可能只算了 3 行**，不能直接用。
+**下一轮第一件事**：确认 `K3_U4` 在 `rows=4` 时到底算几行（读它的 MSL，
+或让 runner 用它跑一次 4 行 pass 再和 `K4_U4HX` 比数值与时间）。
