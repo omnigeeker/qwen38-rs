@@ -9514,3 +9514,39 @@ crates/qw-server/src/engine.rs:1102:   // ... 只是注释
 
 **⇒ 这一轮解开了直方图与代码路径的矛盾：不是工具错了，是我把行数读错了。**
 **未做改动，未验证。**
+
+### 72em. **直方图的 `copy_off` 无任何可达派发点——该计数不可信，此前的归因作废**（第 205 轮）
+
+§72el 我把 96 次 `copy_off` 归给 `copy_seq`。**本轮把调用链彻底查完，这个归因也不成立。**
+
+**全仓库搜索（排除 target/）：**
+
+```
+$ grep -rn "save_prefix|load_prefix|enable_debug" --include=*.rs .
+./crates/qw-model/src/runner.rs:826:    pub fn enable_debug(...)      <- 只有定义
+./crates/qw-model/src/runner.rs:999:    pub fn save_prefix(...)       <- 只有定义
+./crates/qw-model/src/runner.rs:1010:   pub fn load_prefix(...)       <- 只有定义
+./crates/qw-cli/src/gen.rs:115:     model.enable_debug();          <- 只有 CLI 的 gen 会调
+./crates/qw-server/src/engine.rs:1075/1102            <- 只是注释
+```
+
+**⇒ `save_prefix` / `load_prefix` **在整个仓库里没有任何调用点**；
+`enable_debug` 只有 CLI 的 `gen.rs` 会调，**服务端不会调**。**
+
+**⇒ 而 `copy_seq` 只被 `save_prefix`/`load_prefix` 调用。**
+**⇒ 两个 `kernels.copy` 的常规路径（1599、2355）都在 `if let Some(dbg)` 下，
+而 `debug` 在服务端恒为 `None`（runner.rs:766 初始化为 `None`，只有
+`enable_debug()` 会置为 `Some`）。**
+
+**⇒ 所以：服务端一个 `copy_off` 都不该派发。但直方图显示 4 行 pass 有 96 次。**
+
+**⇒ 结论：这个计数与代码不一致，`QW_DISPATCH_HIST` 的每内核计数**不可信**。**
+**可能原因：`dispatches()` 统计的批次范围与「一个 pass」不一致
+（例如跨 pass 累积、或把管道里所有批次都算进来）。**
+
+**⇒ 因此 §72ei 和 §72el 基于该直方图的归因（1409 个非 GEMV 内核、11.6 µs/内核、
+copy_off 每 pass 96 次）**全部作废**。**
+**⇒ 聚合方向的「融合小内核」这条路，其数据基础被证明不成立，需要换一种测量方式
+（例如按内核类型分别计时，而不是数派发次数）。**
+
+**未做改动，未验证。**
