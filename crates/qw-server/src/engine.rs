@@ -1200,6 +1200,17 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                             // it; keep it when it is this path's own fresh prediction.
                             let skip = if a.feed_emitted { 1 } else { 0 };
                             let out_len = out.len();
+                            // `out_len` is the tokens this step settled: the one
+                            // already at `pos` plus however many drafts the verify
+                            // accepted.  TILE=4 means at most TILE of them, so the
+                            // acceptance rate is out_len - 1 of TILE - 1.
+                            if std::env::var_os("QW_SPEC_DEBUG").is_some() {
+                                eprintln!(
+                                    "spec accept: settled {} of {} possible drafts",
+                                    out_len.saturating_sub(1),
+                                    qw_model::runner::TILE - 1
+                                );
+                            }
                             let old_pos = a.pos;
                             for t in out.into_iter().skip(skip) {
                                 // Mirror the plain path: an end-of-sequence token is
