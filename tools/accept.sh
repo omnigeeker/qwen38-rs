@@ -376,6 +376,65 @@ else
   no "chunk 4 and chunk 32 disagree (${W4:0:40} vs ${W32:0:40})"
 fi
 
+# A four-slot DECODE pass takes a different path from a single-slot one: the
+# rows come from four different sequences, so the convolution ring is updated
+# per row rather than by the fused single-sequence tile kernel.  A change there
+# can corrupt the ring while every other gate still passes - measured, a build
+# whose batch decode was wrong still produced a byte-identical fastchk (n=1), a
+# clean gemm-check and a full 19/19 accept, yet generated 129 tokens instead of
+# 512.  So this gate asserts the invariant that failure broke: running the SAME
+# prompt four times concurrently must give byte-identical text to running it
+# alone, and the lone run is taken first so it cannot be contaminated.
+CONC_PROMPT="Write a short paragraph about why the sky appears blue during the day."
+ask_conc() {
+  curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'content-type: application/json' \
+    -d "{\"model\":\"qwen3.8-27b-fp4\",\"temperature\":0,\"max_tokens\":96,\"messages\":[{\"role\":\"user\",\"content\":\"$CONC_PROMPT\"}]}" \
+    | python3 -c 'import json,sys
+try: print(json.load(sys.stdin)["choices"][0]["message"]["content"])
+except Exception: print("")'
+}
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_conc.log" 2>&1 &
+serve_up
+ALONE=$(ask_conc)
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_conc2.log" 2>&1 &
+serve_up
+CONC=$(python3 - "$PORT" "$CONC_PROMPT" <<'PYCONC'
+import json, sys, threading, urllib.request
+port, prompt = sys.argv[1], sys.argv[2]
+out = [None] * 4
+def one(i):
+    body = json.dumps({"model": "qwen3.8-27b-fp4", "temperature": 0,
+                       "max_tokens": 96,
+                       "messages": [{"role": "user", "content": prompt}]}).encode()
+    try:
+        r = urllib.request.urlopen(
+            urllib.request.Request("http://127.0.0.1:%s/v1/chat/completions" % port, body,
+                                   {"Content-Type": "application/json"}), timeout=600)
+        out[i] = json.load(r)["choices"][0]["message"]["content"]
+    except Exception as e:
+        out[i] = "error:%s" % e
+ts = [threading.Thread(target=one, args=(i,)) for i in range(4)]
+for t in ts: t.start()
+for t in ts: t.join()
+print(json.dumps(out))
+PYCONC
+)
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+CONC_OK=$(python3 - "$ALONE" "$CONC" <<'PYCHK'
+import json, sys
+alone, conc = sys.argv[1], json.loads(sys.argv[2])
+bad = [i for i, c in enumerate(conc) if c != alone]
+print("ok" if (alone and not bad) else "bad:%s" % bad)
+PYCHK
+)
+if [ "$CONC_OK" = "ok" ]; then
+  ok "four concurrent identical prompts match the single-request answer exactly"
+else
+  no "batch decode changes the answer ($CONC_OK)"
+fi
+
 # ---------------------------------------------------------------- verdict
 head1 "verdict"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
