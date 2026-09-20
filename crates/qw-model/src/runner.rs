@@ -288,8 +288,12 @@ impl Mtp {
             // threaded into Mtp::load.
             k_cache: dev.buffer(nkv * max_t * hd * 2),
             v_cache: dev.buffer(nkv * max_t * hd * 2),
-            hid: dev.buffer(h * 2),
-            cat: dev.buffer(2 * h * 2),
+            // `hid` and `cat` are one row wide in the single-row `mtp_step_at`
+            // path, but `mtp_warm_rows` runs the same layer for a whole prefill
+            // pass at once, so they are sized for the widest pass.  Row 0 is the
+            // only row the single-row path touches, so it is unaffected.
+            hid: dev.buffer(h * 2 * BATCH_MAX),
+            cat: dev.buffer(2 * h * 2 * BATCH_MAX),
         })
     }
 }
@@ -2791,6 +2795,335 @@ impl Qwen38 {
         }
         let v: Vec<f16> = scratch.logits.to_vec(0, vocab);
         Ok(v.iter().map(|x| x.to_f32()).collect())
+    }
+
+    /// Advance the draft head's cache over a whole prefill pass in ONE command
+    /// buffer.
+    ///
+    /// `mtp_step_at` builds its own command buffer and blocks on the GPU every
+    /// call, and the engine calls it once per prefill row.  A 581-token prompt
+    /// therefore re-read the head's 228 MB of weights 581 times, in 581 separately
+    /// submitted and waited batches.  Measured at 496 ms of a ~1.6 s cold
+    /// time-to-first-token - and it was invisible in the per-pass timer because it
+    /// lands in the gap between two passes.  `QW_SPEC=0`, which skips the warm,
+    /// removes that gap entirely; that is how it was located.
+    ///
+    /// This is the same layer `forward_rows` runs for a full-attention block, so
+    /// it uses the same batched kernels and reads each weight once for the whole
+    /// pass.  `items` is `(hrow, next_token, pos, seq)` in row order and must be
+    /// ONE sequence at consecutive positions: `attn_scores_rows` turns the causal
+    /// mask into a loop bound derived from `pos0 + row`, which is only the same
+    /// computation for a contiguous pass.  The engine checks that before calling.
+    pub fn mtp_warm_rows(&mut self, items: &[(usize, u32, usize, usize)]) -> Result<()> {
+        let n = items.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let h = self.cfg.hidden_size;
+        let nh = self.cfg.num_attention_heads;
+        let nkv = self.cfg.num_key_value_heads;
+        let hd = self.cfg.head_dim;
+        let key_dim = nkv * hd;
+        let inter = self.cfg.intermediate_size;
+        let rot_dim = self.cfg.rotary_dim() as i32;
+        let eps = self.cfg.rms_norm_eps;
+        let scale = 1.0f32 / (hd as f32).sqrt();
+        let theta = self.cfg.rope_theta() as f32;
+        let max_t = self.max_t as i32;
+        let p0 = items[0].2 as i32;
+        let koff = items[0].3 * self.mtp_cache_stride();
+        let swap = std::env::var("QW_MTP_SWAP").is_ok();
+        // The head consumes the decoder's *post*-final-norm hidden state (what
+        // vLLM hands its MTP module); QW_MTP_PRENORM=1 selects the pre-norm
+        // residual instead.
+        let postnorm = std::env::var("QW_MTP_PRENORM").is_err();
+        let skip = std::env::var("QW_MTP_SKIP").unwrap_or_default();
+        let (e_off, h_off) = if swap { (h, 0usize) } else { (0usize, h) };
+
+        // Dequantise every row's embedding on the CPU first - `embed_row` reads
+        // the quantised table directly and never touches the GPU - so the whole
+        // pass needs a single upload.
+        let mut emb: Vec<f16> = Vec::with_capacity(n * h);
+        for &(_, tok, _, _) in items {
+            emb.extend_from_slice(&self.embed_row(tok)?);
+        }
+
+        let Self {
+            dev,
+            scratch,
+            kernels,
+            mtp,
+            ..
+        } = self;
+        let m = mtp.as_mut().context("MTP head not loaded")?;
+        let eb = dev.buffer_from_bytes(&emb);
+        let mut b = CommandBatch::new(dev);
+
+        // cat = [ norm(embed) | norm(hidden) ].  `cat`'s row pitch is 2h while
+        // the norm kernel indexes a single row, so these are per row - but they
+        // are tiny beside the eight linears below and no barrier is needed
+        // between rows, since each touches only its own slice.
+        for r in 0..n {
+            copy_dispatch(
+                &mut b,
+                &kernels.copy,
+                &eb,
+                r * h,
+                &m.cat,
+                r * 2 * h + e_off,
+                h,
+            );
+        }
+        b.barrier();
+        for r in 0..n {
+            b.encode(
+                Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                    .buf_offset(0, &m.cat, (r * 2 * h + e_off) * 2)
+                    .buf(1, &m.pre_norm_e)
+                    .buf_offset(2, &m.cat, (r * 2 * h + e_off) * 2)
+                    .scalar(3, h as i32)
+                    .scalar(4, eps),
+            );
+            b.encode(
+                Dispatch::new(&kernels.rmsnorm, (NT, 1, 1), (NT, 1, 1))
+                    .buf_offset(
+                        0,
+                        if postnorm { &scratch.h } else { &scratch.x },
+                        r * h * 2,
+                    )
+                    .buf(1, &m.pre_norm_h)
+                    .buf_offset(2, &m.cat, (r * 2 * h + h_off) * 2)
+                    .scalar(3, h as i32)
+                    .scalar(4, eps),
+            );
+        }
+        b.barrier();
+        m.fc.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &m.cat,
+            &m.hid,
+            n,
+        );
+        b.barrier();
+        // one full-attention decoder layer on the MTP residual stream
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm, (n * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &m.hid)
+                .buf(1, &m.input_norm)
+                .buf(2, &scratch.h)
+                .scalar(3, h as i32)
+                .scalar(4, eps),
+        );
+        b.barrier();
+        m.q.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &scratch.h,
+            &scratch.qg,
+            n,
+        );
+        b.barrier();
+        m.k.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &scratch.h,
+            &scratch.pk,
+            n,
+        );
+        m.v.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &scratch.h,
+            &scratch.pv,
+            n,
+        );
+        b.barrier();
+        // q_norm: heads live at stride 2*hd inside the q_proj output (each head
+        // emits [query | gate]); the scalar strides are bytes, as in the
+        // decoder's own batched block.
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm_ws_rows, (nh * n * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.qg)
+                .buf(1, &m.q_norm)
+                .buf(2, &scratch.q)
+                .scalar(3, hd as i32)
+                .scalar(4, (2 * hd * 2) as i32)
+                .scalar(5, eps)
+                .scalar(6, 1.0f32)
+                .scalar(7, 1)
+                .scalar(8, nh as i32)
+                .scalar(9, (nh * hd * 4) as i32)
+                .scalar(10, (nh * hd * 2) as i32),
+        );
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm_ws_rows, (nkv * n * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.pk)
+                .buf(1, &m.k_norm)
+                .buf(2, &scratch.k)
+                .scalar(3, hd as i32)
+                .scalar(4, (hd * 2) as i32)
+                .scalar(5, eps)
+                .scalar(6, 1.0f32)
+                .scalar(7, 1)
+                .scalar(8, nkv as i32)
+                .scalar(9, (nkv * hd * 2) as i32)
+                .scalar(10, (key_dim * 2) as i32),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.rope_rows, (nh * n * 64, 1, 1), (64, 1, 1))
+                .buf(0, &scratch.q)
+                .buf(1, &scratch.q)
+                .scalar(2, nh as i32)
+                .scalar(3, hd as i32)
+                .scalar(4, rot_dim)
+                .scalar(5, theta)
+                .scalar(6, p0)
+                .scalar(7, (nh * hd * 2) as i32),
+        );
+        b.encode(
+            Dispatch::new(&kernels.rope_rows, (nkv * n * 64, 1, 1), (64, 1, 1))
+                .buf(0, &scratch.k)
+                .buf(1, &scratch.k)
+                .scalar(2, nkv as i32)
+                .scalar(3, hd as i32)
+                .scalar(4, rot_dim)
+                .scalar(5, theta)
+                .scalar(6, p0)
+                .scalar(7, (key_dim * 2) as i32),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.kv_append_rows, (nkv * hd * n, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.k)
+                .buf(1, &scratch.pv)
+                .buf_offset(2, &m.k_cache, koff)
+                .buf_offset(3, &m.v_cache, koff)
+                .scalar(4, p0)
+                .scalar(5, max_t)
+                .scalar(6, nkv as i32)
+                .scalar(7, hd as i32)
+                .scalar(8, key_dim as i32)
+                .scalar(9, (nkv * hd) as i32),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.attn_scores_rows, (n * nh * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.q)
+                .buf_offset(1, &m.k_cache, koff)
+                .buf(2, &scratch.scores)
+                .scalar(3, max_t)
+                .scalar(4, nh as i32)
+                .scalar(5, nkv as i32)
+                .scalar(6, hd as i32)
+                .scalar(7, scale)
+                .scalar(8, p0),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.attn_out_rows, (n * nh * hd, 1, 1), (hd, 1, 1))
+                .buf(0, &scratch.scores)
+                .buf_offset(1, &m.v_cache, koff)
+                .buf(2, &scratch.attn_out)
+                .scalar(3, max_t)
+                .scalar(4, nh as i32)
+                .scalar(5, nkv as i32)
+                .scalar(6, hd as i32)
+                .scalar(7, p0),
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.gate_mul_rows, (n * (nh * hd), 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.attn_out)
+                .buf(1, &scratch.qg)
+                .buf(2, &scratch.attn_gated)
+                .scalar(3, hd as i32)
+                .scalar(4, (nh * hd) as i32),
+        );
+        b.barrier();
+        m.o.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &scratch.attn_gated,
+            &scratch.proj_out,
+            n,
+        );
+        b.barrier();
+        if !skip.contains("attn") {
+            b.encode(
+                Dispatch::new(&kernels.ewise_add, (n * h, 1, 1), (NT, 1, 1))
+                    .buf(0, &m.hid)
+                    .buf(1, &scratch.proj_out)
+                    .buf(2, &m.hid),
+            );
+            b.barrier();
+        }
+        b.encode(
+            Dispatch::new(&kernels.rmsnorm, (n * NT, 1, 1), (NT, 1, 1))
+                .buf(0, &m.hid)
+                .buf(1, &m.post_norm)
+                .buf(2, &scratch.h)
+                .scalar(3, h as i32)
+                .scalar(4, eps),
+        );
+        b.barrier();
+        m.gate.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &scratch.h,
+            &scratch.mlp_gate,
+            n,
+        );
+        m.up.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &scratch.h,
+            &scratch.mlp_up,
+            n,
+        );
+        b.barrier();
+        b.encode(
+            Dispatch::new(&kernels.silu_mul, (n * inter, 1, 1), (NT, 1, 1))
+                .buf(0, &scratch.mlp_gate)
+                .buf(1, &scratch.mlp_up)
+                .buf(2, &scratch.mlp_act),
+        );
+        b.barrier();
+        m.down.encode_rows(
+            &mut b,
+            &kernels.q4_gemv,
+            &kernels.q4_gemv_tile,
+            &kernels.q4_gemv_b16,
+            &scratch.mlp_act,
+            &scratch.proj_out,
+            n,
+        );
+        b.barrier();
+        if !skip.contains("mlp") {
+            b.encode(
+                Dispatch::new(&kernels.ewise_add, (n * h, 1, 1), (NT, 1, 1))
+                    .buf(0, &m.hid)
+                    .buf(1, &scratch.proj_out)
+                    .buf(2, &m.hid),
+            );
+        }
+        b.finish(true);
+        Ok(())
     }
 
     /// Temporary diagnostic: the first values of every MTP norm.

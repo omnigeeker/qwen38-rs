@@ -1273,7 +1273,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         } else {
             0
         };
-        let mut failed = match model
+        let failed = match model
             .set_tokens(&toks)
             .and_then(|_| model.forward_rows(&rows))
         {
@@ -1290,6 +1290,42 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     / 1_000_000
             );
         }
+        // Batched draft-head warm.  The per-row `mtp_step_at` in the loop below
+        // gives the head its own command buffer and a blocking GPU wait for every
+        // row of the pass - 581 of them for a 581-token prompt, re-reading the
+        // head's 228 MB of weights each time.  Measured at 496 ms of a ~1.6 s cold
+        // time-to-first-token, and it never appeared in a pass timer because it
+        // lands in the gap between two passes.  One contiguous pass can run the
+        // same layer once instead; anything else keeps the per-row path, which
+        // `attn_scores_rows` requires anyway.
+        let mut warmed = false;
+        if spec_warm && failed.is_none() && !rows.is_empty() {
+            let one_seq = row_slot.iter().all(|&s| s == row_slot[0]);
+            let contiguous =
+                one_seq && rows.iter().enumerate().all(|(r, &(_, p))| p == rows[0].1 + r);
+            if contiguous {
+                let mut items: Vec<(usize, u32, usize, usize)> = Vec::with_capacity(rows.len());
+                for (i, &slot) in row_slot.iter().enumerate() {
+                    let Some(a) = slots[slot].as_ref() else {
+                        continue;
+                    };
+                    let nxt = if i + 1 < row_slot.len() && row_slot[i + 1] == slot {
+                        Some(toks[i + 1])
+                    } else {
+                        a.ids.get(a.pf).copied()
+                    };
+                    if let Some(t) = nxt {
+                        items.push((i, t, rows[i].1 + 1, slot));
+                    }
+                }
+                if !items.is_empty() {
+                    if let Err(e) = model.mtp_warm_rows(&items) {
+                        tracing::warn!("batched draft-head warm failed: {e}");
+                    }
+                    warmed = true;
+                }
+            }
+        }
         for (i, &slot) in row_slot.iter().enumerate() {
             let Some(a) = slots[slot].as_mut() else {
                 continue;
@@ -1304,7 +1340,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             // zero are untouched and increasing order is safe.  `gen` warms positions
             // 0..len-2 with the token that follows, never the last one - there is no
             // token after the prompt yet - and this mirrors that exactly.
-            if spec_warm {
+            if spec_warm && !warmed {
                 let p = rows[i].1;
                 let nxt = if i + 1 < row_slot.len() && row_slot[i + 1] == slot {
                     Some(toks[i + 1])

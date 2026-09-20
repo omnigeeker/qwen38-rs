@@ -10055,3 +10055,91 @@ tap 在 `pos >= gp0` 时从 staging buffer 读（是本 pass 的另一行），�
   上限 ~129–134 tok/s，实测已达 73.5（55%）。
 - 剩下的唯一实质杠杆是 **k4 内核的带宽：362 GB/s vs k1 的 464 GB/s（差 28%）**。
   补上它 ⇒ 4 行 pass 45.8 ms ⇒ 聚合 **87.4 tok/s**。这是下一轮该做的、也是唯一还剩的。
+
+---
+
+## §72ew 冷 TTFT 的最大一块找到了：MTP 草稿头预热（−465 ms，1.331×）
+
+### 症状：prefill pass 和下一个 pass 之间有 ~495 ms 的空隙
+
+带 `QW_STEP_TIME=1` 的服务器日志，一个 581 token 的 prompt（预热过的服务器）：
+
+```
+step time: 581 rows, started at 3 ms,    took 1.057s, ended at 1060 ms
+step time: 4 rows,   started at 1553 ms, took 45.7ms, ended at 1599 ms
+```
+
+prefill pass 在 1060 ms 结束，**下一个 pass 到 1553 ms 才开始**。TTFT 实测 1604 ms
+= prefill 1060 + **空隙 493** + decode 45。冷启动那一轮同样：1298 → 1801，空隙 **503 ms**。
+
+即 **~30% 的冷 TTFT 花在两个 pass 之间的空隙里**，而它对 `step time` 完全不可见
+（计时器只包住 `forward_rows`）。
+
+### 定位：`QW_SPEC=0` 让空隙归零
+
+| 环境 | prefill 结束 | 下一个 pass 开始 | 空隙 | 冷 TTFT |
+|---|---|---|---|---|
+| 默认（spec 开） | 1060 / 1298 ms | 1553 / 1801 ms | **493 / 503 ms** | 1604–1853 ms |
+| `QW_PREFIX_SNAPSHOT=0` | 1061 ms | 1557 ms | 496 ms（**没变**） | 1607–1855 ms |
+| `QW_SPEC=0` | 1292 ms | **1292 ms** | **0 ms** | 1097–1340 ms |
+
+先排除了 prefix 快照（`QW_PREFIX_SNAPSHOT=0` 空隙不变）。`QW_SPEC=0` 把
+`spec_warm` 关掉后空隙**完全消失**。
+
+### 根因：逐行的草稿头预热
+
+`engine.rs` 在 pass 结束后的逐行循环里对**每一行**调用 `model.mtp_step_at(...)`。
+而 `mtp_step_at` 每次都 `CommandBatch::new(dev)` 并 `b.finish(true)` ——
+**自带命令缓冲 + 阻塞等待**。581 行就是 581 次提交/等待，每行重读草稿头 228 MB 的权重：
+
+- 581 行 × 228 MB = **132 GB**，按 481 GB/s 下限 ~275 ms，实测 **496 ms**（每行 0.854 ms）
+- 每行 ~21 次派发、~14 个 barrier ⇒ 12201 次派发、8134 次编码器切分、581 个命令缓冲
+
+**注意：之前文档把它记成「post-pass 块里 0.75–0.85 ms × 行数，纯 CPU」。这是错的** ——
+它是 GPU 工作，只是落在两个 pass 之间，所以既不在 pass 计时器里，也不是 CPU。
+
+### 修复：`mtp_warm_rows` —— 同一个层，整 pass 跑一次
+
+草稿头就是 `fc` + 一个 full-attention 解码层，**和 `forward_rows` 里的 full-attention
+块结构完全相同**，所以能直接用同一批 `_rows` 内核：`rmsnorm_ws_rows`、`rope_rows`、
+`kv_append_rows`、`attn_scores_rows`、`attn_out_rows`、`gate_mul_rows`，线性层走
+`encode_rows`（rows≥32 走 MPP GEMM，权重**只读一次**）。`rmsnorm`/`silu_mul`/`ewise_add`
+只要把 grid 乘以 n 就自动批量（解码器自己的批量 MLP 就是这么用的）。
+
+前提是**单序列、位置连续**——`attn_scores_rows` 把因果掩码化成 `pos0 + row` 的循环上界，
+只有连续 pass 才是同一个计算。engine 端检查 `contiguous`，不满足就走回逐行老路。
+`Mtp.hid`/`Mtp.cat` 从 1 行扩到 `BATCH_MAX` 行（单行路径只用第 0 行，不受影响）。
+
+### 结果
+
+空隙 **493–503 ms → 36–38 ms**。
+
+交错配对的冷 TTFT A/B（每轮各自启一个新服务器，取第一个请求；两个 build 交替先跑，
+避免降频总是惩罚后跑的那个；每轮换新 prompt 避免前缀缓存）：
+
+| build | min | median | 四次 |
+|---|---|---|---|
+| 改前 `q_fused` | 1859.5 | **1870.7 ms** | 1872, 1859, 1869, 1896 |
+| 改后 `q_mtpwarm` | 1394.8 | **1405.2 ms** | 1413, 1401, 1395, 1410 |
+
+**1.331×，−465 ms。四次里改后的每一次都赢改前的每一次**，组内离散 ±1%。
+对 llama.cpp 的 863 ms 从 2.17× 收到 **1.63×**。
+
+### 正确性
+
+- `tools/accept.sh` **20 passed / 0 failed ACCEPTED**，其中
+  `spec==plain (server): 218 chars identical`、`server==cli`、
+  `four concurrent identical prompts match`、`position pin`、`chunk 4 and chunk 32` 全过。
+- `gemm-check` PASSED（worst rel 3.347e-4）；`batch-check --slots 4/16` PASSED。
+- **草稿接受率不变**（`QW_SPEC_DEBUG=1`，同一 prompt、temperature 0、256 token）：
+  改前 163/279 = **58.4%**，改后 163/279 = **58.4%**，步数都是 93。
+  这是比 tok/s 更可信的指标——它是比值，不受降频影响（本机 tok/s A/B 被降频
+  搅成 14–20 tok/s 的噪声，完全不可用）。
+
+### 下一步
+
+冷 TTFT 剩下的大头是 **prefill 本身**：`gemm-bench --tokens 602` = **843 ms / 36.6 TFLOPS**
+（497 个线性层），而 `prefill-bench --tokens 602` = 1062 ms —— **GEMM 占 79%**。
+602 token 的算力是 30.85 TFLOP，权重只需 30 ms 读一遍 ⇒ **prefill 是算力受限，不是带宽受限**。
+llama.cpp 的 863 ms 折合 ≥35.7 TFLOPS（含全部开销），所以它的 GEMM 至少和我们一样快：
+**剩下的差距在 prefill GEMM 的 MMA 利用率，不在调度。**
