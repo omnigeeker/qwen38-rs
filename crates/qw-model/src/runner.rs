@@ -185,6 +185,14 @@ struct Scratch {
     scores: GpuBuffer,
     /// `[TILE][conv_dim]` raw pre-conv rows of the pass in flight
     qkv_cur: GpuBuffer,
+    /// Scratch for the keep-warm tick, deliberately NOT `logits`.
+    ///
+    /// The tick used to write eight halves into `logits`, the buffer the sampler
+    /// reads.  Ordering on the engine thread makes that look safe, but any path
+    /// that reads logits without a fresh forward - the spec verify reusing the
+    /// previous round's logits, or a cache-hit restore - would be corrupted by a
+    /// tick landing between two requests.
+    tick: GpuBuffer,
 }
 
 /// The multi-token-prediction head: one `fc` that fuses the embedding of the
@@ -609,6 +617,7 @@ impl Qwen38 {
             logits: dev.buffer(vocab * 2 * tile),
             scores: dev.buffer(nh * max_t * 4 * tile),
             qkv_cur: dev.buffer(conv_dim * 2 * tile),
+            tick: dev.buffer(16),
         };
 
         // MTP weights (bf16 repo) need the +1 norm shift; this export does not.
@@ -957,7 +966,7 @@ impl Qwen38 {
         let k = b.kernel(qw_metal::msl_ops::GDN, qw_metal::msl_ops::K_ZERO_HALF)?;
         b.encode(
             Dispatch::new(&k, (1, 1, 1), (256, 1, 1))
-                .buf(1, &self.scratch.logits)
+                .buf(1, &self.scratch.tick)
                 .scalar(2, 8)
                 .scalar(4, 0),
         );
