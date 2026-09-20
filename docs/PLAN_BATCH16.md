@@ -8026,3 +8026,46 @@ if spec_ok && Some(slot) == spec_slot { ... }
 * 附带：1 行 pass 本身 38.4 ms 也离 30 ms 下限有 28% 的距离。
 
 **这解释了为什么前几轮在 spec 上投入收效有限 —— 瓶颈不在 token 产出效率，在 pass 成本。**
+
+### 72cx. GEMM 路由对 4 行是**5-10 倍倒退**；行摊薄的真相（第 162 轮）
+
+**先量了批处理 pass 的行扩展曲线**（`QW_SPEC=0`，交错两轮，短 prompt）：
+
+| rows | rep1 | rep2 |
+|---|---|---|
+| 1 | 66.8 | **48.6** |
+| 2 | 91.0 | 92.6 |
+| 4 | 95.8 | 111.0 |
+
+**2 行已经要 1.9 倍于 1 行，而 2→4 几乎免费。** 所以代价不是「随行数线性」，
+而是**进入多行路径就多付一笔固定开销**。
+
+**当时的假设**：`linear.rs` 的 `else if rows <= TILE` 分支只调 `encode_tile`
+（`K4_U4HX`），而 MPP/GEMM 路径在 `else`（`rows > TILE`）里 ——
+**所以 rows 2-4 根本够不到 GEMM**（这也解释了为什么 `QW_GEMM_MIN_ROWS=4` 完全没反应：
+对 rows≤4 它是死代码）。于是把门禁改成 `rows <= TILE && rows < gemm_min_rows()`，
+让 rows 2-4 在 `QW_GEMM_MIN_ROWS=2` 时走 GEMM。
+
+**实测（交错，4 行 pass 中位）：**
+
+| 路径 | rep1 | rep2 |
+|---|---|---|
+| tile kernel（默认） | 61.1 | 130.8 |
+| GEMM（`QW_GEMM_MIN_ROWS=2`） | **642.4** | **686.3** |
+
+**GEMM 慢 5-10 倍。假设被证伪，改动已 `git checkout` 还原（工作树干净）。**
+
+原因：MPP 的 tile 是 NRA=32 / NRB=256 / NT=128，为大队列设计；
+4 行时 tensor 单元几乎闲置，而网格仍是 `out_f/32 * 128` × `rows/64`，
+大量线程组做极少工作。**tile kernel 才是 rows 2-4 的正确选择。**
+
+**真相**：`K4_U4HX` 一次读权重就算 4 行（注释明说「fed a single row it still
+computes four」），所以 4 行本该约等于 1 行的权重扫描成本。
+实测 4 行是 1 行的 1.5-2 倍，**多出来的是 4 倍的 MAC**。
+而 1 行 pass 本身 48.6 ms 已经离 30 ms 带宽下限有 1.6 倍 ——
+**它根本不是带宽受限的。**
+
+**⇒ 结论：4 行 pass 无法靠「换路由」压到 1 倍；要么让 kernel 本身更快，
+要么先让 1 行 pass 逼近 30 ms 下限。** 而 kernel 效率方向（occupancy、合并访存、
+指令数、寄存器预取、更大的 M/N tile、KT=32 vs 64、relaxed precision 等）
+在前面的轮次里已经系统性证伪过。**这条路的收益需要新的思路。**
