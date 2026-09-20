@@ -223,7 +223,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             model.forward(ids.len() + i)?;
         }
         model.set_tokens(&toks)?;
-        model.forward2(p)?;
+        model.forward2(p, 0)?;
         for (r, want) in refs.iter().enumerate() {
             let got = model.logits_row(r);
             println!(
@@ -285,7 +285,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             let mut run = |toks: &[u32]| -> Result<(u32, f32, u32, f32)> {
                 model.reset();
                 model.set_tokens(toks)?;
-                model.forward2(0)?;
+                model.forward2(0, 0)?;
                 let r0 = model.logits_row(0);
                 let r1 = model.logits_row(1);
                 Ok((amax(&r0), md(&base, &r0), amax(&r1), md(&ref1, &r1)))
@@ -307,7 +307,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
         model.forward(0)?;
         println!("k2check: dispatches k=1 = {}", model.last_dispatches());
         model.set_tokens(&[t0, t1])?;
-        model.forward2(0)?;
+        model.forward2(0, 0)?;
         println!("k2check: dispatches k=2 = {}", model.last_dispatches());
         // per-pass cost at a fixed position, interleaved so thermal drift hits
         // both variants equally; the minimum is the least polluted sample
@@ -322,7 +322,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
             let t = std::time::Instant::now();
             for _ in 0..10 {
                 model.set_tokens(&[t0, t1])?;
-                model.forward2(0)?;
+                model.forward2(0, 0)?;
             }
             k2 = k2.min(t.elapsed().as_secs_f64() / 10.0);
         }

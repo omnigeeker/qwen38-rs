@@ -998,13 +998,17 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         // 36 of a 64-token answer even though the plain path matched exactly.
         let spec_on = qw_model::runner::spec_enabled();
         let spec_warm = spec_on && model.has_mtp();
-        let spec_ok = spec_on
-            && decoding == 1
-            && prefilling == 0
-            && slots
-                .first()
-                .and_then(|e| e.as_ref())
-                .is_some_and(want_one);
+        // Which slot may speculate: the single decoding slot, whatever its
+        // index.  This used to be `slots.first()`, so only slot 0 could - and
+        // the rest of the path was hardwired to sequence 0 to match.  Now that
+        // `forward2` and `commit_row` take a sequence and the draft head's k/v
+        // caches are bound per sequence, any lone slot qualifies.
+        let spec_slot = if decoding == 1 {
+            slots.iter().position(|e| e.as_ref().is_some_and(want_one))
+        } else {
+            None
+        };
+        let spec_ok = spec_on && prefilling == 0 && spec_slot.is_some();
         let mut rows: Vec<(usize, usize)> = Vec::new();
         let mut toks: Vec<u32> = Vec::new();
         let mut row_slot: Vec<usize> = Vec::new();
@@ -1166,7 +1170,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 if std::env::var_os("QW_POS_DEBUG").is_some() && a.emitted < 3 {
                     eprintln!("pos debug: slot {slot} generation row emitted={} pos={} feed={}", a.emitted, a.pos, a.feed);
                 }
-                if spec_ok && slot == 0 {
+                if spec_ok && Some(slot) == spec_slot {
                     // One speculative step drafts `TILE - 1` tokens and verifies them
                     // in a single `TILE`-row weight sweep, which is where the speed
                     // comes from: the decode pass already reads all 14.4 GB, so
@@ -1287,7 +1291,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     // Warming is a throughput aid, not a correctness one, so a failure
                     // must not take the request down: the next verify simply rejects
                     // the drafts it produced.
-                    if let Err(e) = model.mtp_step_at(i, t, p + 1, false, 0) {
+                    if let Err(e) = model.mtp_step_at(i, t, p + 1, false, slot) {
                         tracing::warn!("draft-head warm failed at row {i}: {e}");
                     }
                 }

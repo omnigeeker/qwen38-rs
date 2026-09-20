@@ -7942,3 +7942,52 @@ let koff = seq * self.mtp_cache_stride();   // = k_cache.len_bytes() / batch
 放宽到「唯一 slot」，让并发/非零 slot 也吃到投机。**
 第 3 步碰的是第 155 轮那个 bug 的同一处代码，必须靠 `spec--plain` 与
 `server==cli` 两条门禁守住。
+
+### 72cv. 第 2、3 步落地，`spec_ok` 放宽到「任意单个 slot」（第 160 轮）
+
+**第 2 步比预想的小得多。** `forward2` 只是一层包装：
+
+```rust
+pub fn forward2(&mut self, pos: usize) -> Result<()> {
+    let rows: Vec<(usize, usize)> = (0..TILE).map(|r| (0, pos + r)).collect();
+    self.forward_rows(&rows)      // <- 全部钉在序列 0
+}
+```
+
+而 `forward_rows` **本来就已经支持每序列偏移**（batch-serving 路径就靠它），
+所以只是 `(0, pos + r)` → `(seq, pos + r)`。
+
+**第 3 步**：`commit_row` 的源偏移是 `row * sh`、**目标偏移恒为 0**（永远写序列 0）。
+快照的写入侧用的是 `rows[0].0 * snap_stride`，而 `snap_stride == TILE * 2 * sh`，
+**两处口径一致地说明 `sh` 是「元素」单位**，于是：
+
+```rust
+(seq * TILE + row) * sh   // 源：[sequence][TILE][state]
+seq * sh                  // 目标：[sequence][state]
+```
+
+**然后放宽门禁**（`engine.rs`）：
+
+```rust
+// 原来是 slots.first() —— 只有 slot 0 能投机，路径其余部分也就硬编码了序列 0。
+let spec_slot = if decoding == 1 {
+    slots.iter().position(|e| e.as_ref().is_some_and(want_one))
+} else { None };
+let spec_ok = spec_on && prefilling == 0 && spec_slot.is_some();
+...
+if spec_ok && Some(slot) == spec_slot { ... }
+```
+
+`spec_warm` 也一并改成用请求自己的 `slot`（原来硬编码 0，
+落在非 0 slot 的请求会把 draft 头的 cache 暖到**别人**的区域里）。
+
+**`accept.sh` 19 passed / 0 failed。**
+
+**必须说清楚的限制**：这一步**不改善并发聚合**。
+`spec_ok` 仍然要求 `decoding == 1` —— 只有一个 slot 在解码。
+所以它解锁的是「单请求落在非 0 slot」这个鲁棒性问题，不是 4 并发的吞吐。
+
+**要让并发吃到投机，需要的是另一种设计**：每个解码 slot 各自出一段 draft，
+一次 verify 同时验证多个序列的 draft 块（真正的 multi-sequence verify）。
+现在 `spec_step` 是「一个序列 draft TILE-1 个、一次 verify TILE 行」的单序列形状，
+和这个目标不是一个量级的改动。**聚合 52 vs Splash 170 的缺口仍在。**

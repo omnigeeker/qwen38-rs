@@ -1168,7 +1168,7 @@ impl Qwen38 {
     /// Make the recurrent state match the longest accepted prefix of a verify
     /// pass: `state` becomes what it was after row `row`
     /// (0-based).  Row `TILE - 1` is already current and needs no copy.
-    pub fn commit_row(&mut self, row: usize) -> Result<()> {
+    pub fn commit_row(&mut self, row: usize, seq: usize) -> Result<()> {
         if row + 1 >= TILE {
             return Ok(());
         }
@@ -1188,14 +1188,21 @@ impl Qwen38 {
                 // diverged from the CLI whenever a draft was accepted (and matched
                 // it exactly under QW_NO_ACCEPT, where no rewind happens): with
                 // batch 1 the value is unchanged, byte for byte.
+                // `sh` is in ELEMENTS: the snapshot writes bind with
+                // `rows[0].0 * snap_stride` and `snap_stride == TILE * 2 * sh`,
+                // so `snap_stride / 2 == TILE * sh` and the two readings agree.
+                // The snapshot is [sequence][TILE][state] and the state is
+                // [sequence][state], so sequence `seq`'s row `row` starts at
+                // (seq * TILE + row) * sh and lands at seq * sh - the previous
+                // code read row * sh and always wrote sequence 0.
                 let sh = g.state.len_bytes() / self.batch / 2;
                 copy_dispatch(
                     &mut b,
                     &self.kernels.copy,
                     &g.snap,
-                    row * sh,
+                    (seq * TILE + row) * sh,
                     &g.state,
-                    0,
+                    seq * sh,
                     sh,
                 );
             }
@@ -1617,8 +1624,8 @@ impl Qwen38 {
     /// row with a `row * ROW_BYTES` buffer offset.  The gated-delta-net branch
     /// stays per-row inside a single loop because its `in_proj_qkv` writes into
     /// the shared four-row convolution window.
-    pub fn forward2(&mut self, pos: usize) -> Result<()> {
-        let rows: Vec<(usize, usize)> = (0..TILE).map(|r| (0, pos + r)).collect();
+    pub fn forward2(&mut self, pos: usize, seq: usize) -> Result<()> {
+        let rows: Vec<(usize, usize)> = (0..TILE).map(|r| (seq, pos + r)).collect();
         self.forward_rows(&rows)
     }
 
@@ -2807,7 +2814,7 @@ impl Qwen38 {
         self.set_tokens(&toks)?;
         let set_ms = t_set.elapsed().as_secs_f64() * 1e3;
         let t_fwd = Instant::now();
-        self.forward2(pos)?;
+        self.forward2(pos, seq)?;
         let fwd_ms = t_fwd.elapsed().as_secs_f64() * 1e3;
         let t_log = Instant::now();
         let mut r = [0u32; TILE];
@@ -2843,7 +2850,7 @@ impl Qwen38 {
         // Row `TILE - 1` is already current and needs no rewind.
         let t_commit = Instant::now();
         if k + 1 < TILE {
-            self.commit_row(k)?;
+            self.commit_row(k, seq)?;
         }
         let commit_ms = t_commit.elapsed().as_secs_f64() * 1e3;
         let t_promo = Instant::now();
