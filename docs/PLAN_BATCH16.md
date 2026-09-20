@@ -10597,3 +10597,80 @@ k8 平铺在隔离扫描里比 k4 平铺更省（7.731/7.738 对 8.824/8.834 ms/
 
 **所以 `bench --rows` 只能用来定位瓶颈方向，不能用来判断该不该改。**
 `--rows 20` 的注释里已经写上了这条警告和上面的数字，防止再被它误导。
+
+---
+
+## §72fc 解码 pass 的拆分，以及跨序列 GDN（1.034×，并修掉一个自己引入的 bug）
+
+### pass 的确定拆分
+
+`QW_SKIP_KERNEL=q4_gemv_k4_flat` 把 497 个线性派发全部跳过，4 行 pass 从
+**50.83 ms 掉到 12.41 ms**。所以：
+
+**pass 47.6 ms = 线性 35.2 ms + 非线性 12.4 ms**
+
+线性 35.2 ms 和隔离扫描的 4 × 8.83 = 35.3 ms 完全吻合。
+另外，之前记的「pass 间间隙 6.1 ms」是旧 build 的数字，**现在中位数只有 2.1 ms**（均值 2.1），
+不是主要项。
+
+### 沿用它自己的先例：conv_meta
+
+`Scratch::conv_meta` 的注释早就写清了做法：
+
+> `[BATCH_MAX][4]` i32: per-row `(p, gp0, gc0, wo)` … Written from the CPU once per pass
+> … so the fused kernel can serve several sequences without a per-row dispatch.
+
+而且它记着这笔账值多少：**「worth about 9 ms of a 55 ms four-row pass」**。
+
+GDN 的循环是同一回事：每行派发一次 `gdn_step`。4 路并发就是 **192 次派发（48 层 × 4）**，
+本来 48 次就够。**144 次 × 约 13 µs ≈ 1.9 ms**，占 47 ms pass 的 1.04×。
+
+新增 `gdn_step_multi`：`gdn_meta` 每 pass 写一次每行的 seq id，
+kernel 用 `row = tg / Hv` 定位行、`seq = seqs[row]` 定位状态切片，
+行内步长（q/k/v/a/b/y）作为 scalar 传入。4 行 pass 派发数 **1570 → 1426**。
+
+### 结果（冷却后，顺序 old,new,new,old）
+
+| build | min | p25 | median |
+|---|---|---|---|
+| 旧 | 47.36 | 48.11 | 48.53 |
+| **新** | **45.81** | **46.86** | **47.67** |
+| **新** | **45.97** | **47.36** | **47.61** |
+| 旧 | 47.92 | 49.65 | 50.40 |
+
+**1.034×（min），1.9 ms** —— 和「144 次派发 × 13 µs」的预测几乎完全一致。
+这也反过来验证了那个派发代价模型。
+
+### 第一版是错的，而且 accept.sh 抓到了它
+
+第一版没有检查「一个 pass 里同一序列是否出现两次」，
+只用了既有的 `one_seq`（判断是否**全部**行属于同一序列）。
+`gdn_step_multi` 把每一行都从它看到的状态并行算出来 ——
+**这对「每序列一行」是对的，对「一个序列两行 + 另一序列」是错的**，
+因为同一序列跨位置的递推必须按顺序做。
+
+证据链：
+
+| 场景 | 无检查版 | 有检查版 | HEAD |
+|---|---|---|---|
+| 4 个**相同** prompt 并发 | **4/4 全错** | 通过 | 通过 |
+| 4 个**不同** prompt 并发 | **3/4 错** | 通过 | 通过 |
+| `batch-check --slots 4/8/16` | **通过** ✗ | 通过 | 通过 |
+
+`batch-check` 之所以没抓到：它给每个 slot 一个**不同的** token，
+所以每序列永远只有一行 —— 正是新 kernel 有效的形状。
+这是这个仓库里 **gate 覆盖**的又一课：**bench 数字之外，还要问 gate 是否覆盖了新形状**。
+
+修法是一行掩码：任何序列在一个 pass 里出现两次就退回逐行循环。
+
+> 补充记录：我也试过在 `batch-check` 里直接构造混合形状（`[(0,0),(0,1),(1,0),(1,1)]`），
+> 它在 **HEAD 上也失败**，所以那不是有效的 gate —— 底层 `forward_rows` 显然还需要
+> 别的东西。真正有效的判据放在引擎层：`accept.sh` 新增第 21 道
+> 「4 个不同长度 prompt 并发 vs 单独」，它由构造就产生混合 prefill pass。
+
+**引擎确实会产生混合 pass**：`engine.rs:1026` 的
+`for (slot, entry) in slots.iter_mut().enumerate()` 让每个 slot 都往**同一个**
+`rows` 里 push，所以多个请求同时 prefill 时，一个 pass 里就会出现
+「某序列的连续多行 + 另一序列的行」。
+
+`accept.sh` 现在是 **21 道 gate，21 passed / 0 failed ACCEPTED**。

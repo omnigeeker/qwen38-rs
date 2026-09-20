@@ -435,6 +435,65 @@ else
   no "batch decode changes the answer ($CONC_OK)"
 fi
 
+# The gate above runs four IDENTICAL prompts, so all four slots carry the same prompt
+# length.  When several slots prefill in the SAME pass the engine appends each slot's
+# chunk to one `rows` vector, so that pass carries SEVERAL CONSECUTIVE POSITIONS OF ONE
+# SEQUENCE beside another's.  A first version of `gdn_step_multi` ran every row from the
+# state it found, which is right for one-row-per-sequence passes and wrong for that mixed
+# shape; it passed batch-check (which gives every slot a different token) and was caught
+# only by the identical-prompt gate above.  Prompts of different lengths make the mixed
+# prefill shape happen by construction, so this asserts it directly.  Both answers are
+# dumped as JSON so the comparison is exact - shell command substitution would strip
+# trailing whitespace and could call two identical answers different.
+mixed_ask() {
+  python3 - "$PORT" "$1" <<'PYMIX'
+import json, sys, threading, urllib.request
+port, mode = sys.argv[1], sys.argv[2]
+prompts = [
+  "Write a short paragraph about why the sky appears blue during the day.",
+  "Summarise in two sentences how photosynthesis converts light into chemical energy.",
+  "What is 17 times 23? Show the arithmetic.",
+  "Name the three primary colours of light and say what each one is used for.",
+]
+out = [None] * 4
+def one(i):
+    body = json.dumps({"model": "qwen3.8-27b-fp4", "temperature": 0,
+                       "max_tokens": 96,
+                       "messages": [{"role": "user", "content": prompts[i]}]}).encode()
+    try:
+        r = urllib.request.urlopen(
+            urllib.request.Request("http://127.0.0.1:%s/v1/chat/completions" % port, body,
+                                   {"Content-Type": "application/json"}), timeout=600)
+        out[i] = json.load(r)["choices"][0]["message"]["content"]
+    except Exception as e:
+        out[i] = "error:%s" % e
+if mode == "alone":
+    for i in range(4):
+        one(i)
+else:
+    ts = [threading.Thread(target=one, args=(i,)) for i in range(4)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+print(json.dumps(out))
+PYMIX
+}
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_mixed.log" 2>&1 &
+serve_up
+mixed_ask alone > "$TMP/mixed_alone.json"
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_mixed2.log" 2>&1 &
+serve_up
+mixed_ask conc > "$TMP/mixed_conc.json"
+pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+if python3 -c 'import json,sys
+a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+sys.exit(0 if (a and a==b) else 1)' "$TMP/mixed_alone.json" "$TMP/mixed_conc.json"; then
+  ok "four concurrent prompts of different lengths match their single-request answers"
+else
+  no "mixed-length batch decode changes the answer"
+fi
+
 # ---------------------------------------------------------------- verdict
 head1 "verdict"
 printf '  %d passed, %d failed\n' "$pass" "$fail"

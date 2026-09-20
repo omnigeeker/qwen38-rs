@@ -45,6 +45,7 @@ struct Kernels {
     conv1d_ring_multi: Kernel,
     gdn: Kernel,
     gdn_seq: Kernel,
+    gdn_multi: Kernel,
     rmsnorm_ws_rows: Kernel,
     gate_mul_rows: Kernel,
     kv_append_rows: Kernel,
@@ -205,6 +206,10 @@ struct Scratch {
     /// so the fused kernel can serve several sequences without a per-row
     /// dispatch.  See `conv1d_silu_ring_multi`.
     conv_meta: GpuBuffer,
+    /// `[BATCH_MAX]` i32: the sequence id of each row in the pass, written from the
+    /// CPU once per pass so `gdn_step_multi` can serve several sequences in one
+    /// dispatch instead of one per row.  See the kernel for why that is worth doing.
+    gdn_meta: GpuBuffer,
     /// Scratch for the keep-warm tick, deliberately NOT `logits`.
     ///
     /// The tick used to write eight halves into `logits`, the buffer the sampler
@@ -642,6 +647,7 @@ impl Qwen38 {
             scores: dev.buffer(nh * max_t * 4 * tile),
             qkv_cur: dev.buffer(conv_dim * 2 * tile),
             conv_meta: dev.buffer(BATCH_MAX * 4 * 4),
+            gdn_meta: dev.buffer(BATCH_MAX * 4),
             tick: dev.buffer(16),
         };
 
@@ -759,6 +765,7 @@ impl Qwen38 {
                 conv1d_ring_multi: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_MULTI)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
                 gdn_seq: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP_SEQ)?,
+                gdn_multi: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP_MULTI)?,
                 rmsnorm_ws_rows: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS_ROWS)?,
                 gate_mul_rows: b.kernel(msl_ops::GDN, msl_ops::K_GATE_MUL_ROWS)?,
                 kv_append_rows: b.kernel(msl_ops::ATTN, msl_ops::K_KV_APPEND_ROWS)?,
@@ -2329,6 +2336,70 @@ impl Qwen38 {
                         );
                         b.barrier();
                     } else {
+                    // `gdn_step_multi` runs every row from whatever state it finds, so
+                    // it is only valid when no sequence contributes two rows to this
+                    // pass: the recurrence across positions of ONE sequence has to be
+                    // applied in order, which is exactly what `gdn_step_seq` exists to
+                    // do and what a parallel dispatch cannot.  A decode pass carries one
+                    // row per sequence, but a chunked prefill of several requests does
+                    // not, and the first version of this shipped without that check:
+                    // `batch-check` passed (it gives every slot a different token) while
+                    // accept.sh's four-identical-requests gate failed on all four slots,
+                    // differing from the single-request answer at one token.  So the mask
+                    // below makes it an assumption rather than a hope, and any other
+                    // shape keeps the per-row loop, which applies rows in order.
+                    let mut seen_mask: u32 = 0;
+                    let mut distinct = true;
+                    for r in rows.iter() {
+                        let bit = 1u32 << r.0;
+                        if seen_mask & bit != 0 {
+                            distinct = false;
+                            break;
+                        }
+                        seen_mask |= bit;
+                    }
+                    if distinct {
+                    // The sequence ids go into `gdn_meta` once per pass and one dispatch
+                    // covers all n rows - the arrangement `conv1d_silu_ring_multi`
+                    // already uses for the convolution.  Per-row this was n dispatches
+                    // and n barriers, on a 48-layer recurrence, so a four-sequence pass
+                    // paid 192 launches where 48 do.  A small dispatch costs about 13 us
+                    // on this box (measured by skipping rmsnorm and ewise_add), so the
+                    // 144 that go away are worth roughly 1.9 ms of a 47 ms pass.
+                    // `st_stride` and `snap_stride` are BYTES for `buf_offset`; the
+                    // kernel indexes fp32 pointers, hence the /4.
+                    let seqs: Vec<i32> = rows.iter().map(|r| r.0 as i32).collect();
+                    scratch.gdn_meta.copy_from(&seqs);
+                    b.encode(
+                        Dispatch::new(&kernels.gdn_multi, (n * hv * dv, 1, 1), (dv, 1, 1))
+                            .buf(0, &scratch.q)
+                            .buf(1, &scratch.k)
+                            .buf(2, &scratch.conv_out)
+                            .buf(3, &scratch.a)
+                            .buf(4, &scratch.b)
+                            .buf(5, &g.a_log)
+                            .buf(6, &g.dt_bias)
+                            .buf(7, &g.state)
+                            .buf(8, &scratch.gdn_y)
+                            .scalar(9, hk as i32)
+                            .scalar(10, hv as i32)
+                            .scalar(11, dk as i32)
+                            .scalar(12, dv as i32)
+                            .buf(13, &g.snap)
+                            .scalar(14, if self.spec_snap { 1 } else { 0 })
+                            .scalar(15, (nh * hd) as i32)
+                            .scalar(16, key_dim as i32)
+                            .scalar(17, conv_dim as i32)
+                            .scalar(18, (2 * key_dim) as i32)
+                            .scalar(19, hv as i32)
+                            .scalar(20, value_dim as i32)
+                            .scalar(21, (st_stride / 4) as i32)
+                            .scalar(22, (snap_stride / 4) as i32)
+                            .scalar(23, (snap_stride / n / 4) as i32)
+                            .buf(24, &scratch.gdn_meta),
+                    );
+                    b.barrier();
+                    } else {
                     for (row, &(seq, _)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.gdn, (hv * dv, 1, 1), (dv, 1, 1))
@@ -2357,6 +2428,7 @@ impl Qwen38 {
                                 .scalar(14, if self.spec_snap { 1 } else { 0 }),
                         );
                         b.barrier();
+                    }
                     }
                     }
                     // The gated norm has no cross-row dependency, so it comes out

@@ -550,6 +550,80 @@ kernel void gdn_step(
     }
 }
 
+// The same recurrence for a batch of UNRELATED sequences: one dispatch for the whole
+// pass instead of one per row.  The only thing that differs between rows is which
+// sequence's state slice the row reads and writes, so the caller passes the sequence
+// id per row in `seqs` and the row strides as scalars - exactly the trick
+// `conv1d_silu_ring_multi` uses through `conv_meta`.  The old path costs n dispatches
+// and n barriers per GDN layer, which on a four-sequence pass is 48 x 4 = 192 launches
+// where 48 would do; at the ~13 us a small dispatch costs on this box that is about
+// 1.9 ms of a 47 ms pass.  Unlike the convolution there is no consecutiveness
+// requirement, because each row owns a different state slice and the rows of one
+// sequence never appear twice in a decode pass.
+kernel void gdn_step_multi(
+    device const half*  q       [[buffer(0)]],   // [n][qs], row-major
+    device const half*  k       [[buffer(1)]],   // [n][ks]
+    device const half*  v       [[buffer(2)]],   // [n][vs], read at +voff
+    device const half*  a       [[buffer(3)]],   // [n][Hv]
+    device const half*  b       [[buffer(4)]],   // [n][Hv]
+    device const float* A_log   [[buffer(5)]],   // [Hv]
+    device const float* dt_bias [[buffer(6)]],   // [Hv]
+    device float*       state   [[buffer(7)]],   // [nseq][Hv * Dv * Dk] fp32
+    device half*        y       [[buffer(8)]],   // [n][Hv * Dv]
+    constant int&       Hk      [[buffer(9)]],
+    constant int&       Hv      [[buffer(10)]],
+    constant int&       Dk      [[buffer(11)]],
+    constant int&       Dv      [[buffer(12)]],
+    device float*       snap    [[buffer(13)]],  // [nseq][snap_stride] fp32
+    constant int&       snap_on [[buffer(14)]],
+    constant int&       qs      [[buffer(15)]],  // q row stride, in halfs
+    constant int&       ks      [[buffer(16)]],
+    constant int&       vs      [[buffer(17)]],
+    constant int&       voff    [[buffer(18)]],  // v base within a row, in halfs
+    constant int&       abs_    [[buffer(19)]],  // a and b row stride, in halfs
+    constant int&       ys      [[buffer(20)]],
+    constant int&       st_stride   [[buffer(21)]],  // per-sequence, in floats
+    constant int&       snap_stride [[buffer(22)]],  // per-sequence, in floats
+    constant int&       snap_row    [[buffer(23)]],  // snap_stride / n
+    device const int*   seqs    [[buffer(24)]],  // [n]
+    uint tg [[threadgroup_position_in_grid]],
+    uint dv [[thread_index_in_threadgroup]])
+{
+    const int row = (int)tg / Hv;
+    const int hv  = (int)tg - row * Hv;
+    const int seq = seqs[row];
+    const int reps = Hv / Hk;
+    const int hk = hv / reps;
+
+    const float x = (float)a[(size_t)row * abs_ + hv] + dt_bias[hv];
+    const float sp = max(x, 0.0f) + log(1.0f + exp(-fabs(x)));
+    const float g = exp(-exp(A_log[hv]) * sp);
+    const float beta = 1.0f / (1.0f + exp(-(float)b[(size_t)row * abs_ + hv]));
+
+    device const half* kp = k + (size_t)row * ks + (size_t)hk * Dk;
+    device const half* qp = q + (size_t)row * qs + (size_t)hk * Dk;
+    device const half* vp = v + (size_t)row * vs + voff;
+    device float* S = state + (size_t)seq * st_stride + ((size_t)hv * Dv + dv) * Dk;
+
+    float kv = 0.0f;
+    for (int d = 0; d < Dk; ++d) {
+        S[d] *= g;
+        kv += S[d] * (float)kp[d];
+    }
+    const float delta = ((float)vp[(size_t)hv * Dv + dv] - kv) * beta;
+    float acc = 0.0f;
+    for (int d = 0; d < Dk; ++d) {
+        S[d] += delta * (float)kp[d];
+        acc += S[d] * (float)qp[d];
+    }
+    y[(size_t)row * ys + (size_t)hv * Dv + dv] = (half)acc;
+    if (snap_on) {
+        device float* SP = snap + (size_t)seq * snap_stride + (size_t)row * snap_row
+                         + ((size_t)hv * Dv + dv) * Dk;
+        for (int d = 0; d < Dk; ++d) SP[d] = S[d];
+    }
+}
+
 // The gdn recurrence with the token loop fused into the kernel.  Every thread
 // owns one (head, value column) state slice and touches nothing another thread
 // touches, so consecutive tokens need no barrier at all - and the caller stops
@@ -945,6 +1019,7 @@ pub const K_CONV1D_SILU_RING_MULTI: &str = "conv1d_silu_ring_multi";
 pub const K_RMSNORM_TILE: &str = "rmsnorm_nw_tile";
 pub const K_CONV1D_SILU: &str = "conv1d_silu";
 pub const K_GDN_STEP: &str = "gdn_step";
+pub const K_GDN_STEP_MULTI: &str = "gdn_step_multi";
 pub const K_GDN_STEP_SEQ: &str = "gdn_step_seq";
 pub const K_GDN_STEP_SEQ4: &str = "gdn_step_seq4";
 pub const K_RMSNORM_WS: &str = "rmsnorm_s";
