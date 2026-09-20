@@ -8069,3 +8069,35 @@ computes four」），所以 4 行本该约等于 1 行的权重扫描成本。
 要么先让 1 行 pass 逼近 30 ms 下限。** 而 kernel 效率方向（occupancy、合并访存、
 指令数、寄存器预取、更大的 M/N tile、KT=32 vs 64、relaxed precision 等）
 在前面的轮次里已经系统性证伪过。**这条路的收益需要新的思路。**
+
+### 72cy. pass 之间**零间隙**（GPU 占用 99.1%）—— 排除 CPU/dispatch 开销（第 163 轮）
+
+上一轮留下「1 行 pass 48.6 ms 离 30 ms 带宽下限还有 1.6 倍」。最可能的解释是
+CPU 侧编码/派发开销（497 个 linear 的 dispatch 编码如果各要 30 µs 就是 15 ms）。
+**用零代码的方法直接证伪了：**
+
+从 `QW_STEP_TIME` 日志里取每 pass 的 `started at` / `ended at`：
+
+```
+passes: 127   sum(took)=6861 ms   median took=48.6 ms
+median inter-pass gap: 0.00 ms    sum(gaps)=55 ms
+=> GPU busy 99.1% of the span
+```
+
+**pass 之间中位间隙 0.00 ms，整段里 GPU 忙 99.1%。**
+⇒ **没有可回收的 CPU 开销。48.6 ms 就是纯 GPU kernel 时间。**
+
+于是剩下的问题变成一个纯粹的数字：
+
+```
+14.412 GB / 48.6 ms = 296 GB/s = 481 GB/s 的 62%
+加上 GDN 的 1.16 GB state/窗口 -> 321 GB/s = 67%
+若跑满 481 GB/s，1 行 pass 应该是 30.0 ms
+```
+
+**⇒ kernel 只跑到了可用带宽的 62-67%，还有约 1.5 倍的余量，但它不在 CPU 侧、
+不在派发、不在行摊薄 —— 在 kernel 内部的访存效率上。**
+
+这条线索的价值在于它**排除了一整类猜测**：以前怀疑过的「编码开销」「dispatch 太多」
+（1186 个/pass）现在有硬数据说明它们不是瓶颈。
+**要拿剩下的 1.5 倍，只能改 kernel 内部的访存模式，而不是改调度或路由。**
