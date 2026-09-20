@@ -8916,3 +8916,43 @@ step time:   4 rows, took 47.2 ms
 （2）`boundary && snapshot` 的导出块（已禁用）、
 （3）循环头（下一 pass 的 rows/row_slot/toks 准备）。
 **（3）最可疑**，因为它是唯一可能按「prompt 行」遍历的地方。
+
+### 72dw. 空隙定位：两个具体嫌疑，但仍未确证（第 189 轮）
+
+**先排除一个**：tail pass 的行是由 `for k in 0..take` 构建的（engine.rs:1157），
+而 tail pass 只有 **4 行**，所以**行构建循环只有 4 次迭代**——
+**空隙不可能来自它**（空隙是 300 ms）。
+
+**⇒ 空隙必然在 349 行那个 pass 的 post-pass 区块里。**
+
+**读该区块，找到两个具体嫌疑：**
+
+**嫌疑 1：`row_slot` 的 O(n²) 扫描**（engine.rs:1389-1390）
+
+```rust
+for (idx, &slot) in row_slot.iter().enumerate() {
+    if row_slot[idx + 1..].contains(&slot) { continue; }
+```
+
+对 349 行、且 `slot` 全相同的情况，这是 n²/2 ≈ 61,000 次比较。
+按 ~5 ns 算是 **0.3 ms**——**量级不够**，但值得记下（它是 O(n²)）。
+
+**嫌疑 2：`emit` 每次全文解码**（engine.rs:548-549）
+
+```rust
+fn emit(tok: &Tokenizer, a: &mut Active, flush: bool) {
+    let full = tok.decode(&a.all, true).unwrap_or_default();
+```
+
+**`emit` 每次都把整个 `a.all` 重新 detokenize 一遍**，
+再用 `a.sent_len` 切出增量。**这是 O(n) 每次调用、整体 O(n²) 的模式。**
+
+**注意**：这条对**长生成**是一个真实且独立的效率问题
+（每次 emit 都全量解码），**但它是否解释 prefill 的 0.85 ms/行还不确定**，
+因为 prefill 期间 `a.all` 应该很短。
+
+**⇒ 本轮没有确证成因。剩下的路是在 post-pass 区块内部逐段打点**
+（在 O(n²) 扫描前后、`emit` 前后各加时间戳），
+这是纯诊断，但需要更多轮次。
+
+**诊断代码未做改动，工作树干净，交付树仍是第 180 轮验证过的状态。**
