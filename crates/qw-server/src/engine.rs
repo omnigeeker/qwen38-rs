@@ -446,15 +446,47 @@ impl Engine {
                     Ok((model, tok))
                 })();
                 let (mut model, tok) = match loaded {
-                    Ok(v) => {
-                        let _ = ready_tx.send(Ok(()));
-                        v
-                    }
+                    Ok(v) => v,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e.to_string()));
                         return;
                     }
                 };
+                // Warm the prefill path BEFORE announcing readiness.  Nothing else
+                // compiles these kernels, so the first real request used to pay
+                // every pipeline compilation itself - measured as 145 ms inside
+                // `reset_seq` alone.  A short prefill exercises the same kernels a
+                // long one does, because they are grid-sized, not row-specialised.
+                // The token ids are arbitrary: the states this leaves are reset
+                // immediately, and a later pass overwrites every position it reads
+                // because attention is causal.
+                {
+                    let warm_rows = 64usize.min(max_t);
+                    let rows: Vec<(usize, usize)> =
+                        (0..warm_rows).map(|i| (0usize, i)).collect();
+                    // Two cycles.  The first reset_seq in a process costs 165 ms and
+                    // the first one after a forward costs another 314 ms, while a
+                    // reset_seq in a steady state costs 3.4 ms - all measured.  The
+                    // GPU work itself is 1.16 GB of writes at 341 GB/s, so the rest
+                    // is per-process and per-first-pass overhead that a warmup can
+                    // absorb instead of charging it to the client's first request.
+                    for pass in 0..2 {
+                        let _ = model.reset_seq(0);
+                        if model.set_tokens(&vec![0u32; warm_rows]).is_ok() {
+                            let t = std::time::Instant::now();
+                            let r = model.forward_rows(&rows);
+                            tracing::info!(
+                                "prefill warmup {pass}: {warm_rows} rows in {:?}",
+                                t.elapsed()
+                            );
+                            if let Err(e) = r {
+                                tracing::warn!("prefill warmup failed: {e}");
+                            }
+                        }
+                    }
+                    let _ = model.reset_seq(0);
+                }
+                let _ = ready_tx.send(Ok(()));
                 serve(&mut model, &tok, rx, max_t, batch);
             })?;
         match ready_rx.recv() {
@@ -546,6 +578,8 @@ fn prepare(
     snapshot: bool,
 ) -> Option<Active> {
     REQ_NS.store(now_ns(), std::sync::atomic::Ordering::Relaxed);
+    let _t_prep = std::time::Instant::now();
+    let mut _marks: Vec<(&str, f64)> = Vec::new();
     let text = match &job.prompt {
         Prompt::Text(s) => s.clone(),
         Prompt::Chat(msgs) => tok.apply_chat_template(msgs),
@@ -576,6 +610,7 @@ fn prepare(
     // slot is already in the right state and the whole prefix can be skipped.  Only
     // a complete match can be used: the recurrent state corresponds to the end of
     // what the slot consumed and cannot be rewound to a position in the middle.
+    _marks.push(("tokenize+template", _t_prep.elapsed().as_secs_f64() * 1e3));
     let reuse = if snapshot {
         cache.lookup(slot, &ids)
     } else {
@@ -584,6 +619,7 @@ fn prepare(
             None => Reuse::None,
         }
     };
+    _marks.push(("prefix lookup", _t_prep.elapsed().as_secs_f64() * 1e3));
     // Nothing in memory, but an earlier process may have left this prefix on
     // disk.  Keyed by content, so a fresh session finds it cold.
     let reuse = match reuse {
@@ -711,6 +747,17 @@ fn prepare(
     // a property of the prompt alone, so a cold run and a run that reused a prefix
     // produce the same value.
     let prompt_len = ids.len();
+    if std::env::var_os("QW_STEP_TIME").is_some() {
+        let total = _t_prep.elapsed().as_secs_f64() * 1e3;
+        let mut line = format!("prepare: total {total:.1} ms");
+        let mut prev = 0.0;
+        for (what, at) in &_marks {
+            line.push_str(&format!(", {what} {:.1}", at - prev));
+            prev = *at;
+        }
+        line.push_str(&format!(", rest {:.1}", total - prev));
+        eprintln!("{line}");
+    }
     Some(Active {
         job,
         ids,

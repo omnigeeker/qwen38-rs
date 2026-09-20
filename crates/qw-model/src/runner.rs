@@ -883,35 +883,43 @@ impl Qwen38 {
         if seq >= self.batch {
             return Ok(());
         }
-        // One staging slice of zeros, reused for every layer and both buffers.
-        // `state_stride` is the larger of the two (the convolution ring is a
-        // couple of hundred KB against a few MB), and `copy_off` reads the source
-        // from offset 0, so a single stage of the larger size covers both.
-        let stage = self.dev.buffer(self.state_stride.max(2));
-        zero(&stage);
+        // Zero in place.  This used to copy from a zeroed staging buffer, which
+        // cost a 21 MB host allocation, a 21 MB host memset and upload, and then
+        // read 1.1 GB of staging back on the GPU - 145 ms of a 1.60 s cold
+        // time-to-first-token, for what is a pure write.  `zero_half` writes and
+        // reads nothing.
+        let _t0 = std::time::Instant::now();
         let mut b = CommandBatch::new(&mut self.dev);
-        let k = b.kernel(qw_metal::msl_ops::GDN, qw_metal::msl_ops::K_COPY)?;
+        let k = b.kernel(qw_metal::msl_ops::GDN, qw_metal::msl_ops::K_ZERO_HALF)?;
+        let _t1 = std::time::Instant::now();
         for layer in &self.layers {
             if let Kind::Gdn(g) = &layer.kind {
                 for (buf, stride) in [(&g.state, self.state_stride), (&g.window, self.win_stride)] {
                     if stride == 0 {
                         continue;
                     }
-                    // copy_off moves `half` elements, so lengths and offsets are
+                    // `zero_half` moves `half` elements, so lengths and offsets are
                     // in halves, not bytes.
                     let n = stride / 2;
                     b.encode(
-                        Dispatch::new(&k, (n, 1, 1), (256, 1, 1))
-                            .buf(0, &stage)
+                        Dispatch::new(&k, (n.div_ceil(8), 1, 1), (256, 1, 1))
                             .buf(1, buf)
                             .scalar(2, n as i32)
-                            .scalar(3, 0)
                             .scalar(4, (seq * stride / 2) as i32),
                     );
                 }
             }
         }
+        let _t2 = std::time::Instant::now();
         b.finish(true);
+        if std::env::var_os("QW_STEP_TIME").is_some() {
+            eprintln!(
+                "reset_seq: new+compile {:?}, encode {:?}, finish {:?}",
+                _t1 - _t0,
+                _t2 - _t1,
+                _t2.elapsed()
+            );
+        }
         Ok(())
     }
 

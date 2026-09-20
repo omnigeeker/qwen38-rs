@@ -783,6 +783,32 @@ kernel void copy_off(
     dst[dst_off + i] = src[src_off + i];
 }
 
+// Zero a range in place.  `reset_seq` used to reach for `copy_off` with a
+// zeroed staging buffer, which cost a 21 MB host allocation, a 21 MB host memset
+// and upload, and then read 1.1 GB of staging back on the GPU - 145 ms per
+// request, measured, for what is a pure write.
+kernel void zero_half(
+    device half*  dst [[buffer(1)]],
+    constant int& n [[buffer(2)]],
+    constant int& dst_off [[buffer(4)]],
+    uint i [[thread_position_in_grid]])
+{
+    // Eight halves - one 16-byte store - per thread.  A single 2-byte store per
+    // thread left this launch-bound: zeroing the 1.16 GB of GDN state and
+    // convolution window cost 250 ms, which is 4.6 GB/s, about a hundredth of
+    // what the same bytes move when a kernel touches them in bulk.
+    const int base = dst_off + (int)i * 8;
+    const int end  = dst_off + n;
+    if (base + 8 <= end) {
+        device uint4* p = (device uint4*)(dst + base);
+        *p = uint4(0u, 0u, 0u, 0u);
+    } else {
+        for (int j = 0; j < 8; ++j) {
+            if (base + j < end) dst[base + j] = (half)0;
+        }
+    }
+}
+
 // RMSNorm with weight, multiplied by silu(gate): the delta net's output norm.
 kernel void rmsnorm_gated(
     device const half* x      [[buffer(0)]],
@@ -866,6 +892,7 @@ pub const K_RMSNORM_NW: &str = "rmsnorm_s";
 pub const K_GATE_MUL: &str = "gate_mul";
 pub const K_GATE_MUL_ROWS: &str = "gate_mul_rows";
 pub const K_COPY: &str = "copy_off";
+pub const K_ZERO_HALF: &str = "zero_half";
 pub const K_ROUND_BF16: &str = "round_bf16";
 pub const K_RMSNORM_GATED: &str = "rmsnorm_gated";
 pub const K_SIGMOID_MUL: &str = "sigmoid_mul";

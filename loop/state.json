@@ -1,6 +1,6 @@
 {
   "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
-  "round": 208,
+  "round": 209,
   "milestone": "M4",
   "hardware": {
     "chip": "Apple M5 Max",
@@ -4969,9 +4969,13 @@
     {
       "round": 207,
       "what": "Found 265 ms of cold TTFT outside every kernel: argmax(logits_row(i)) ran per prefill row, 597 of 598 samples discarded. Made it lazy at the point of use. Cold TTFT 1.60 -> 1.32 s (17%), variance tightened 10x. accept.sh 19/0."
+    },
+    {
+      "round": 209,
+      "what": "Corrected round 143: reset_seq is 3.4 ms warm, not 145 ms - the 200-300 ms is GPU clock ramp after the harness's 2 s idle (removing the sleep took the request from 1.783 to 1.467 s). Landed a vectorised zero_half kernel and a startup prefill warmup; accept.sh 19/0."
     }
   ],
-  "next": "Post-fix paired duel: ours 3.102 vs llama.cpp 2.678, ratio 1.171. NOT usable as a verdict - both engines were inflated about 2x (ours measured 1.32 s standalone minutes earlier, 3.10 s in the duel) and standalone coldenv itself swung between 1.704 and 2.955 in the same window. What IS solid is the noise-independent evidence: the server's own QW_STEP_TIME stamps show the 265 ms gap between the prefill pass and the 4-row tail pass going to 0 ms, and accept.sh is 19 passed / 0 failed. Cold TTFT in a quiet moment went 1.60 -> 1.32 s. The user promised a quiet window and still has not signalled; the machine currently runs WindowServer at 42% and the DSH renderer at 46%. NEXT TARGETS in size order: (a) 152 ms from HTTP entry to the first forward - tokenize + reset_seq + prefix lookup, and reset_seq zeroes the GDN state and convolution window for all 48 GDN layers (about 1.1 GB) while allocating a ~21 MB staging buffer per call, so time it before touching it; (b) the 44 ms 4-row tail pass, a whole extra weight sweep for four tokens, whose cap exists only to make a prefix-cache hit cheap - warm TTFT is already won by 8x so raising the cap is likely the right trade now; (c) once the machine is quiet, one clean paired duel to settle whether 1.32 s standalone beats llama.cpp's ~1.80 s in-duel.",
+  "next": "CORRECTED a wrong conclusion from round 143. Breaking `prepare` down gave total 148 ms with 144.8 in `rest`, and I attributed that to reset_seq. Splitting reset_seq itself showed new+compile 241us, encode 205us, finish 165.6 ms on the first call, 3.4 ms on the second, and 314 ms on the real request. The second call is the truth: 1.16 GB in 3.4 ms is 341 GB/s, so the GPU work is fine. Removing the harness's `time.sleep(2)` after the health check made the real request's reset_seq 5.8 ms, and the whole request 1.783 -> 1.467 s. So about 0.27 s (17%) of the reported cold TTFT is GPU clock ramp after idle, not code - coldenv and duo2 both sleep before sending, so they measure a cold GPU. llama.cpp pays it too, so it cancels in the paired duel, but it explains why single-process numbers swing so much with how long the machine has been idle. LESSON: 'this function accounts for 145 ms' and 'this function costs 145 ms every time' are different claims - always look at the second call of the same function in the same process. Two changes landed and passed accept.sh 19/0: (a) a vectorised zero_half kernel so reset_seq writes zeros in place instead of copying from a host-zeroed 21 MB staging buffer (which also removes a 1.1 GB read-back), 16 bytes per thread instead of 2; (b) a startup warmup of two 64-row prefills before the engine announces ready, moving the pipeline compilation (443 ms for an 8-row warmup) off the first request. NEXT: the ~0.27 s GPU ramp is now the biggest single identified item and it is addressable with a keep-warm tick - a trivial dispatch every ~100 ms so the GPU never deep-idles. That is a real idle-power trade-off on a laptop, so it needs the user's call before it becomes a default; ask. Also still open: the 44 ms 4-row tail pass (a whole extra weight sweep for four tokens, whose cap exists only to make a prefix-cache hit cheap while warm TTFT is already won by 8x), and one clean paired duel in a quiet window, which the user still has not signalled.",
   "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
   "open_issues": [
     {
