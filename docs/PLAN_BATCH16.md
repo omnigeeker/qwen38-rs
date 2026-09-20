@@ -9875,3 +9875,46 @@ FAIL  batch decode changes the answer (bad:[0, 1, 2, 3])
    **两者必须一致——这一处需要逐字核对。**
 
 **未保留任何未验证的改动。**
+
+### 72eu. **第三次定位：`cb + q` 假设了「同序列的行在 `cur` 里连续」，而这不成立**（第 213 轮）
+
+上一轮我怀疑 window 偏移的单位。**逐字核对后，那三处布局其实都是自洽的：**
+
+| 缓冲 | 旧代码 | 单位 | 我的核 | 是否一致 |
+|---|---|---|---|---|
+| `g.window` | `buf_offset(0, &g.window, woff)`，`woff = seq*win_stride` | 字节 | `wo = seq*win_stride/2`（元素） | ✅ 一致 |
+| `scratch.conv_out` | `buf_offset(2, ..., row*(conv_dim*2))` | 字节 ⇒ 行距 `conv_dim` 个 half | `out[row*conv_dim + c]` | ✅ 一致 |
+| `scratch.qkv_cur` | copy 源偏移 `row*conv_dim`（`copy_off` 以 half 计） | 元素 ⇒ 行距 `conv_dim` | `cur[row*conv_dim + c]` | ✅ 一致 |
+
+**⇒ 所以不是布局问题。真正的问题在核里的这一行：**
+
+```c
+const int q  = pos - q0;
+device const half* src = (q >= 0)
+    ? cur + (size_t)(cb + q) * conv_dim + c     // <-- cb + q
+    : window + ...;
+```
+
+**`cb` 是「该序列在本 pass 的**起始位置**所在的 `cur` 行」，
+`q = pos - q0` 是「该序列内的位置偏移」。**
+
+**⇒ `cb + q` 假设了「同一序列的各行在 `cur` 里是连续的」。**
+
+**但 `cur` 是按**pass 顺序**排列的，不是按序列分组。**
+
+**⇒ 反例：pass 有 4 行，pass 顺序是 `A0, B0, A1, B1`（A、B 两个请求交错）。
+序列 A 的起始位置在 `cur` 行 0，`cb = 0`。
+但 A1 在 `cur` 行 **2**，而 `cb + q = 0 + 1 = 1` ⇒ **读到了 B0 的数据。**」
+
+**⇒ 这就是 bug。`cb + q` 只在「同序列的行在 pass 里也连续」时才成立。**
+
+**⇒ 正确做法：需要一个「位置 → `cur` 行号」的直接映射，而不是 `cb + q` 的算术。**
+**对 TILE=4，最直接的做法是每行传 4 个 tap 各自的 `cur` 行号（16 个标量），
+或者反过来——**先把所有行拷进 window，再做一次融合卷积**，
+这样卷积只需读 window（此时已含本 pass 全部行），`cur` 映射问题自然消失。**
+
+**⇒ 后一种更简单、更不易错，而且收益仍在**：
+把每行的卷积派发折成一次，`copy_off` 仍需每行一次。
+**但注释说的收益（12,288 → 48）里，卷积那部分占了主要数量。**
+
+**未做改动，未验证。**
