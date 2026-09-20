@@ -1,6 +1,6 @@
 {
   "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
-  "round": 200,
+  "round": 201,
   "milestone": "M4",
   "hardware": {
     "chip": "Apple M5 Max",
@@ -4941,9 +4941,13 @@
     {
       "round": 200,
       "what": "GDN state resident in registers: 2.11 -> 1.54 s cold prefill (27%), byte-identical, accept 19/0; cumulative 5.59 -> 1.54 s, now below llama.cpp's 1.60 s"
+    },
+    {
+      "round": 201,
+      "what": "CORRECTION: paired duel (8 rounds, same prompts, order swapped) shows llama.cpp wins cold TTFT 8/8, median ratio 1.129. otps and warm TTFT still won 8/8. Round 199's 'cold prefill now ahead' was a non-paired comparison and is withdrawn."
     }
   ],
-  "next": "Two structural fixes in a row, and the cold prefill is now under llama.cpp. (1) attn_scores_softmax + attn_out were emitted once per query token per full-attention layer - 19,136 of 20,290 dispatches; attn_scores_softmax_rows / attn_out_rows give each threadgroup a (row, head) pair so a pass is one dispatch each, with the causal mask as a shorter loop bound. Dispatches 20,290 -> 1,186 (-94%), 2.49 -> 2.22 s. (2) QW_SKIP_KERNEL isolation showed gdn_step_seq was 0.63 s of the 1.45 s spent outside the matmul: its state was read 384 B and written 256 B per thread per token because S could not be held across the two loops, which is 303 GB over the pass and exactly the 0.63 s at 481 GB/s. gdn_step_seq4 splits each value's Dk reduction across Q lanes so a thread keeps Dk/Q state elements in registers for the whole token loop, with two simd_shuffle_xor butterflies replacing the dot products. 2.11 -> 1.54 s (27%), byte-identical md5, accept.sh 19/0. Cumulative: 5.59 -> 2.51 (MPP) -> 2.22 (attention rows) -> 1.54 s. That is BELOW llama.cpp's 1.60 s. Remaining: the tensor op is 0.90 s at 44.5 TFLOPS (near peak) and everything else is 0.58 s. GOTCHA WORTH REMEMBERING: Dispatch's first argument is a grid in THREADS, not threadgroups - my first gdn_seq4 grid was 32 threads with a 128-thread threadgroup, which made every Q produce wrong output with no obvious direction. NEXT: re-measure the three-way duel interleaved (tools/tri.py) to confirm the cold-TTFT win against llama.cpp and Ollama on the same session, and keep attacking the 0.58 s of non-GEMM.",
+  "next": "CORRECTION, and the correction matters more than the round's win. Round 199 ended by claiming '1.54 s < llama.cpp's 1.60 s, cold prefill first time ahead'. That was WRONG: the 1.54 s came from our own single-process coldenv run and the 1.60 s was a stale llama.cpp number from an earlier three-way session - different time, different load, not subtractable. A paired duel (both servers resident, same fresh random prompt each round, order swapped every round, 8 rounds) says llama.cpp wins cold TTFT 8/8 with a median ratio of 1.129 - ours 2.279 s vs its 1.871 s. The same run has us winning otps 8/8 (e.g. 28.91 vs 27.80, 25.25 vs 22.72, 16.51 vs 14.55) and warm TTFT by ~8x. So: otps WON, warm TTFT WON, cold TTFT LOST by ~13%. The machine is NOT quiet - the same binary measures anywhere from 1.53 s to 2.20 s - which is exactly why only paired measurement counts. Also refuted: co-residency with llama.cpp is not what hurts us (alone 1.531/2.196 vs co-resident 1.558/1.895). NEXT: close the 0.4 s. Our tensor op is ~1.0 s and everything else ~0.85 s. llama.cpp's mul_mm writes back with a single cT.store() into an fp32 destination while we run a per-element scalar loop with is_valid_element checks - that is the most concrete remaining difference, so measure the writeback first (add a mode that skips it) before rewriting it.",
   "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
   "open_issues": [
     {
