@@ -9346,3 +9346,46 @@ dispatch histogram, 1906 total:
 **⇒ 融合是有真实空间的（1409 → 若减半可省约 8 ms，
 即 4 行 pass 从 51 ms 到 43 ms，聚合从 79.4 到 93 tok/s），
 但它是一次涉及多个内核的结构性改动，不是调参。**
+
+### 72ei. **精确的每内核派发直方图**——`copy_off` 被派发 192 次（第 201 轮）
+
+`QW_DISPATCH_HIST` 其实会打印每个内核的计数（上一轮我只读了总数行，
+并把 1409 写成「推断值」；实际是直接打印的，而且推断正确）：
+
+```
+dispatch histogram, 1906 total:
+  q4_gemv_k4_u4hx          497  (26%)
+  copy_off                 192  (10%)
+  conv1d_silu_ring         192  (10%)
+  gdn_step                 192  (10%)
+  rmsnorm                  129  (7%)
+  ewise_add                128  (7%)
+  rope_partial             128  (7%)
+  rmsnorm_nw_tile           96  (5%)
+  silu_mul                  64  (3%)
+  kv_append                 64  (3%)
+  attn_scores_softmax       64  (3%)
+  attn_out                  64  (3%)
+  rmsnorm_gated             48  (3%)
+  rmsnorm_s_rows            32  (2%)
+```
+
+**关键观察：**
+
+* **GEMV 只占 26%**（497 次），非 GEMV 占 74%（1409 次）；
+* **`192 = 48 个 GDN 层 x 4`**——`copy_off`、`conv1d_silu_ring`、`gdn_step`
+  **各自在每个 GDN 层被派发 4 次**，三者合计 576 次（**30%**）；
+* **`copy_off` 是纯数据拷贝，却被派发 192 次**——这是最可疑的一处；
+* `rmsnorm` 家族合计 129+96+48+32 = 305 次（16%）。
+
+**⇒ 按每个内核 11.6 µs 计，576 次 = 6.7 ms，305 次 rmsnorm = 3.5 ms。**
+
+**⇒ 最直接的两个目标**：
+（1）**查清 `copy_off` 在拷什么、为什么每个 GDN 层要 4 次**；
+（2）**把 4 个 rmsnorm 变体合并**（它们做的是同类工作）。
+
+**⇒ 但注意：这 1906 次派发里 497 是 GEMV、其余 1409 次分摊 16.3 ms，
+即使把非 GEMV 全部消除，4 行 pass 也只能从 51 ms 降到 34.5 ms
+（聚合 79.4 → 116 tok/s），仍低于 Splash 的 170。**
+
+**未做改动，未验证。**
