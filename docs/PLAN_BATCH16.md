@@ -7494,3 +7494,39 @@ server==cli: differs at char 5 of 218/268
 
 Splash 的第二个杠杆是**并发聚合**（4 并发 170 tok/s = 3.9×）：批量摊薄权重扫描。
 我们的引擎有 slot 和批处理通路，但基准从来没有跑过并发。
+
+### 72cj. 修 spec 跨请求状态：假设被否证，但挖出**普通通路在长 prompt 上不确定**（第 148 轮）
+
+目标已改成「冷/热 TTFT 追平 llama.cpp 和 Ollama，otps 追平 Inco Splash」，
+所以 spec 通路成了第一优先。
+
+**先找到一处确凿的状态泄漏。** MTP head 的 `kv_append` 只拿到 `pos`、**没有 slot 偏移**：
+
+```rust
+Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
+    .buf(2, &m.k_cache)          // batch*nkv*max_t*hd*2 分配，但按绝对 pos 寻址
+    .scalar(4, pos as i32)
+```
+
+而 `reset()`（全量）一直有 `zero(&m.k_cache); zero(&m.v_cache);`，
+**`reset_seq(slot)`（每请求）却没有**。已补上（复用 `zero_half`，约 134 MB / 0.4 ms）。
+**这是真的泄漏，但它没有修好那 4 个门禁** —— 假设被否证，改动保留（更正确、实测无代价，
+`accept.sh` 19/0）。
+
+**然后得到一个反直觉的最小复现**（同一个 server、同一个 602 token prompt、连发 3 次）：
+
+| | req0 | req1 | req2 | 一致？ |
+|---|---|---|---|---|
+| **普通通路** | `4e8eeafc` | `6a228403` | `28d933a3` | **否** |
+| **spec 通路** | `6fed83fb` | `6fed83fb` | `6fed83fb` | **是** |
+
+**⇒ 不确定的是普通通路，spec 反而是稳定的。** 所以 spec 不是「读到脏缓存产出垃圾」，
+而是**稳定地给出了一个和参考不同的答案**。
+
+这同时说明：`accept.sh` 关掉 spec 时 19/0（普通通路确定），而我这个 602 token 的
+长 prompt 上普通通路 3 次全不一样 —— **差异只在「长 prompt + 分块 prefill + 前缀缓存」
+这条路上**，短 prompt 的确定性门禁覆盖不到它。
+
+**这是一个独立的、可能更重要的正确性 bug：长 prompt 下普通通路不可复现。**
+它也可能就是 spec 与普通通路对不上的根源（拿一个不确定的答案当参考，谁都对不上）。
+下一轮先修这个。

@@ -910,6 +910,27 @@ impl Qwen38 {
                 }
             }
         }
+        // The draft head's cache too.  It is a single cache addressed by absolute
+        // position - its `kv_append` gets `pos` and no slot offset - and `reset`
+        // has always zeroed it while `reset_seq`, the per-request reset, did not.
+        // So the second request's decode attended over the first request's keys
+        // and values at every position its own prefill had not just rewritten,
+        // which is why the server's spec path was correct only on the first
+        // request to a fresh server and diverged at character 5 after that.
+        if let Some(m) = self.mtp.as_ref() {
+            for buf in [&m.k_cache, &m.v_cache] {
+                let n = (buf.len_bytes() / 2) as i32;
+                if n <= 0 {
+                    continue;
+                }
+                b.encode(
+                    Dispatch::new(&k, ((n as usize).div_ceil(8), 1, 1), (256, 1, 1))
+                        .buf(1, buf)
+                        .scalar(2, n)
+                        .scalar(4, 0),
+                );
+            }
+        }
         let _t2 = std::time::Instant::now();
         b.finish(true);
         if std::env::var_os("QW_STEP_TIME").is_some() {
