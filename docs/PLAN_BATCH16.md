@@ -7310,3 +7310,44 @@ server-side forward_rows 合计  1.161 s
 下一轮要从这里继续查。
 
 `fastchk` md5 不变、`gemm-check` PASSED，两个新命令都只在显式调用时运行。
+
+### 72ce. **找到并修掉 0.265 s：prefill 对每一行都做了一次 argmax**（第 143 轮）
+
+§72cd 量到服务器 `forward_rows` 合计 1.16 s，而 HTTP 冷 TTFT 是 1.60 s。
+把 `QW_STEP_TIME` 改成**同时记录每次 forward 的起点和终点**后，时间线终于对上了：
+
+```
+（修之前）
+598 行 prefill   起点 152 ms   耗时 1114 ms   终点 1266 ms
+      ← 265 ms 空档 →
+4 行尾块         起点 1531 ms  耗时  44 ms    终点 1575 ms
+```
+
+`argmax(&model.logits_row(i))` 在**行循环里对每一行**都执行一次。`logits_row` 是
+一次**阻塞式 GPU→CPU 读取整个 248320 宽的词表**（0.5 MB）+ 转 f32 + argmax，
+一次约 0.44 ms；598 行就是 **265 ms**。而 `next` 这个值在整个函数里只有一处消费者：
+
+```rust
+if a.ready { a.feed = next; }
+```
+
+`a.ready` 在"这一行把 prompt 吃完"时被置位，所以**只有最后一行需要采样**，
+前面 597 次全是白做。改成在消费处现算：
+
+```rust
+if a.ready { a.feed = argmax(&model.logits_row(i)); }
+```
+
+**空档从 265 ms 变成 0 ms**（4 行尾块起点 1531 → 1267 ms），
+
+```
+coldenv 冷 TTFT   1.591 / 1.564 / 1.599 / 1.607 / 1.604   ->   1.320 / 1.324 / 1.328
+```
+
+**省下约 0.28 s（17%），而且方差从 ±0.04 s 收到 ±0.004 s。**
+`accept.sh` **19 passed / 0 failed ACCEPTED**，`fastchk` md5 不变。
+
+**教训**：前面几轮一直在内核里找那 0.5 s，而它一半在**采样路径上**——
+一个对每行都跑的阻塞式全词表读取。`QW_SKIP_KERNEL` 之类的减法看不到它，
+因为它不是 kernel；`gemm-bench` 也看不到它，因为它不在 GEMM 里。
+**只有把 forward 的起止时间戳都记下来、把请求的时间线拼出来，才看得见。**

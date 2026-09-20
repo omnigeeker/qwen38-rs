@@ -1160,6 +1160,11 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             break 'pass;
         }
         let _t_fwd = std::time::Instant::now();
+        let _pre_ms = if std::env::var_os("QW_STEP_TIME").is_some() {
+            now_ns().saturating_sub(REQ_NS.load(std::sync::atomic::Ordering::Relaxed)) / 1_000_000
+        } else {
+            0
+        };
         let mut failed = match model
             .set_tokens(&toks)
             .and_then(|_| model.forward_rows(&rows))
@@ -1168,12 +1173,13 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
             Err(e) => Some(e.to_string()),
         };
         if std::env::var_os("QW_STEP_TIME").is_some() {
-            let pre = now_ns().saturating_sub(REQ_NS.load(std::sync::atomic::Ordering::Relaxed));
             eprintln!(
-                "step time: {} rows, {} ms before the first forward, forward {:?}",
+                "step time: {} rows, started at {} ms, took {:?}, ended at {} ms",
                 rows.len(),
-                pre / 1_000_000,
-                _t_fwd.elapsed()
+                _pre_ms,
+                _t_fwd.elapsed(),
+                now_ns().saturating_sub(REQ_NS.load(std::sync::atomic::Ordering::Relaxed))
+                    / 1_000_000
             );
         }
         for (i, &slot) in row_slot.iter().enumerate() {
@@ -1206,7 +1212,6 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     }
                 }
             }
-            let next = argmax(&model.logits_row(i));
             if a.pf < a.ids.len() {
                 let pct = a.pf * 100 / a.ids.len().max(1);
                 if pct >= a.logged_pct + 25 {
@@ -1247,7 +1252,15 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 a.ready = true;
             }
             if a.ready {
-                a.feed = next;
+                // Sampled HERE, not at the top of the row loop.  `logits_row` is a
+                // blocking GPU read of the whole 248320-wide vocabulary and `next`
+                // is consumed only on this line, so sampling every row of a prefill
+                // chunk did 597 reads that were thrown away - measured as a 265 ms
+                // gap between the prefill pass and the four-row tail pass of a
+                // 602-token prompt, 16% of cold time-to-first-token.  `a.ready` is
+                // set just above on the row that completes the prompt, so the row
+                // that produces the answer's first token still samples.
+                a.feed = argmax(&model.logits_row(i));
             }
         }
         // Record and send once per slot, after every row of this pass has been
