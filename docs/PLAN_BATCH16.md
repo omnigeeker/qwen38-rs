@@ -8172,3 +8172,30 @@ median inter-pass gap: 0.00 ms    sum(gaps)=55 ms
 
 **⇒ spec 的单流成本里，draft head 的开销很可能比 verify 的行摊薄更主要。**
 这是下一个要量的东西，而不是融合小 kernel。
+
+### 72db. 量出 spec 的 draft/verify 拆分：**draft 只占 15%，verify 占 85%**（第 166 轮）
+
+`spec_step` 一直返回 `(pos, token, draft_secs, pass_secs)`，
+但服务器把它丢掉了（`Ok((np, ntok, _draft_s, _pass_s))`）。
+在已有的 `QW_SPEC_DEBUG` 下把它打出来（44 个 step，短 prompt）：
+
+```
+median draft  :  7.2 ms
+median verify : 41.6 ms
+draft share   : 15%
+```
+
+**⇒ draft head 不是瓶颈（假设再次被证伪）。成本在 verify。**
+
+而且 **verify 的 4 行 pass 是 41.6 ms，1 行批处理 pass 是 31.7 ms —— 只有 1.31 倍。
+行摊薄在 verify 里其实已经不错了。**
+
+**单流账**：一个 spec step 48.8 ms（7.2 + 41.6），实测 40.5 tok/s
+⇒ **每个 step 只产出约 2 个 token**（不是我以为的 4.32）。
+
+**要追上 Splash 的 74，需要 1.83 倍，来源只有两个：**
+1. **提高接受率**（约 2 → 4 就是 2 倍）；
+2. **压低 verify**（41.6 → 31.7 是 1.31 倍）。
+
+**注意**：`ntok` 字段不是接受数（它的取值从 8 到 28097，实际是位置），
+所以接受率还不能从这个日志读，需要另外量。**下一轮先量准确的接受率分布。**

@@ -1180,7 +1180,20 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                     // prediction from the row that broke the run.
                     let mut out: Vec<u32> = Vec::new();
                     match model.spec_step(a.pos, a.feed, &mut out, slot) {
-                        Ok((np, ntok, _draft_s, _pass_s)) => {
+                        Ok((np, ntok, draft_s, pass_s)) => {
+                            // The split that decides what single-stream spec
+                            // throughput actually costs: `TILE - 1` draft steps
+                            // through the head against one verify pass.  Discarded
+                            // until now, so the draft head's share was unknown.
+                            if std::env::var_os("QW_SPEC_DEBUG").is_some() {
+                                eprintln!(
+                                    "spec split: draft {:.2} ms, verify {:.2} ms, accepted {} (draft {:.0}%)",
+                                    draft_s * 1e3,
+                                    pass_s * 1e3,
+                                    ntok,
+                                    100.0 * draft_s / (draft_s + pass_s).max(1e-9)
+                                );
+                            }
                             let mut stop = false;
                             // The first element is the token at `pos` again.  Drop it
                             // when the pass that finished the prompt already emitted
