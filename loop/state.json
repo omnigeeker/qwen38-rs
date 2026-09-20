@@ -1,6 +1,6 @@
 {
   "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
-  "round": 242,
+  "round": 244,
   "milestone": "M4",
   "hardware": {
     "chip": "Apple M5 Max",
@@ -5105,9 +5105,13 @@
     {
       "round": 242,
       "what": "Consolidated verification on clean HEAD: cold TTFT 1749 ms (first request after ready, excludes model load), warm 34/19 ms, single-stream 57.3 tok/s, aggregate 79.4 (decode only). Labelled the llama.cpp/Ollama comparison as historical rather than fresh. No code changes; objective still not met on the otps half."
+    },
+    {
+      "round": 244,
+      "what": "Re-measured TTFT fresh against both competitors and corrected my own claim: ours 1749 ms cold / 34-19 ms warm, llama.cpp 863 / 93-88, Ollama 2131 / 71-73. Warm comfortably beats both (2.6-4.6x vs llama.cpp), but cold is 2.03x SLOWER than llama.cpp - my earlier '10 per cent behind' was wrong. So the TTFT half is only half met (warm), not fully met as I had been recording."
     }
   ],
-  "next": "Consolidated verification on the clean HEAD, no code changes this round. Cold TTFT on a ~2000-character prompt, measured as the first request after the server reports ready, is 1749 ms; warm TTFT on the same prompt is 34 and then 19 ms. Single-stream steady state is 57.3 tok/s, which the TILE arithmetic reproduces, and n=4 aggregate steady state is 79.4 tok/s pure decode (67.3 including prefill, 58.8 end to end). CAVEAT ON THE COLD FIGURE: my 'cold' is the first request after the server is ready, so it excludes model load, and the comparison against llama.cpp and Ollama comes from earlier paired measurements (cold about 10 per cent behind, warm about 8x ahead) - I did not re-run the competitors this round, so those comparisons are historical data rather than a fresh measurement, and I am labelling them as such. OBJECTIVE STATUS, not met: the TTFT half is met, the otps half is not - 77 per cent of Splash single-stream and 46 per cent aggregate. Every kernel lever I have is now refuted with paired measurements (parameter tuning, row blocking, GEMM routing, TILE=2/3/6, encoder splits, CPU overhead, the U4H family, and the NK=4 U4 kernel), so what remains is the architectural rewrite of the rows>4 grid-mapped path, whose risk falls on the cold TTFT that currently meets target. I have twice asked the user to choose between that rewrite, closing out with the verified result set, or a different target, and have had no answer; the goal stays active and I will not mark it complete. Note the working tree has untracked stock/ files belonging to the user that must not be touched.",
+  "next": "Re-measured the TTFT comparison fresh instead of relying on the historical paired numbers I had been quoting, and it CORRECTS my own claim. Same machine, same 2000-character prompt, all three engines: ours 1749 ms cold and 34/19 ms warm; llama.cpp build 10809 863 ms cold and 93/88 ms warm; Ollama qwen38-27b:bench 2131 ms cold and 71/73 ms warm. So warm TTFT meets and exceeds the objective - we are 2.6 to 4.6x faster than llama.cpp and 2.1 to 3.7x faster than Ollama. But cold TTFT is only between the two: 1.22x faster than Ollama (1749 against 2131) yet 2.03x SLOWER than llama.cpp (1749 against 863). My earlier statement that cold was about 10 per cent behind was wrong - that figure came from a different prompt size and machine state. On a like-for-like measurement cold TTFT is 2.03x llama.cpp's. CONSEQUENCE FOR THE OBJECTIVE: the user asked for both cold and warm TTFT to be roughly on par with both llama.cpp and Ollama. Warm is comfortably met against both. Cold beats Ollama but loses to llama.cpp by 2x, so on the strict reading of 'roughly on par with llama.cpp' that item is NOT met. I had been recording the TTFT half as met for several rounds and that needs correcting: it is half met, warm only. This does not change the otps conclusion, which remains 57.3 single (77 per cent of Splash's 74) and 79.4 aggregate (46 per cent of 170). Since the user chose to close out, I am not starting new optimisation work, but this correction matters because it means the delivered claim was overstated on one axis, and the cold TTFT gap is now a concrete, measured target (1749 -> 863 ms) should work resume. Note the working tree has untracked stock/ files belonging to the user that must not be touched.",
   "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
   "open_issues": [
     {
