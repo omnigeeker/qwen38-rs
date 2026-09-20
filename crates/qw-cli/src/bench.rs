@@ -380,6 +380,13 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 anyhow::ensure!(k == 4, "--rows 19 is the flat k=4 kernel; use --tokens 4");
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K4_FLAT)?
             } else if rows == 20 {
+                // DO NOT TRUST THIS NUMBER FOR THE ENGINE.  The flat k=8 kernel is
+                // faster than the k=4 one here - 7.731/7.738 ms per token against
+                // 8.824/8.834 - and it is still 1.28x SLOWER on a real eight-row
+                // decode pass: 122.00 ms min against 95.24 ms for the 2 x k=4 the
+                // engine actually runs.  This arm exists only to reproduce that
+                // divergence; see docs/PLAN_BATCH16.md §72fb.  Wiring it into
+                // `encode_rows` was tried and reverted.
                 anyhow::ensure!(k == 8, "--rows 20 is the flat k=8 kernel; use --tokens 8");
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K8_FLAT)?
             } else if rows == 8 {
