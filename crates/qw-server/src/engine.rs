@@ -996,8 +996,9 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         // unwarmed, the head attends over a cache that was never written, its drafts
         // are junk, and the server was measured to diverge from the CLI at character
         // 36 of a 64-token answer even though the plain path matched exactly.
-        let spec_warm = std::env::var("QW_SPEC").is_ok() && model.has_mtp();
-        let spec_ok = std::env::var("QW_SPEC").is_ok()
+        let spec_on = qw_model::runner::spec_enabled();
+        let spec_warm = spec_on && model.has_mtp();
+        let spec_ok = spec_on
             && decoding == 1
             && prefilling == 0
             && slots

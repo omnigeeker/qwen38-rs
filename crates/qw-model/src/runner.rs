@@ -135,6 +135,20 @@ struct Layer {
 /// Number of tokens a single forward pass can carry (see docs/PLAN_K2.md).
 pub const TILE: usize = 4;
 
+/// The one switch for the whole speculative path.
+///
+/// It used to be read as `QW_SPEC` being *present* in three independent places:
+/// the engine's decode loop, this crate's per-row snapshot flag, and the CLI's
+/// `gen`.  Turning it on by default in the engine alone left the verify pass
+/// running without the per-row recurrent snapshots it needs, so a rejected draft
+/// left the state wrong and the server diverged from the CLI at character 5 -
+/// but only when `QW_SPEC` was unset, which is why passing `QW_SPEC=1` explicitly
+/// never reproduced it.  On by default; `QW_SPEC=0` disables it everywhere.
+pub fn spec_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QW_SPEC").ok().as_deref() != Some("0"))
+}
+
 /// The most rows of one sequence a single pass may carry.  The convolution ring
 /// has to hold `conv_k` rows of history plus every row this pass writes, so the
 /// ring - and therefore the prefill chunk - is sized from this.  Raising it from
@@ -751,7 +765,7 @@ impl Qwen38 {
             last_dispatches: 0,
             debug: None,
             bf16_residual: std::env::var("QW_BF16_ROUND").is_ok(),
-            spec_snap: std::env::var("QW_SPEC").is_ok(),
+            spec_snap: spec_enabled(),
             batch,
             kv_stride: 0,
             win_stride: 0,

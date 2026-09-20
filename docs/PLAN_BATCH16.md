@@ -7775,3 +7775,43 @@ Splash 单流 74 tok/s = 13.5 ms/token。而带宽下限是
 所以 spec 通路从「一个选项」变成「otps 目标的必要条件」。
 下一轮集中攻它：`accept.sh` 里失败、外面复现不出来，就用 `accept.sh` 那个
 `PIN` 用例（`max_tokens=64` 裸补全）逐行对照 CLI，把分叉点定位到具体 kernel。
+
+### 72cq. **投机解码已默认开启，`accept.sh` 19/0** —— 三轮悬案的真因（第 155 轮）
+
+**真因：`QW_SPEC` 在三个地方被用「环境变量是否存在」独立判断。**
+
+```rust
+runner.rs:754   spec_snap: std::env::var("QW_SPEC").is_ok(),   // 每行状态快照
+engine.rs:999   let spec_warm = std::env::var("QW_SPEC").is_ok() && ...;
+engine.rs:1000  let spec_ok   = std::env::var("QW_SPEC").is_ok() && ...;
+gen.rs:124      let spec       = std::env::var("QW_SPEC").is_ok() && ...;
+```
+
+我只把 **engine.rs** 改成默认开，**`runner.rs:754` 的 `spec_snap` 仍然是 `is_ok()`**。
+于是「engine 走投机解码」而「verify pass 不拍每行快照」——
+**draft 被拒后递归状态回滚到错误的位置**，服务器在第 5 个字符就和 CLI 分叉。
+
+**这解释了之前所有对不上的现象：**
+
+* 只在 `QW_SPEC` **未设置**时出现（门禁的 `srv_cmp` 那台）——
+  显式传 `QW_SPEC=1` 时三处**同时**打开，所以我在 `accept.sh` 外面怎么试都是 218；
+* 门禁里两台环境相同的 server 给出不同答案（一台 `QW_SPEC` 未设置、一台 `=1`）；
+* CLI 一直是对的（`gen.rs` 和 `runner.rs` 都用 `is_ok()`，自洽）。
+
+**修法：合成一个开关。**
+
+```rust
+/// 投机通路的唯一开关。默认开；QW_SPEC=0 全局关闭。
+pub fn spec_enabled() -> bool { ... var("QW_SPEC") != Some("0") }
+```
+
+三处调用点全部改用它。**`accept.sh` 立刻 19 passed / 0 failed，而且投机解码是默认开的。**
+快照内存本来就已经无条件算进预算并分配，所以默认开**不增加任何内存**。
+
+**收益（短 prompt 单流 otps）：** 22.33 → 36.20 / 27.86（本轮机器很吵；
+早先 5 对干净 A/B 是 19.26 vs 14.07 中位，**1.37×**）。
+**36.20 tok/s 已经越过 33 tok/s 的带宽下限**，证实投机确实在起作用。
+
+**教训：一个开关被复制到 N 个地方，改其中一处就是把系统切成两半。
+「显式打开时正常」和「默认打开时正常」是两回事——**
+三轮里我一直用 `QW_SPEC=1` 复现，而那恰好是唯一不出问题的配置。

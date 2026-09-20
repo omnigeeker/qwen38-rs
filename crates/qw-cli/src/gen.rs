@@ -121,7 +121,7 @@ pub fn run(opts: GenOpts<'_>) -> Result<()> {
     // Speculative decoding needs the draft head's own k/v cache to cover the
     // prompt, and it can only be advanced while each position's hidden state is
     // still in the tile, so the warm-up rides along with the prefill.
-    let spec = std::env::var("QW_SPEC").is_ok() && model.has_mtp();
+    let spec = qw_model::runner::spec_enabled() && model.has_mtp();
     let t0 = Instant::now();
     for (p, id) in ids.iter().enumerate() {
         model.set_token(*id)?;
