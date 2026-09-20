@@ -9834,3 +9834,44 @@ device const half* src = (q >= 0)
 一个 pass 里既有 A 的多行又有 B 的行）。**
 
 **⇒ 未做改动，未验证。下一轮按上面的形式实现，并用新门禁判定。**
+
+### 72et. 第二次尝试（补上 `pos0`/`cur_base`）**仍然失败**，已回退（第 212 轮）
+
+按 §72es 的修法实现：每行传入 `rp`（位置）、`rw`（window 偏移）、
+`rq`（该序列在本 pass 的起始位置）、`rc`（该起始位置所在的 `cur` 行），
+核内 `q = pos - rq`，`q >= 0` 时读 `cur[(rc+q)*conv_dim + c]`，否则读 window。
+
+**结果（20 项门禁）：**
+
+```
+FAIL  batch decode changes the answer (bad:[0, 1, 2, 3])
+19 passed, 1 failed     NOT ACCEPTED
+```
+
+**⇒ 仍然失败。⇒ §72es 的根因判断**不完整**——补上 `pos0`/`cur_base` 不足以修好。**
+
+**⇒ 已 `git checkout crates/` 回退并重建。**
+
+**门禁的价值在这里再次体现**：这次失败被立刻、明确地判定为「批解码改变了答案」，
+**而不是要等到人工比对 token 数才发现**（第一次失败就是这样才发现的）。
+
+**⇒ 剩余未排除的候选（按可能性排序）：**
+
+1. **`conv_out` 的写入布局**：旧代码用
+   `.buf_offset(2, &scratch.conv_out, row * (conv_dim * 2))`，
+   我的核写 `out[row * conv_dim + c]`。
+   **若 `conv_out` 的实际行距不是 `conv_dim` 个 half，这里就错了。**
+   下一轮应先查 `scratch.conv_out` 的分配大小与真实行距。
+2. **`qkv_cur` 的行距**同理。
+3. **同 dispatch 内的读写竞争**：我的核在同一次派发里既写 window 又读 window。
+   **不同序列的 `wo` 不同，理论上不重叠；但若 `win_stride` 的含义与我理解的不同
+   （例如它已是元素数而非字节数），`seq * win_stride / 2` 就会算错偏移，
+   导致两个序列写到同一区域。**
+   **⇒ 这个最可疑**：旧代码用的是 `woff / 2`，其中 `woff = seq * win_stride`，
+   所以 `win_stride` 是**字节**数。我在新代码里写的是
+   `(seq * win_stride / 2) as i32`——**形式等价**。但旧代码的 conv 用
+   `.buf_offset(0, &g.window, woff)` 传**字节**偏移，
+   而我的核用 `wo` 作为**元素**偏移去算 `wo + slot*conv_dim`。
+   **两者必须一致——这一处需要逐字核对。**
+
+**未保留任何未验证的改动。**
