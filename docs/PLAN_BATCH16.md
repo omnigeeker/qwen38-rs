@@ -9389,3 +9389,49 @@ dispatch histogram, 1906 total:
 （聚合 79.4 → 116 tok/s），仍低于 Splash 的 170。**
 
 **未做改动，未验证。**
+
+### 72ej. **`copy_off` x 192 = `copy_seq` 每 pass 跑两次，搬运 2.01 GB（约 4.2 ms）**（第 202 轮）
+
+追查 §72ei 里最可疑的 `copy_off`（192 次）。它只有一个非调试的派发点：
+
+```rust
+// runner.rs:1137
+fn copy_seq(&mut self, seq: usize, restore: bool) -> Result<()> {
+    ...
+    for layer in &self.layers {
+        if let Kind::Gdn(g) = &layer.kind {
+            for (live, saved, stride) in [
+                (&g.state,  &g.cache_state,  self.state_stride),
+                (&g.window, &g.cache_window, self.win_stride),
+            ] {
+                copy_dispatch(&mut b, &k, src, off, dst, off, n);   // 1160
+```
+
+**192 = 48 层 x 2 个缓冲（state + window）x 2 个方向（save + restore）——精确吻合。**
+
+**⇒ 所以 `copy_seq` 在**每个 4 行 pass 里被调用两次**。**
+
+**搬运量：**
+
+| 缓冲 | 每层 | 48 层合计 |
+|---|---|---|
+| `state`（dk=dv=128） | 32 KB | **1.6 MB** |
+| **`window`（conv_ring 1024 x conv_dim 10240 x 2 B）** | **21.0 MB** | **1.01 GB** |
+
+**⇒ save + restore 各一次 = 2.01 GB，按 481 GB/s 是 **4.2 ms**——
+占那 16.3 ms 的 26%。**
+
+**注意：§72eg 我曾提出「conv 窗口流量」并**证伪**了它——
+但当时查的是 conv **内核**的 dispatch（grid=conv_dim，只读最后 4 行），
+**漏掉了 `copy_seq` 这条整窗拷贝的路径**。**
+**⇒ 所以那个假设方向是对的，我证伪得太早、查错了地方。这是一次真实的自我更正。**
+
+**⇒ 且 `window` 里只有最后 4 行对卷积有用（runner.rs:105 注释：
+"the convolution reads the last four"），
+却每 pass 整窗 1.01 GB 拷贝两次——这是明确的浪费。**
+
+**另外**：engine.rs:1102 的注释说 boundary 路径上 `save_prefix` 的 GPU 拷贝
+「is redundant」且已移除。**⇒ 那么每 pass 的两次 `copy_seq` 从何而来、
+是否是遗留调用，是下一步要查清的。**
+
+**未做改动，未验证。**
