@@ -181,7 +181,7 @@ impl<'a> QLinear<'a> {
         batch: &mut CommandBatch,
         single_k: &Kernel,
         tile_k: &Kernel,
-        batch_k: &Kernel,
+        wide_k: &Kernel,
         x: &GpuBuffer,
         y: &GpuBuffer,
         rows: usize,
@@ -408,21 +408,57 @@ impl<'a> QLinear<'a> {
             // overhead is a fixed chain of dependent dispatches that does not care
             // how many rows ride along, so carrying 32 rows instead of 4 amortises
             // it eight-fold.
+            //
+            // Round 190: the wide tile (`wide_k`, NR=2 x NK=8) halves the number of
+            // weight sweeps for rows 5..31 by carrying eight rows per sweep instead
+            // of four.  Measured on the real 497-linears sweep, paired in one
+            // process with a duplicate arm as the instrument's own bias:
+            //
+            //   tokens  engine today        wide tile          ratio   calibration
+            //     8     71.02 ms (2 x k4)   55.34 ms (1 x t28) 0.7792  0.9878
+            //    16    140.27 ms (4 x k4)  107.80 ms (2 x t28) 0.7685  0.9987
+            //
+            // At four tokens the tiled kernel is neutral (35.30 against 36.24,
+            // 0.9741 raw) and NR=4 is worse, so `rows <= TILE` keeps the k4 path.
+            //
+            // A sweep of eight is not free: it costs 55.34 ms against 35.62 ms for
+            // four, because the kernel becomes ALU-bound (8 tokens x 5.76 ms of
+            // MACs) rather than bandwidth-bound.  So a wide sweep is only worth it
+            // when it replaces TWO four-row sweeps, and the schedule below spends a
+            // wide sweep on a remainder only when that remainder would otherwise
+            // cost two narrow ones - which is the case for 5, 6, 7 and 13..15 rows.
+            // The whole decision is made per dispatch from the measured constants,
+            // not from a table, so a future re-measurement is a one-line change.
+            const T28_MS: f64 = 55.34; // one NR=2 x NK=8 sweep
+            const K4_MS: f64 = 35.62; // one four-row sweep
+            let wide_ok = self.out_f % 2 == 0 && self.out_f >= wide_min_out_f();
             let mut off = 0usize;
             while off < rows {
-                let d = Dispatch::new(tile_k, (self.out_f * 32, 1, 1), (32, 1, 1))
+                let rem = rows - off;
+                let use_wide = wide_ok
+                    && (rem as f64 / 8.0).ceil() * T28_MS < (rem as f64 / 4.0).ceil() * K4_MS;
+                let (kern, step, grid_div) = if use_wide {
+                    // NR=2 output rows per threadgroup, so the grid halves.
+                    (wide_k, 8usize, 2usize)
+                } else {
+                    (tile_k, crate::runner::TILE, 1usize)
+                };
+                let d = Dispatch::new(
+                    kern,
+                    (self.out_f.div_ceil(grid_div) * 32, 1, 1),
+                    (32, 1, 1),
+                )
                     .buf_offset(0, self.weight.buf, self.weight.offset)
                     .buf_offset(1, self.scales.buf, self.scales.offset)
                     .buf_offset(2, self.biases.buf, self.biases.offset)
                     .buf_offset(3, x, off * self.in_f * 2)
                     .buf_offset(4, y, off * self.out_f * 2)
                     .scalar(5, self.in_f as i32)
-                    .scalar(6, crate::runner::TILE as i32)
+                    .scalar(6, step as i32)
                     .scalar(7, self.out_f as i32);
                 batch.encode(d);
-                off += crate::runner::TILE;
+                off += step;
             }
-            let _ = batch_k;
         }
     }
 
@@ -517,6 +553,27 @@ fn splitk_enabled(out_f: usize, in_f: usize, rows: usize) -> bool {
         return false;
     }
     rows >= 32 && out_f >= 1024 && out_f <= 5120 && in_f >= 512
+}
+
+/// Smallest `out_f` for which `encode_rows` will spend a wide (NR=2 x NK=8) sweep
+/// on a pass wider than four rows.
+///
+/// The wide kernel gives each threadgroup TWO output rows, so it launches half the
+/// threadgroups the four-row kernel does: 256 for `out_f` 512, 24 for `out_f` 48.
+/// 24 threadgroups on 40 SMs is under a wave and the sweep would be latency-bound
+/// instead of bandwidth-bound - the same failure the rejected row-blocking variant
+/// hit.  This model has one small `out_f` (48, the GDN a/b projections, 96 of the
+/// 497 linears and 0.08 per cent of the weight bytes) and the rest are 1024 and up,
+/// so a 256-row floor excludes exactly that case and nothing else.
+/// `QW_T28_MIN_OUT_F` overrides it; 0 forces the wide path everywhere.
+fn wide_min_out_f() -> usize {
+    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        std::env::var("QW_T28_MIN_OUT_F")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256)
+    })
 }
 
 fn gemm_min_rows() -> usize {

@@ -12,6 +12,18 @@ use qw_weights::WeightStore;
 use std::path::Path;
 use std::time::Instant;
 
+/// Median of a slice, without pulling in a stats crate.  Every comparison in this
+/// file is paired inside one process, so the median of the per-round ratios is the
+/// number to read, not a mean of absolute times.
+fn median(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return f64::NAN;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    s[s.len() / 2]
+}
+
 pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> {
     let mut dev = GpuDevice::new()?;
     let store = WeightStore::load_dir(&dev, model_dir)?;
@@ -282,6 +294,169 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
             (t[2] / t[0]) / bias,
             SERIAL
         );
+        return Ok(());
+    }
+
+    // rows == 21: the 2-D (features x tokens) tile, one weight read per pass.
+    //
+    // One sweep of all 14.412 GB is the floor and every arm here pays it exactly
+    // once per chunk; what varies is how many tokens ride on that sweep and how
+    // much redundant activation traffic the kernel issues.  The measurement that
+    // matters is tokens per weight read, and the fair baseline for a given token
+    // count is the arm the engine runs today: `rows <= TILE` calls the flat k=4
+    // kernel once, anything wider loops it in fours.
+    //
+    // Round-robin inside one process, as for rows == 9, and the first arm is
+    // repeated last so the ratio against it is the instrument's own bias rather
+    // than a hard 1.0000.
+    if rows == 21 {
+        // (label, [(kernel, NK tokens, NR rows), ...])
+        type Arm = (&'static str, &'static [(&'static str, usize, usize)]);
+        const K4: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1)];
+        const K8: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_K8_FLAT, 8, 1)];
+        const T24: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T24, 4, 2)];
+        const T44: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T44, 4, 4)];
+        const T28: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T28, 8, 2)];
+        const T48: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T48, 8, 4)];
+        const K4X2: &[(&str, usize, usize)] = &[
+            (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
+            (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
+        ];
+        const K4X4: &[(&str, usize, usize)] = &[
+            (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
+            (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
+            (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
+            (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
+        ];
+        const T44X4: &[(&str, usize, usize)] = &[
+            (qw_metal::msl::K_Q4_GEMV_T44, 4, 4),
+            (qw_metal::msl::K_Q4_GEMV_T44, 4, 4),
+            (qw_metal::msl::K_Q4_GEMV_T44, 4, 4),
+            (qw_metal::msl::K_Q4_GEMV_T44, 4, 4),
+        ];
+        const T48X2: &[(&str, usize, usize)] = &[
+            (qw_metal::msl::K_Q4_GEMV_T48, 8, 4),
+            (qw_metal::msl::K_Q4_GEMV_T48, 8, 4),
+        ];
+        let arms: Vec<Arm> = match k {
+            4 => vec![
+                ("k4-flat  x1  (engine today)", K4),
+                ("t24 (NR2) x1", T24),
+                ("t44 (NR4) x1", T44),
+                ("k4-flat  x1  (dup)", K4),
+            ],
+            8 => vec![
+                ("k4-flat  x2  (engine today)", K4X2),
+                ("k8-flat  x1", K8),
+                ("t28 (NR2) x1", T28),
+                ("t48 (NR4) x1", T48),
+                ("k4-flat  x2  (dup)", K4X2),
+            ],
+            16 => vec![
+                ("k4-flat  x4  (engine today)", K4X4),
+                ("t44 (NR4) x4", T44X4),
+                ("t48 (NR4) x2", T48X2),
+                ("t28 (NR2) x2", &[(qw_metal::msl::K_Q4_GEMV_T28, 8, 2); 2]),
+                ("k4-flat  x4  (dup)", K4X4),
+            ],
+            _ => anyhow::bail!("--rows 21 supports --tokens 4, 8 or 16 (got {k})"),
+        };
+
+        // out_f must be a multiple of NR for the tiled kernels; every quantised
+        // linear in this model is a multiple of 4, but check rather than assume.
+        for (label, chunks) in &arms {
+            for (_kn, _nk, nr) in chunks.iter() {
+                if *nr > 1 {
+                    for l in &linears {
+                        anyhow::ensure!(
+                            l.out_f % nr == 0,
+                            "arm {label}: out_f {} is not a multiple of NR {nr}",
+                            l.out_f
+                        );
+                    }
+                }
+            }
+        }
+
+        let n = arms.len();
+        let rounds = iters.max(1);
+        let mut times: Vec<Vec<f64>> = vec![Vec::new(); n];
+        for round in 0..rounds {
+            let order: Vec<usize> = if round % 2 == 0 {
+                (0..n).collect()
+            } else {
+                (0..n).rev().collect()
+            };
+            for i in order {
+                let t0 = Instant::now();
+                {
+                    let mut batch = dev.batch();
+                    let mut kernels = Vec::new();
+                    for (kn, nk, nr) in arms[i].1.iter() {
+                        let kern = batch.kernel(qw_metal::msl::COMMON, kn)?;
+                        kernels.push((kern, *nk, *nr));
+                    }
+                    for l in &linears {
+                        let x = &xs.iter().find(|(nn, _)| *nn == l.in_f).unwrap().1;
+                        let y = &ys.iter().find(|(nn, _)| *nn == l.out_f).unwrap().1;
+                        let mut off = 0usize;
+                        for (kern, nk, nr) in &kernels {
+                            let d = qw_metal::Dispatch::new(
+                                kern,
+                                ((l.out_f / nr) * 32, 1, 1),
+                                (32, 1, 1),
+                            )
+                            .buf_offset(0, l.weight.buf, l.weight.offset)
+                            .buf_offset(1, l.scales.buf, l.scales.offset)
+                            .buf_offset(2, l.biases.buf, l.biases.offset)
+                            .buf_offset(3, x, off * l.in_f * 2)
+                            .buf_offset(4, y, off * l.out_f * 2)
+                            .scalar(5, l.in_f as i32)
+                            .scalar(6, *nk as i32)
+                            .scalar(7, l.out_f as i32);
+                            batch.encode(d);
+                            off += *nk;
+                        }
+                        anyhow::ensure!(off == k, "arm {} covered {off} of {k} tokens", arms[i].0);
+                    }
+                    batch.finish(true);
+                }
+                times[i].push(t0.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        let bias = {
+            let last = &times[n - 1];
+            if last.is_empty() { 1.0 } else { median(last) / median(&times[0]) }
+        };
+        println!(
+            "2-D tile sweep over the full {:.3} GB of quantised weights, {k} tokens either way, {rounds} rounds",
+            total_bytes as f64 / 1e9
+        );
+        println!(
+            "{:<30} {:>10} {:>10} {:>10} {:>9}",
+            "arm", "ms/min", "tok/s", "vs base", "calib"
+        );
+        for (i, (label, chunks)) in arms.iter().enumerate() {
+            let m = median(&times[i]);
+            let ratio = m / median(&times[0]);
+            let tag = if i == 0 {
+                "(paired baseline)".to_string()
+            } else if i + 1 == n {
+                format!("(CALIBRATION: instrument bias {bias:.4})")
+            } else if ratio / bias < 1.0 {
+                format!("faster, {} chunk(s)", chunks.len())
+            } else {
+                format!("slower, {} chunk(s)", chunks.len())
+            };
+            println!(
+                "{:<30} {:>10.2} {:>10.1} {:>10.4} {:>9.4}  {tag}",
+                label,
+                m,
+                k as f64 * 1000.0 / m,
+                ratio,
+                ratio / bias
+            );
+        }
         return Ok(());
     }
 

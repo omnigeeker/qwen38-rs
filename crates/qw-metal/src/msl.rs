@@ -725,6 +725,91 @@ kernel void NAME(                                                               
 Q4_GEMV_KS_FLAT(q4_gemv_k4_flat, 4)
 Q4_GEMV_KS_FLAT(q4_gemv_k8_flat, 8)
 
+// Two-dimensional tile: NR output features by NK tokens per threadgroup.
+//
+// The flat kernel already reads all K weights for one row while keeping NK token
+// accumulators, so one sweep serves NK tokens.  What it does not share is the
+// ACTIVATION read: every lane re-reads the same NK x vectors once per output row,
+// so the kernel issues out_f times more x traffic than weight traffic.  Counting
+// bytes per lane-iteration at K=5120 - one 4-byte weight word against NK 16-byte
+// uint4 x loads - the x side is 64 of the 68 bytes at NK=4 and 128 of the 132 at
+// NK=8.  That is why k8-flat loses: it is not short of DRAM bandwidth (one sweep
+// is still 14.4 GB either way) but of load bandwidth, and doubling NK doubles the
+// dominant term.  Measured: k4-flat moves 245 GB in 35.3 ms and k8-flat moves
+// 475 GB in 61.8 ms, both at ~7 TB/s, which is the same wall.
+//
+// Handing a threadgroup NR rows instead fixes the redundancy rather than the
+// symptom.  The x vector loaded for token t is used NR times before it is
+// dropped, so bytes per lane-iteration fall from (4 + 16*NK) to
+// ((4 + 16*NK)/NR) per row, while the weight read per pass is still exactly one
+// sweep.  At NR=4, NK=8 the kernel moves 130 GB for eight tokens against
+// k4-flat's 245 GB for four - a quarter of the load traffic per token - and the
+// weight read (30.2 ms) is then no longer the binding constraint, the ALU is
+// (5.76 ms x tokens).
+//
+// The per-row accumulation order is unchanged from the flat kernel: same j
+// sequence, same per-j order, same dot(half4,half4) pairs.  So this is
+// bit-identical to `q4_gemv_k4_flat` rather than merely close, and gemm-check
+// remains the gate.  `out_f` must be a multiple of NR - the caller checks.
+#define Q4_GEMV_KS_FLAT_T(NAME, NK, NR)                                                    \
+kernel void NAME(                                                                          \
+    device const uint*   w      [[buffer(0)]],                                             \
+    device const ushort* scales [[buffer(1)]],                                             \
+    device const ushort* biases [[buffer(2)]],                                             \
+    device const half*   x      [[buffer(3)]],                                             \
+    device half*         y      [[buffer(4)]],                                             \
+    constant int&        K      [[buffer(5)]],                                             \
+    constant int&        k      [[buffer(6)]],                                             \
+    constant int&        out_f  [[buffer(7)]],                                             \
+    constant int&        R      [[buffer(8)]],                                             \
+    uint rb   [[threadgroup_position_in_grid]],                                             \
+    uint lane [[thread_index_in_threadgroup]])                                             \
+{                                                                                          \
+    (void)k;                                                                               \
+    (void)R;                                                                               \
+    const int n_u32    = K / 8;                                                            \
+    const int n_groups = K / GROUP_SIZE;                                                   \
+    const int row0     = (int)rb * NR;                                                     \
+    float acc[NR][NK];                                                                     \
+    _Pragma("unroll") for (int r = 0; r < NR; ++r)                                         \
+        _Pragma("unroll") for (int t = 0; t < NK; ++t) acc[r][t] = 0.0f;                   \
+    for (int j = (int)lane; j < n_u32; j += 32) {                                          \
+        const int g = j >> 3;                                                              \
+        half4 w0[NR], w1[NR];                                                              \
+        _Pragma("unroll") for (int r = 0; r < NR; ++r) {                                   \
+            const half sh = (half)as_type<float>((uint)scales[(row0 + r) * n_groups + g] << 16); \
+            const half bh = (half)as_type<float>((uint)biases[(row0 + r) * n_groups + g] << 16); \
+            const uint word = w[(size_t)(row0 + r) * (size_t)n_u32 + (size_t)j];           \
+            w0[r] = half4((half)( word        & 0xFu),                                     \
+                          (half)((word >>  4) & 0xFu),                                     \
+                          (half)((word >>  8) & 0xFu),                                     \
+                          (half)((word >> 12) & 0xFu)) * sh + bh;                          \
+            w1[r] = half4((half)((word >> 16) & 0xFu),                                     \
+                          (half)((word >> 20) & 0xFu),                                     \
+                          (half)((word >> 24) & 0xFu),                                     \
+                          (half)((word >> 28) & 0xFu)) * sh + bh;                          \
+        }                                                                                  \
+        _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                   \
+            const uint4 xv = *(device const uint4*)(x + (size_t)t * K + (size_t)j * 8);    \
+            const half4 x0 = as_type<half4>(xv.xy);                                        \
+            const half4 x1 = as_type<half4>(xv.zw);                                        \
+            _Pragma("unroll") for (int r = 0; r < NR; ++r) {                               \
+                acc[r][t] += (float)(dot(w0[r], x0) + dot(w1[r], x1));                     \
+            }                                                                              \
+        }                                                                                  \
+    }                                                                                      \
+    _Pragma("unroll") for (int r = 0; r < NR; ++r) {                                       \
+        _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                   \
+            const float a = simd_sum(acc[r][t]);                                           \
+            if (lane == 0) y[(size_t)t * out_f + (size_t)(row0 + r)] = (half)a;            \
+        }                                                                                  \
+    }                                                                                      \
+}
+Q4_GEMV_KS_FLAT_T(q4_gemv_t24, 4, 2)
+Q4_GEMV_KS_FLAT_T(q4_gemv_t44, 4, 4)
+Q4_GEMV_KS_FLAT_T(q4_gemv_t28, 8, 2)
+Q4_GEMV_KS_FLAT_T(q4_gemv_t48, 8, 4)
+
 // ---------------------------------------------------------------------------
 // Row-amortising GEMM for prefill.
 //
@@ -1214,6 +1299,11 @@ pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
 pub const K_Q4_GEMV_K8_U4HX: &str = "q4_gemv_k8_u4hx";
 pub const K_Q4_GEMV_K4_FLAT: &str = "q4_gemv_k4_flat";
 pub const K_Q4_GEMV_K8_FLAT: &str = "q4_gemv_k8_flat";
+/// 2-D (features x tokens) flat tile.  Name, NK tokens, NR rows per threadgroup.
+pub const K_Q4_GEMV_T24: &str = "q4_gemv_t24";
+pub const K_Q4_GEMV_T44: &str = "q4_gemv_t44";
+pub const K_Q4_GEMV_T28: &str = "q4_gemv_t28";
+pub const K_Q4_GEMV_T48: &str = "q4_gemv_t48";
 pub const K_Q4_GEMM_TILE: &str = "q4_gemm_tile";
 pub const K_Q4_GEMM_REDUCE: &str = "q4_gemm_reduce";
 pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";
