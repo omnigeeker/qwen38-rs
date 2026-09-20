@@ -665,6 +665,66 @@ Q4_GEMV_KS_U4HX(q4_gemv_k4_u4hx, 4)
 // is a trap worth naming.  This instantiation makes the k=8 question answerable.
 Q4_GEMV_KS_U4HX(q4_gemv_k8_u4hx, 8)
 
+// Flat-partition variant of the same kernel.  In the macros above each lane owns whole
+// 64-weight groups, so the eight halves it needs sit at `g * GROUP_SIZE` and adjacent
+// lanes are 64 bytes apart: a warp's x load touches 32 different cache lines to use 16
+// bytes of each.  The note further up says the x loads dominate - 28.8 G of them against
+// 3.6 G of weight loads - so this gives lane L the 8-weight chunk `j = iter * 32 + L`
+// instead.  The x read is then `j * 8`, which is 16 contiguous bytes per lane and 512
+// contiguous bytes per warp, and the weight word at `j` is 4 contiguous bytes per lane.
+// The scale and bias are looked up per chunk rather than per group, which is eight times
+// the lookups, but they are K/64 ushorts per row - 160 bytes for K=5120 - and stay in
+// cache.  Accumulation order differs from the group kernel, so this is a different
+// rounding, not merely a different schedule; gemm-check is the gate for it.
+#define Q4_GEMV_KS_FLAT(NAME, NK)                                                         \
+kernel void NAME(                                                                         \
+    device const uint*   w      [[buffer(0)]],                                            \
+    device const ushort* scales [[buffer(1)]],                                            \
+    device const ushort* biases [[buffer(2)]],                                            \
+    device const half*   x      [[buffer(3)]],                                            \
+    device half*         y      [[buffer(4)]],                                            \
+    constant int&        K      [[buffer(5)]],                                            \
+    constant int&        k      [[buffer(6)]],                                            \
+    constant int&        out_f  [[buffer(7)]],                                            \
+    constant int&        R      [[buffer(8)]],                                            \
+    uint row  [[threadgroup_position_in_grid]],                                            \
+    uint lane [[thread_index_in_threadgroup]])                                            \
+{                                                                                         \
+    (void)k;                                                                              \
+    (void)R;                                                                              \
+    const int n_u32 = K / 8;                                                              \
+    device const uint*   wp = w + (size_t)row * (size_t)n_u32;                            \
+    device const ushort* sp = scales + (size_t)row * (size_t)(K / GROUP_SIZE);            \
+    device const ushort* bp = biases + (size_t)row * (size_t)(K / GROUP_SIZE);            \
+    float acc[NK];                                                                        \
+    _Pragma("unroll") for (int t = 0; t < NK; ++t) acc[t] = 0.0f;                         \
+    for (int j = (int)lane; j < n_u32; j += 32) {                                         \
+        const int g = j >> 3;                                                             \
+        const half sh = (half)as_type<float>((uint)sp[g] << 16);                           \
+        const half bh = (half)as_type<float>((uint)bp[g] << 16);                           \
+        const uint word = wp[j];                                                          \
+        const half4 w0 = half4((half)( word        & 0xFu),                               \
+                               (half)((word >>  4) & 0xFu),                               \
+                               (half)((word >>  8) & 0xFu),                               \
+                               (half)((word >> 12) & 0xFu)) * sh + bh;                    \
+        const half4 w1 = half4((half)((word >> 16) & 0xFu),                               \
+                               (half)((word >> 20) & 0xFu),                               \
+                               (half)((word >> 24) & 0xFu),                               \
+                               (half)((word >> 28) & 0xFu)) * sh + bh;                    \
+        _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                   \
+            const uint4 xv = *(device const uint4*)(x + (size_t)t * K + (size_t)j * 8);    \
+            acc[t] += (float)(dot(w0, as_type<half4>(xv.xy))                              \
+                            + dot(w1, as_type<half4>(xv.zw)));                            \
+        }                                                                                  \
+    }                                                                                      \
+    _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                       \
+        const float a = simd_sum(acc[t]);                                                  \
+        if (lane == 0) y[(size_t)t * out_f + row] = (half)a;                               \
+    }                                                                                      \
+}
+Q4_GEMV_KS_FLAT(q4_gemv_k4_flat, 4)
+Q4_GEMV_KS_FLAT(q4_gemv_k8_flat, 8)
+
 // ---------------------------------------------------------------------------
 // Row-amortising GEMM for prefill.
 //
@@ -1152,6 +1212,8 @@ pub const K_Q4_GEMV_K4_U4HH: &str = "q4_gemv_k4_u4hh";
 pub const K_Q4_GEMV_K3_U4HX: &str = "q4_gemv_k3_u4hx";
 pub const K_Q4_GEMV_K4_U4HX: &str = "q4_gemv_k4_u4hx";
 pub const K_Q4_GEMV_K8_U4HX: &str = "q4_gemv_k8_u4hx";
+pub const K_Q4_GEMV_K4_FLAT: &str = "q4_gemv_k4_flat";
+pub const K_Q4_GEMV_K8_FLAT: &str = "q4_gemv_k8_flat";
 pub const K_Q4_GEMM_TILE: &str = "q4_gemm_tile";
 pub const K_Q4_GEMM_REDUCE: &str = "q4_gemm_reduce";
 pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";

@@ -373,6 +373,15 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                      doing less work than the timing assumes.  Use --rows 6 for k=8."
                 );
                 batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K4_U4HX)?
+            } else if rows == 19 {
+                // The flat-partition k=4 GEMV: same arithmetic as --rows 5 but lane L
+                // takes the 8-weight chunk `iter * 32 + L`, so the x load is 512
+                // contiguous bytes per warp instead of 32 lines of 16 bytes.
+                anyhow::ensure!(k == 4, "--rows 19 is the flat k=4 kernel; use --tokens 4");
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K4_FLAT)?
+            } else if rows == 20 {
+                anyhow::ensure!(k == 8, "--rows 20 is the flat k=8 kernel; use --tokens 8");
+                batch.kernel(qw_metal::msl::COMMON, qw_metal::msl::K_Q4_GEMV_K8_FLAT)?
             } else if rows == 8 {
                 // The row-amortising GEMM.  Unlike the GEMV variants its token count
                 // is a runtime argument, so any `--tokens` is meaningful - this is the

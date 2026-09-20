@@ -722,7 +722,17 @@ impl Qwen38 {
                     msl::COMMON,
                     match TILE {
                         6 => msl::K_Q4_GEMV_K6_U4H,
-                        4 => msl::K_Q4_GEMV_K4_U4HX,
+                        // The flat-partition k=4 kernel rather than the group kernel.
+                        // Both accumulate the same products; the difference is which lane
+                        // reads which weights, and that is what the x load costs.  The
+                        // group kernel gives lane L whole 64-weight groups, so a warp's
+                        // eight-half x read sits at a 64-byte stride and touches 32 cache
+                        // lines to use 16 bytes of each; the flat kernel gives it the
+                        // 8-weight chunk `iter * 32 + L`, making the warp's x read 512
+                        // contiguous bytes.  Isolated full-sweep, two runs each:
+                        // k=4 9.86/9.90 -> 8.82/8.83 ms per token (365 -> 408 GB/s), and
+                        // k=8 11.74/11.79 -> 7.73/7.74, which is now better than k=4.
+                        4 => msl::K_Q4_GEMV_K4_FLAT,
                         _ => msl::K_Q4_GEMV_K3_U4HX,
                     },
                 )?,
