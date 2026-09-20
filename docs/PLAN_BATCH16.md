@@ -7530,3 +7530,40 @@ Dispatch::new(&kernels.kv_append, (nkv * hd, 1, 1), (NT, 1, 1))
 **这是一个独立的、可能更重要的正确性 bug：长 prompt 下普通通路不可复现。**
 它也可能就是 spec 与普通通路对不上的根源（拿一个不确定的答案当参考，谁都对不上）。
 下一轮先修这个。
+
+### 72ck. spec 通路的发散是 **prompt 相关**的；顺带发现 oracle 门禁会闪断（第 149 轮）
+
+**1. 更正上一轮的结论。** 上一轮我用 `otps3.py plain3` 得到「普通通路 3 次不同」，
+但那个 binary 当时**默认已经开着 spec**，所以两次跑的都是 spec 通路 —— 结论说反了。
+现在（spec 回到 opt-in）重测同一个 602 token prompt：
+
+```
+default(spec off)  ['6fed83fb','6fed83fb','6fed83fb']   一致
+QW_SPEC=1          ['6fed83fb','6fed83fb','6fed83fb']   一致且相同
+```
+
+**普通通路是确定的，spec 在这个 prompt 上也确定且与普通通路一致。**
+
+**2. 但 `accept.sh` 的 `PIN` prompt 上 spec 真的会变。** 把 spec 设成默认（两次独立复现）：
+
+```
+spec==plain (server): differs at char 5 of 268/218
+    plain '\n\n1.  **Capacity and Geometry: They'      (268 chars)
+    spec  '\n\n1. **Capacity and geometry**\n   -'     (218 chars)
+server==cli:          differs at char 5 of 218/268     -> CLI = 218 = spec
+```
+
+同一个 prompt，**spec 路径给出 218、普通路径给出 268**，而 **CLI（无 spec）给出 218**。
+同时 CLI 侧的门禁 `spec==plain: byte-identical over 300 tokens` **是 PASS 的**。
+
+**⇒ spec 的正确性问题是 prompt 相关的**，不是全局的：
+一个 300 token 的 CLI 用例字节一致，一个 `max_tokens=64` 的裸补全 `PIN` 用例在第 5 个字符就分叉。
+（上一轮我那个「spec 稳定、普通不确定」的判断也是错的——那个 binary 两边都开着 spec。）
+
+**3. `oracle parity`（mlx-lm 对照）门禁会闪断。** 同一棵树：
+第一次 `18 passed / 1 failed`（失败项就是 oracle parity），立刻重跑 `19 passed / 0 failed`。
+**这条门禁不可靠**，以后不能只看一次它的结果就下结论。
+
+**结论：spec 保持 opt-in（`QW_SPEC=1`），`accept.sh` 19/0。**
+下一轮要在 `PIN` 这个用例上做最小复现——它是 `max_tokens=64` 的 `/v1/completions` 裸补全，
+和 CLI 的 300 token 用例只差形状，正好能二分出 spec 通路在哪一步出错。
