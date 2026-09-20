@@ -8883,3 +8883,36 @@ batch: CPU encode  0.64 ms | commit+wait  45.53 ms | 1186 dispatches in 898 enco
 **⇒ 下一步**：`forward_rows` 内部在 `finish` 之外还有别的耗时
 （例如 `set_tokens`、行/槽位准备、或多次 batch 提交之间的间隙）。
 应在 `forward_rows` 内部按阶段打点，而不是在它外面。
+
+### 72dv. **pass 内部完全对得上账**——空隙 100% 在 `forward_rows` 之后（第 188 轮）
+
+在 `forward_rows` 内部打点，把 pass 拆成「准备+编码」和「提交+等待」两半：
+
+```
+fwd split:  64 rows | prepare+encode 62.09 ms | commit+wait 395.06 ms | total 457.15 ms
+fwd split:  64 rows | prepare+encode 65.37 ms | commit+wait 317.61 ms | total 382.98 ms
+fwd split: 349 rows | prepare+encode 62.47 ms | commit+wait 809.88 ms | total 872.35 ms
+step time: 349 rows, took 873.8 ms          <- 与 872.35 吻合
+fwd split:   4 rows | prepare+encode  0.85 ms | commit+wait  46.30 ms | total  47.15 ms
+step time:   4 rows, took 47.2 ms
+```
+
+**⇒ `forward_rows` 的时间完全由这两项构成（872.35 ≈ 873.8），没有第三块。
+所以 357 ms 的空隙 100% 在 `forward_rows` 返回之后，即 post-pass 区块。**
+
+**同时得到 349 行 prefill 的真实构成：**
+* **准备+编码：62.5 ms**（1186 次派发，0.05 ms/次）
+* **提交+GPU 等待：809.9 ms** ← prefill 的本体
+
+**⇒ 上一轮「encode+wait 之和对不上」是因为那几行日志属于不同的 pass
+（64 行的预热 pass 与 349 行的真实 pass 混在一起），不是真的对不上账。**
+
+**⇒ 结论收敛为一句话：空隙是 post-pass 区块里 `0.85 ms × prompt 行数` 的纯 CPU 工作。**
+
+**诊断代码已还原（工作树干净），交付树仍是第 180 轮验证过的状态。**
+
+**下一步**：在 post-pass 区块内打点。该区块的结构是
+（1）`row_slot` 的 emit 循环（按 slot，不是按行）、
+（2）`boundary && snapshot` 的导出块（已禁用）、
+（3）循环头（下一 pass 的 rows/row_slot/toks 准备）。
+**（3）最可疑**，因为它是唯一可能按「prompt 行」遍历的地方。
