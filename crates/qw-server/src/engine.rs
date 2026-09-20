@@ -629,6 +629,7 @@ fn prepare(
         },
         other => other,
     };
+    _marks.push(("disk lookup", _t_prep.elapsed().as_secs_f64() * 1e3));
     let mut restored_at: Option<usize> = None;
     let mut restored_logits = false;
     let skip = match reuse {
@@ -642,11 +643,20 @@ fn prepare(
         Reuse::None => {
             // The slot may have served an unrelated request.  Its recurrent state has
             // to go back to the initial condition first.
-            if let Err(e) = model.reset_seq(slot) {
+            //
+            // Submitted without waiting.  This is the first GPU work of a cold
+            // request, so its `finish` pays the whole GPU wake - measured at
+            // 110-145 ms for 3.4 ms of zeroing after two seconds of idleness, and
+            // 3.4 ms when the request arrives while the GPU is still busy.  The
+            // prefill pass below is submitted to the same queue and ends in a
+            // blocking finish, so it still sees the reset complete first, and the
+            // wake is spent running the pass rather than waiting on a memset.
+            if let Err(e) = model.reset_seq_async(slot) {
                 let _ = job.pieces.send(Err(e.to_string()));
                 return None;
             }
             cache.forget(slot);
+            _marks.push(("reset_seq", _t_prep.elapsed().as_secs_f64() * 1e3));
             ""
         }
         Reuse::Disk(n, ref blob) => {
@@ -721,6 +731,7 @@ fn prepare(
         cache.hits += 1;
     }
     cache.report(slot, skip, ids.len(), src);
+    _marks.push(("cache report", _t_prep.elapsed().as_secs_f64() * 1e3));
     // Distinct from `skip > 0`: a Live hit copies nothing at all, because the
     // slot already sits on this prefix.  Only Boundary and Disk actually restore.
     let did_restore = matches!(reuse, Reuse::Boundary(_) | Reuse::Disk(_, _));

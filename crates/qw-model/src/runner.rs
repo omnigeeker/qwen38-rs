@@ -915,6 +915,27 @@ impl Qwen38 {
     /// could only be reused by zeroing every slot, which would destroy the state
     /// of the requests still running in the others.
     pub fn reset_seq(&mut self, seq: usize) -> Result<()> {
+        self.reset_seq_inner(seq, true)
+    }
+
+    /// Same, but returns without waiting for the GPU.
+    ///
+    /// The zeroing is ~3.4 ms of writes; the wait is what pays for the GPU having
+    /// gone to sleep.  After roughly two seconds of idleness the blocking form was
+    /// measured at 110-145 ms for that 3.4 ms of work, and at 3.4 ms when the
+    /// request was sent the moment the server became ready - so on a cold request
+    /// nearly all of it is the wake, not the work.
+    ///
+    /// Every command buffer goes to one shared queue (`GpuDevice::queue`), so a
+    /// caller that submits more GPU work straight afterwards still has the reset
+    /// complete first - the request path always follows with the prefill pass,
+    /// which ends in a blocking `finish`.  That way the wake is spent running the
+    /// pass instead of waiting on a 3.4 ms memset.
+    pub fn reset_seq_async(&mut self, seq: usize) -> Result<()> {
+        self.reset_seq_inner(seq, false)
+    }
+
+    fn reset_seq_inner(&mut self, seq: usize, wait: bool) -> Result<()> {
         if seq >= self.batch {
             return Ok(());
         }
@@ -967,10 +988,10 @@ impl Qwen38 {
             }
         }
         let _t2 = std::time::Instant::now();
-        b.finish(true);
+        b.finish(wait);
         if std::env::var_os("QW_STEP_TIME").is_some() {
             eprintln!(
-                "reset_seq: new+compile {:?}, encode {:?}, finish {:?}",
+                "reset_seq: new+compile {:?}, encode {:?}, finish(wait={wait}) {:?}",
                 _t1 - _t0,
                 _t2 - _t1,
                 _t2.elapsed()
