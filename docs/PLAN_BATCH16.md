@@ -9275,3 +9275,42 @@ GDN 状态 1.16 GB，按 481 GB/s 读一次约 2.4 ms——**所以 16.3 ms 偏�
 **若 4 行 pass 能到内核的 34.47 ms，聚合就是 4/0.0345 = 116 tok/s（今天 79.4）。**
 
 **注**：`--rows 18`（K16_U4HX）本次未产出可解析输出，未测。
+
+### 72eg. 4 行 pass 的 16.3 ms 非 GEMV 开销：conv 状态假设被证伪（第 199 轮）
+
+上一条把聚合目标定为「4 行 pass 里 16.3 ms 的非 GEMV 开销」
+（内核 34.47 ms 对模型 50.8 ms）。本轮先查最大的候选——**conv 状态流量**。
+
+**算术看起来很有希望：**
+
+```
+conv_dim=10240, conv_ring=1024, 48 层
+每层 conv 状态: 10240 x 1024 x 4 B = 41.9 MB
+总计: 2.01 GB
+按 481 GB/s 读+写: 8.4 ms
+```
+
+**而 runner.rs:105 的注释说「the convolution reads the last four」——
+如果每 pass 都要读写整圈 1024 行，那就是 8.4 ms，正好是 16.3 ms 的一半。**
+
+**但查 dispatch 后证伪：**
+
+```rust
+// runner.rs:1471
+Dispatch::new(&kernels.conv1d_ring, (conv_dim, 1, 1), (NT, 1, 1))
+```
+
+**⇒ grid 是 `conv_dim`（10240 个 threadgroup），一个 threadgroup 负责一个通道，
+每个只读它自己通道的最后 4 行。**
+**⇒ 每层读 4 x 10240 = 40960 个元素，约 40 KB，不是 41.9 MB。**
+
+**⇒ conv 状态流量可忽略，不是那 16.3 ms。**
+
+**⇒ 16.3 ms 仍未解释。**
+
+**累计在这一条线上排除的：conv 状态流量（本轮）、多行 GEMV 内核（§72ef 已证已近最优）。
+剩下未被查过的非 GEMV 部分：48 层 GDN 的 recurrent state（dk=dv=128，本身很小）、
+16 层 attention 的 KV cache 与打分、norm、gate_mul、rope、以及每次 pass 的
+状态写回与 898 个 encoder 的提交结构。**
+
+**未做改动，未验证。**
