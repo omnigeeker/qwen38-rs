@@ -1,6 +1,6 @@
 {
   "objective": "Rust+Metal inference engine for Qwen3.8-27B FP4 on M5 Max/128GB: >=40 tok/s single-stream with MTP, OpenAI+Anthropic endpoints, correctness parity with mlx-lm",
-  "round": 201,
+  "round": 202,
   "milestone": "M4",
   "hardware": {
     "chip": "Apple M5 Max",
@@ -4945,9 +4945,13 @@
     {
       "round": 201,
       "what": "CORRECTION: paired duel (8 rounds, same prompts, order swapped) shows llama.cpp wins cold TTFT 8/8, median ratio 1.129. otps and warm TTFT still won 8/8. Round 199's 'cold prefill now ahead' was a non-paired comparison and is withdrawn."
+    },
+    {
+      "round": 202,
+      "what": "Paired duel reproduced: cold TTFT ratio 1.130 vs 1.129 in the prior run, so the ~13% deficit is real. otps won 8/8 again. NRB 160/192/224 all slower, closing the tensor-tile line. Writeback isolated at up to 0.36 s via new QW_GEMM_MODE=6."
     }
   ],
-  "next": "CORRECTION, and the correction matters more than the round's win. Round 199 ended by claiming '1.54 s < llama.cpp's 1.60 s, cold prefill first time ahead'. That was WRONG: the 1.54 s came from our own single-process coldenv run and the 1.60 s was a stale llama.cpp number from an earlier three-way session - different time, different load, not subtractable. A paired duel (both servers resident, same fresh random prompt each round, order swapped every round, 8 rounds) says llama.cpp wins cold TTFT 8/8 with a median ratio of 1.129 - ours 2.279 s vs its 1.871 s. The same run has us winning otps 8/8 (e.g. 28.91 vs 27.80, 25.25 vs 22.72, 16.51 vs 14.55) and warm TTFT by ~8x. So: otps WON, warm TTFT WON, cold TTFT LOST by ~13%. The machine is NOT quiet - the same binary measures anywhere from 1.53 s to 2.20 s - which is exactly why only paired measurement counts. Also refuted: co-residency with llama.cpp is not what hurts us (alone 1.531/2.196 vs co-resident 1.558/1.895). NEXT: close the 0.4 s. Our tensor op is ~1.0 s and everything else ~0.85 s. llama.cpp's mul_mm writes back with a single cT.store() into an fp32 destination while we run a per-element scalar loop with is_valid_element checks - that is the most concrete remaining difference, so measure the writeback first (add a mode that skips it) before rewriting it.",
+  "next": "Paired duel repeated, 8 rounds, same fresh prompt each round, order swapped: median ratio ours/llama.cpp on cold TTFT is 1.130, against 1.129 in the previous independent run - a 0.001 spread across two runs, so the ~13% cold TTFT deficit is real and reproducible, not noise. otps is won 8/8 again (29.22 vs 27.58, 26.25 vs 24.18, 12.05 vs 8.32). Standalone we measure 1.52-1.55 s but in the paired duel 2.04-2.28 s while llama.cpp measures 1.80-1.87 s: contention affects the two engines asymmetrically, so only paired numbers decide anything. Tried and rejected this round: intermediate token tiles NRB=160/192/224 (all numerically correct, all slower - the register cost of NRB*NRA/NT outweighs going from 5 to 4 or 3 weight sweeps), which closes the tensor-tile line at NRB=128/NRA=64/KT=64. NEXT CONCRETE STEP: the writeback. New QW_GEMM_MODE=6 (skip only q4_mpp_mm's writeback loop) is 4/4 faster, medians 1.736 -> 1.374 s, so the writeback is worth up to 0.36 s (an upper bound - mode 6 leaves garbage in y and downstream reads of garbage may be cheaper than real values). llama.cpp stores its tile with one cT.store(tD.slice(ra, rb)) into an fp32 destination laid out [out_f][tokens]; we run a per-element scalar loop with is_valid_element plus two bounds tests. Plan: an fp32 scratch + cT.store() + a narrowing kernel (about 8 extra bytes per element, ~16 GB, ~0.033 s), keeping the scalar fallback whenever out_f % NRA != 0 - that is the 96 tensors with out_f=48, because with slice the store's bounds check cannot be trusted not to overwrite the next token's rows. Also still open: the user promised a quiet machine window and has not signalled it; the current machine gives one binary anywhere from 1.52 s to 2.20 s.",
   "goal": "raise single-decoder throughput target from 40 to 50 tok/s",
   "open_issues": [
     {

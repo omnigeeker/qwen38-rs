@@ -1610,13 +1610,16 @@ kernel void q4_mpp_mm(
     // op accumulates in fp32, and `store` requires the destination element type
     // to match) and lets us bound both edges ourselves, which is what makes an
     // out_f of 48 safe.
-    _Pragma("unroll") for (uint16_t i = 0; i < cT.get_capacity(); ++i) {
-        if (!cT.is_valid_element(i)) continue;
-        auto ids = cT.get_multidimensional_index(i);
-        const int row = row0 + (int)ids[0];
-        const int tok = tok0 + (int)ids[1];
-        if (row < out_f && tok < k) {
-            y[(size_t)tok * (size_t)out_f + (size_t)row] = (half)cT.get(i);
+    // mode 6 skips only this loop, so its cost can be measured on its own.
+    if (mode != 6) {
+        _Pragma("unroll") for (uint16_t i = 0; i < cT.get_capacity(); ++i) {
+            if (!cT.is_valid_element(i)) continue;
+            auto ids = cT.get_multidimensional_index(i);
+            const int row = row0 + (int)ids[0];
+            const int tok = tok0 + (int)ids[1];
+            if (row < out_f && tok < k) {
+                y[(size_t)tok * (size_t)out_f + (size_t)row] = (half)cT.get(i);
+            }
         }
     }
 }
