@@ -289,7 +289,10 @@ pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
 # correct only at batch 1, so `gen` was fine and the sixteen-slot server restored
 # eight sequences' worth of state on every accepted draft, diverging from the CLI
 # the moment a draft was accepted.
-QW_SPEC=1 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_spec.log" 2>&1 &
+# QW_PREFIX_SNAPSHOT=0 as well, so QW_SPEC is the only variable between the two
+# runs.  Without it the pair differed in two things at once and a failure could
+# not be attributed to either.
+QW_PREFIX_SNAPSHOT=0 QW_SPEC=1 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_spec.log" 2>&1 &
 serve_up
 curl -s "http://127.0.0.1:$PORT/v1/completions" -H 'content-type: application/json' \
   -d "$SRV_BODY" > "$TMP/srv_spec.json"

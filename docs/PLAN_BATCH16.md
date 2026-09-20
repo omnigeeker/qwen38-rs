@@ -7567,3 +7567,54 @@ server==cli:          differs at char 5 of 218/268     -> CLI = 218 = spec
 **结论：spec 保持 opt-in（`QW_SPEC=1`），`accept.sh` 19/0。**
 下一轮要在 `PIN` 这个用例上做最小复现——它是 `max_tokens=64` 的 `/v1/completions` 裸补全，
 和 CLI 的 300 token 用例只差形状，正好能二分出 spec 通路在哪一步出错。
+
+### 72cl. 门禁本身比较了**两个**变量；spec 在 PIN 用例上独立复现不了；怀疑 keep-warm 的 tick（第 150 轮）
+
+**1. 门禁的缺陷（已修）。** `accept.sh` 里对比的两台 server 环境**不一样**：
+
+```sh
+QW_PREFIX_SNAPSHOT=0            $BIN serve ...   > serve_cli.log    # "plain"
+QW_SPEC=1                       $BIN serve ...   > serve_spec.log   # "spec"
+```
+
+`plain` 那台**多了一个 `QW_PREFIX_SNAPSHOT=0`**。所以它报的失败
+（`differs at char 5 of 268/218`）**根本无法归因给 spec** —— 两个变量同时变了。
+已改成两台都带 `QW_PREFIX_SNAPSHOT=0`，让 `QW_SPEC` 成为唯一变量。
+
+修完之后（spec 仍 opt-in）**19 passed / 0 failed**，而且这两条现在是真门禁：
+
+```
+PASS spec==plain (server): 218 chars identical
+PASS server==cli: 64 tokens of a long prompt are identical (218 chars)
+```
+
+**2. PIN 用例上 spec 独立复现不出来。** 直接对 `/v1/completions` + PIN prompt
++ `max_tokens=64` 跑遍所有组合，**全部 218 字符、全部与 CLI 一致**：
+
+| 配置 | 结果 |
+|---|---|
+| 默认（spec off） | 218 |
+| `QW_SPEC=1` | 218 |
+| `QW_PREFIX_SNAPSHOT=0` | 218 |
+| `QW_PREFIX_SNAPSHOT=0 QW_SPEC=1` | 218（连跑 3 次都是 218） |
+| 同上，健康检查后**不等待**（settle=0） | 218（3 次都是 218） |
+
+**⇒ 在 `accept.sh` 之外，spec 在这个用例上是确定且正确的。**
+那个 268 只在 `accept.sh` 的上下文里出现，而且**在环境完全相同的两台 server 上出现**
+（都是 spec on + snapshot=0），一台 268、一台 218。
+
+**3. 下一轮的怀疑对象：`keepwarm_tick`。** 为了省 GPU 空转爬升，它每 100 ms
+往 **`scratch.logits`** 写 8 个 half：
+
+```rust
+b.encode(Dispatch::new(&k, (1,1,1), (256,1,1))
+    .buf(1, &self.scratch.logits)      // <-- 采样器读的就是这个 buffer
+    .scalar(2, 8).scalar(4, 0));
+```
+
+**它写的正是采样器要读的那个 buffer。** 单线程顺序执行本身没问题，但只要存在
+任何「不重新 forward 就读 logits」的路径（例如 spec 的 verify 复用上一轮 logits、
+或缓存命中的恢复路径），一个落在两次请求之间的 tick 就会把它清零。
+这正好解释「只在 accept.sh 里、只在 spec 打开时、只在两台相同环境的 server 上出现差异」。
+
+**验证方法很简单：把 tick 写到一个专用的小 buffer，而不是 `scratch.logits`，再重跑。**
