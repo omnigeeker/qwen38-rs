@@ -7443,3 +7443,54 @@ A/B（各 3 轮，`coldenv` 在健康检查后 sleep 2 s，正好落在窗口内
 **⇒ 这一轮没有收益，而且这正是 accept.sh 该干的事。**
 「一个 block 的代价」这个推理听起来对，但快照边界不是一个纯算术问题——
 尾块大小和 ladder/快照的交互有未验证的假设，**光看算术就改默认值会踩到它**。
+
+### 72ci. 借鉴 Inco Splash：otps 的差距在**投机解码**，而我们已经实现了、只是关着（第 147 轮）
+
+Splash（[incoai/splash](https://github.com/incoai/splash)）公开的数字（M5 Pro 16 核 GPU）：
+
+| 指标 | Qwen3.8-27B |
+|---|---|
+| Decode · 短 prompt | **74 tok/s（2.0×）** |
+| Prefill · 32K | 363 tok/s（1.2×） |
+| 命中缓存的 TTFT · 32K 重放 | 282 ms（7.3×） |
+| **4 并发聚合 decode** | **170 tok/s（3.9×）** |
+
+**关键推理：74 tok/s 单流对 4-bit 稠密 27B 是物理上不可能的。**
+14.4 GB 权重 ÷ M5 Pro 约 273 GB/s = **19 tok/s 上限**。
+所以它的 otps **不来自更快的 GEMV**，而来自**投机解码**——README 明说：
+"Speculative decoding is the decode path in Splash, not an option. Every model ships
+with its own DFlash 2 draft, and one pass of the target verifies a block of tokens in parallel."
+
+**而我们已经有这个能力。** `models/Qwen3.8-27B-mtp-4bit/mtp.safetensors` 一直在加载
+（`mtp head loaded`），`QW_SPEC` 通路一直在代码里，**只是默认关闭**。
+
+实测（128 token 答案，5 对，md5 全部相同 `6fed83fb`）：
+
+| | otps |
+|---|---|
+| spec 关 | 12.64 / 14.19 / 17.86 / 13.83 / 14.07 |
+| **spec 开** | **13.95 / 20.15 / 18.74 / 19.26 / 20.61** |
+
+**5/5 全胜，约 1.37×。** `QW_SPEC_DEBUG` 显示 MTP head 每个 target pass 被接受
+**2-4 个 token**（`out=4/3/2/2/3/3`），也就是一次权重扫描产出约 2.8 个 token。
+
+**但是：把它设成默认，`accept.sh` 4 个门禁挂了。**
+
+```
+cache on: repeats disagree
+position pin: answer moved at char 126 of 251
+spec==plain (server): differs at char 5 of 268/218
+server==cli: differs at char 5 of 218/268
+```
+
+**服务器里 spec 通路在第 5 个字符就发散了**——它只在**新 server 的第一个请求**上正确。
+我的 A/B 抓不到，因为每一轮都是新 server 的第一个请求（**和 `max_tokens=1` 的 md5
+一样是空洞的验证**）。已回退成 opt-in（`QW_SPEC=1`），`accept.sh` 恢复 19/0。
+
+**⇒ 下一轮的最高价值目标：修 spec 通路的跨请求状态**（MTP head 的 KV/缓存
+在第二个请求上没有正确预热或重置，症状和当年 `spec_warm` 修的完全同源）。
+修好之后 otps 直接 ×1.37，而且这是**唯一**能把 otps 从「19 vs 对手 14-16」
+拉到「26+ vs 14-16」的杠杆——因为单流 decode 已被带宽钉死在 33 tok/s 上限。
+
+Splash 的第二个杠杆是**并发聚合**（4 并发 170 tok/s = 3.9×）：批量摊薄权重扫描。
+我们的引擎有 slot 和批处理通路，但基准从来没有跑过并发。
