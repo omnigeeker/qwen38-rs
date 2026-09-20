@@ -10143,3 +10143,97 @@ prefill pass 在 1060 ms 结束，**下一个 pass 到 1553 ms 才开始**。TTF
 602 token 的算力是 30.85 TFLOP，权重只需 30 ms 读一遍 ⇒ **prefill 是算力受限，不是带宽受限**。
 llama.cpp 的 863 ms 折合 ≥35.7 TFLOPS（含全部开销），所以它的 GEMM 至少和我们一样快：
 **剩下的差距在 prefill GEMM 的 MMA 利用率，不在调度。**
+
+---
+
+## §72ex prepare 的 132.8 ms「rest」是 GPU 唤醒，不是计算（−171 ms，1.143×）
+
+### 先把它拆开
+
+上一轮之后冷 TTFT 的预算里，`prepare` 有 132.8 ms 记在「rest」（没有任何标记覆盖）。
+给 prepare 补上 `disk lookup` / `reset_seq` / `cache report` 三个标记后：
+
+```
+prepare: total 120.8 ms, tokenize+template 2.0, prefix lookup 0.0, disk lookup 0.0,
+         reset_seq 118.8, cache report 0.0, rest 0.0
+prepare: total   3.4 ms, tokenize+template 0.6, prefix lookup 0.0, disk lookup 0.0,
+         reset_seq   2.7, cache report 0.0, rest 0.0
+```
+
+**132.8 ms 里 118.8 ms 是 `reset_seq`**，而且只在第一个请求上出现（后续请求 2.7 ms）。
+
+### `reset_seq` 内部：全部是「等」
+
+`reset_seq` 自己已经有分段计时：
+
+| | new+compile | encode | finish |
+|---|---|---|---|
+| 预热第 1 次 | 230 µs | 194 µs | **144.4 ms** |
+| 预热第 2/3 次 | 42 µs | 59 µs | 3.4 / 2.9 ms |
+| **第一个请求** | 40 µs | 60 µs | **118.6 ms** |
+| 第 2/3 个请求 | 46 µs | 63 µs | 2.5 / 2.6 ms |
+
+管道是缓存的（`GpuDevice::pipeline` 按源码哈希缓存），encode 只有 60 µs。
+**3.4 ms 的写入等了 118.6 ms。** 这是 GPU 从空闲状态醒过来，不是计算。
+
+### 判定实验：把等待去掉
+
+把「服务器就绪后等 2 秒再发请求」改成「就绪立刻发」：
+
+| settle | reset_seq finish | 冷 TTFT |
+|---|---|---|
+| 0 s | **3.4 ms** | **1168.8 ms** |
+| 2 s | 125.6 ms | 1378.2 ms |
+
+**⇒ 那 ~120 ms 完全是空闲导致 GPU 睡着，2 秒就够。**
+
+顺带否掉一个猜想：**加大启动预热不管用。** 把 warm_rows 从 64 改成 512、1020，
+`reset_seq` 的 finish 都是 **110 ms**（三次一样）——唤醒与「前一次负载多重」无关，
+只与「空闲了多久」有关。
+
+### 这不是我们独有的劣势：llama.cpp 也付，而且付得更多
+
+llama.cpp 自己的 `prompt_ms`（同一个 585 token 的 prompt）：
+
+| settle | prompt_ms | ms/token |
+|---|---|---|
+| 0 s | **1019.1 ms** | 1.742 |
+| 2 s | **1223.6 ms** | 2.092 |
+
+**llama.cpp 的唤醒代价 ~204 ms，比我们还大。** 区别在于它的 prompt eval 很长，
+唤醒被吸收在工作里；我们是卡在一个 3.4 ms 的 memset 上白等。
+
+### 修复：请求路径上的 reset 不等待
+
+所有 command buffer 都进**同一个 queue**（`GpuDevice::queue`），
+所以「先提交 reset、不等待，紧接着提交 prefill pass」的执行顺序仍然有保证
+（请求路径后面必然跟一个以阻塞 `finish` 收尾的 prefill pass）。
+`reset_seq` 拆成 `reset_seq`（等待，CLI 与预热用）和 `reset_seq_async`（不等待，请求路径用）。
+
+交错配对的冷 TTFT A/B（每轮各自新服务器 + 新 prompt，两个 build 交替先跑）：
+
+| build | min | median | 四次 |
+|---|---|---|---|
+| 改前 | 1278.0 | **1360.7 ms** | 1439, 1278, 1829, 1282 |
+| 改后 | 1112.3 | **1189.9 ms** | 1197, 1183, 1112, 1227 |
+
+**1.143×，−171 ms，四对全胜。** 正确性：accept.sh **20/0 ACCEPTED**、
+gemm-check PASSED（3.347e-4）、batch-check 4/16 PASSED。
+
+### 现在的差距在哪
+
+同一 session 内交错配对，我们 vs llama.cpp：
+
+| | prefill | TTFT | TTFT − prefill |
+|---|---|---|---|
+| 我们 | 1152.0 ms | 1241.0 ms | 89 ms |
+| llama.cpp | 933.4 ms | 936.7 ms | ~3 ms |
+
+**冷 TTFT 1241 vs 936.7 = 1.32×**（本轮开始前是 2.17×）。
+
+拆开看：prefill 差 **219 ms**，其中 497 个线性层 843 ms（36.6 TFLOPS）我们并不慢，
+**慢的是非矩阵乘部分**——我们 1152 − 843 = 309 ms，llama.cpp 大约 933 − 780 = 153 ms，
+差约 2×（注意力、GDN、norm、卷积、派发）。另外 89 ms 是我们独有的开销
+（批量草稿头预热 38 ms + 尾部 4 行 pass 45 ms），llama.cpp 没有 MTP 头也没有 spec 尾步。
+
+**下一轮该做的**：prefill 的非矩阵乘部分（~156 ms 差），以及把尾部 4 行 pass 并进 prefill。
