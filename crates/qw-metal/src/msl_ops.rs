@@ -173,6 +173,131 @@ kernel void kv_append(
     kcache[dst] = k[i];
     vcache[dst] = v[i];
 }
+// ---------------------------------------------------------------------------
+// Row-batched attention.
+//
+// The prefill path emitted one `attn_scores_softmax` and one `attn_out` per
+// query token per full-attention layer: 2 x 16 x 598 = 19,136 of the 20,290
+// dispatches in a 602-token pass, 94% of it.  These two kernels do the whole
+// pass in one dispatch each by giving every threadgroup its own (query row,
+// head) pair.
+//
+// Row `r` attends to keys `0 .. pos0+r`, so the causal mask is nothing more
+// than a shorter loop bound - no mask value and no wasted work.  That is only
+// valid when the pass carries one sequence with consecutive positions, which is
+// exactly the case the caller checks for before choosing this path.
+// ---------------------------------------------------------------------------
+kernel void attn_scores_softmax_rows(
+    device const half*  q      [[buffer(0)]],   // [rows][H*D]
+    device const half*  kcache [[buffer(1)]],   // [Hkv][maxT][D]
+    device float*       scores [[buffer(2)]],   // [rows][H][maxT]
+    constant int&       maxT   [[buffer(3)]],
+    constant int&       H      [[buffer(4)]],
+    constant int&       Hkv    [[buffer(5)]],
+    constant int&       D      [[buffer(6)]],
+    constant float&     scale  [[buffer(7)]],
+    constant int&       pos0   [[buffer(8)]],
+    uint gid  [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint nt   [[threads_per_threadgroup]])
+{
+    const int row = (int)gid / H;
+    const int h   = (int)gid - row * H;
+    const int T   = pos0 + row + 1;
+    const int reps = H / Hkv;
+    const int hk = h / reps;
+    const uint sg = lane / 32;
+    const uint sl = lane % 32;
+    const int nwarp = (int)(nt / 32);
+    device const half* qh = q + ((size_t)row * H + (size_t)h) * D;
+    device const half* kbase = kcache + (size_t)hk * maxT * D;
+    device float* sc = scores + ((size_t)row * H + (size_t)h) * maxT;
+
+    // ---- pass 1: dot products ----
+    for (int t = (int)sg; t < T; t += nwarp) {
+        device const half* kt = kbase + (size_t)t * D;
+        float acc = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int d = (int)sl * 8 + j;
+            if (d < D) acc += (float)qh[d] * (float)kt[d];
+        }
+        acc = simd_sum(acc);
+        if (sl == 0) sc[t] = acc * scale;
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    // ---- pass 2: max ----
+    threadgroup float red[32];
+    const uint nsg = nt / 32;
+    float lmax = -INFINITY;
+    for (int t = (int)lane; t < T; t += (int)nt) lmax = max(lmax, sc[t]);
+    lmax = simd_max(lmax);
+    if (sl == 0) red[sg] = lmax;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float gmax = -INFINITY;
+    for (uint i = 0; i < nsg; ++i) gmax = max(gmax, red[i]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- pass 3: exp + sum ----
+    float lsum = 0.0f;
+    for (int t = (int)lane; t < T; t += (int)nt) {
+        const float e = exp(sc[t] - gmax);
+        sc[t] = e;
+        lsum += e;
+    }
+    lsum = simd_sum(lsum);
+    if (sl == 0) red[sg] = lsum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float gsum = 0.0f;
+    for (uint i = 0; i < nsg; ++i) gsum += red[i];
+    const float inv = 1.0f / gsum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ---- pass 4: normalise ----
+    for (int t = (int)lane; t < T; t += (int)nt) sc[t] *= inv;
+}
+
+// Row-batched `attn_out`: one threadgroup per (query row, head), one thread per
+// dim.  Eight accumulators for the same reason as the single-row kernel - one
+// chain leaves a single V load in flight and the sweep runs latency-bound.
+kernel void attn_out_rows(
+    device const float* probs  [[buffer(0)]],   // [rows][H][maxT]
+    device const half*  vcache [[buffer(1)]],   // [Hkv][maxT][D]
+    device half*        out    [[buffer(2)]],   // [rows][H*D]
+    constant int&       maxT   [[buffer(3)]],
+    constant int&       H      [[buffer(4)]],
+    constant int&       Hkv    [[buffer(5)]],
+    constant int&       D      [[buffer(6)]],
+    constant int&       pos0   [[buffer(7)]],
+    uint gid [[threadgroup_position_in_grid]],
+    uint d   [[thread_index_in_threadgroup]])
+{
+    const int row = (int)gid / H;
+    const int h   = (int)gid - row * H;
+    const int T   = pos0 + row + 1;
+    const int reps = H / Hkv;
+    const int hk = h / reps;
+    device const float* p = probs + ((size_t)row * H + (size_t)h) * maxT;
+    device const half* vbase = vcache + (size_t)hk * maxT * D + d;
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    float acc4 = 0.0f, acc5 = 0.0f, acc6 = 0.0f, acc7 = 0.0f;
+    int t = 0;
+    for (; t + 8 <= T; t += 8) {
+        acc0 += p[t + 0] * (float)vbase[(size_t)(t + 0) * D];
+        acc1 += p[t + 1] * (float)vbase[(size_t)(t + 1) * D];
+        acc2 += p[t + 2] * (float)vbase[(size_t)(t + 2) * D];
+        acc3 += p[t + 3] * (float)vbase[(size_t)(t + 3) * D];
+        acc4 += p[t + 4] * (float)vbase[(size_t)(t + 4) * D];
+        acc5 += p[t + 5] * (float)vbase[(size_t)(t + 5) * D];
+        acc6 += p[t + 6] * (float)vbase[(size_t)(t + 6) * D];
+        acc7 += p[t + 7] * (float)vbase[(size_t)(t + 7) * D];
+    }
+    for (; t < T; ++t) acc0 += p[t] * (float)vbase[(size_t)t * D];
+    out[((size_t)row * H + (size_t)h) * D + d] =
+        (half)(((acc0 + acc1) + (acc2 + acc3)) + ((acc4 + acc5) + (acc6 + acc7)));
+}
+
 "#;
 
 pub const GDN: &str = r#"
@@ -627,6 +752,8 @@ kernel void sigmoid_mul(
 "#;
 
 pub const K_ATTN_SCORES_SOFTMAX: &str = "attn_scores_softmax";
+pub const K_ATTN_SCORES_SOFTMAX_ROWS: &str = "attn_scores_softmax_rows";
+pub const K_ATTN_OUT_ROWS: &str = "attn_out_rows";
 pub const K_ATTN_OUT: &str = "attn_out";
 pub const K_KV_APPEND: &str = "kv_append";
 pub const K_KV_APPEND_ROWS: &str = "kv_append_rows";

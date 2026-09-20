@@ -37,6 +37,8 @@ struct Kernels {
     kv_append: Kernel,
     attn_scores: Kernel,
     attn_out: Kernel,
+    attn_scores_rows: Kernel,
+    attn_out_rows: Kernel,
     conv1d_ring: Kernel,
     conv1d_ring_tile: Kernel,
     gdn: Kernel,
@@ -47,6 +49,13 @@ struct Kernels {
     rope_rows: Kernel,
     copy: Kernel,
     round_bf16: Kernel,
+}
+
+/// Whether the row-batched attention kernels are used.  Read once: this is
+/// consulted for every full-attention layer of every pass.
+fn attn_rows_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("QW_ATTN_ROWS").ok().as_deref() != Some("0"))
 }
 
 struct FullAttn {
@@ -681,6 +690,8 @@ impl Qwen38 {
                 kv_append: b.kernel(msl_ops::ATTN, msl_ops::K_KV_APPEND)?,
                 attn_scores: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_SCORES_SOFTMAX)?,
                 attn_out: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_OUT)?,
+                attn_scores_rows: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_SCORES_SOFTMAX_ROWS)?,
+                attn_out_rows: b.kernel(msl_ops::ATTN, msl_ops::K_ATTN_OUT_ROWS)?,
                 conv1d_ring: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING)?,
                 conv1d_ring_tile: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_TILE)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
@@ -1793,6 +1804,52 @@ impl Qwen38 {
                     }
                     }
                     b.barrier();
+                    // One dispatch for the whole pass instead of one per token:
+                    // these two kernels were 94% of every dispatch the prefill
+                    // made.  Row `r` attends to keys 0..pos0+r, so the causal
+                    // mask is a shorter loop bound - but that is only the same
+                    // computation when the pass is one sequence with consecutive
+                    // positions, which is what `contiguous` checks.
+                    let contiguous = attn_rows_enabled()
+                        && one_seq
+                        && rows
+                            .iter()
+                            .enumerate()
+                            .all(|(r, &(_, p))| p == rows[0].1 + r);
+                    if contiguous {
+                        b.encode(
+                            Dispatch::new(
+                                &kernels.attn_scores_rows,
+                                (n * nh * NT, 1, 1),
+                                (NT, 1, 1),
+                            )
+                            .buf(0, &scratch.q)
+                            .buf_offset(1, &a.k_cache, rows[0].0 * kv_stride)
+                            .buf(2, &scratch.scores)
+                            .scalar(3, max_t)
+                            .scalar(4, nh as i32)
+                            .scalar(5, nkv as i32)
+                            .scalar(6, hd as i32)
+                            .scalar(7, scale)
+                            .scalar(8, rows[0].1 as i32),
+                        );
+                        b.barrier();
+                        b.encode(
+                            Dispatch::new(
+                                &kernels.attn_out_rows,
+                                (n * nh * hd, 1, 1),
+                                (hd, 1, 1),
+                            )
+                            .buf(0, &scratch.scores)
+                            .buf_offset(1, &a.v_cache, rows[0].0 * kv_stride)
+                            .buf(2, &scratch.attn_out)
+                            .scalar(3, max_t)
+                            .scalar(4, nh as i32)
+                            .scalar(5, nkv as i32)
+                            .scalar(6, hd as i32)
+                            .scalar(7, rows[0].1 as i32),
+                        );
+                    } else {
                     for (row, &(seq, pos)) in rows.iter().enumerate() {
                         b.encode(
                             Dispatch::new(&kernels.attn_scores, (nh * NT, 1, 1), (NT, 1, 1))
@@ -1820,6 +1877,7 @@ impl Qwen38 {
                                 .scalar(6, nkv as i32)
                                 .scalar(7, hd as i32),
                         );
+                    }
                     }
                     b.barrier();
                     // out * sigmoid(gate) where gate sits after each head's query
