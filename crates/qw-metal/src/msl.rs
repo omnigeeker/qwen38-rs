@@ -1281,6 +1281,19 @@ using namespace mpp;
 using namespace mpp::tensor_ops;
 using namespace mpp::tensor_ops::__tensor_ops_detail;
 
+// The affine group size, matching the COMMON source.  This translation unit is
+// compiled on its own, so it needs its own copy.
+#define GROUP_SIZE 64
+
+// Tensor-op GEMM tile.  Rewritten from the environment by `mpp_src()` so a tile
+// sweep costs one process start instead of one rebuild - the pipeline cache is
+// keyed on the source text, so each tile is its own pipeline.
+#define Q4_MPP_KT  64
+#define Q4_MPP_NRA 64
+#define Q4_MPP_NRB 128
+#define Q4_MPP_NT  128
+#define Q4_MPP_RELAXED 1
+
 kernel void q4_mpp_probe(
     tensor<device half, dextents<int32_t, 2>> A,           // [rows, K]
     tensor<device uint4b_format, dextents<int32_t, 2>> B,  // [out_f, K]
@@ -1404,6 +1417,210 @@ kernel void q4_mpp_affine_v2(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Minimal MPP matmul selftest.
+//
+// Every earlier attempt at the tensor path failed for one reason: the operands
+// were handed to `run` in the wrong layout.  The MetalPerformancePrimitives
+// header states the contract plainly (MPPTensorOpsMatMul2d.h, "simpleMatMul"):
+//
+//   run(left, right, dest)
+//     left  is (K, M)      - dim0 is the reduction dimension
+//     right is (K, N)      when transpose_right = true   (NT)
+//     dest  is (N, M)      - dim0 is N, dim1 is M
+//   matmul2d_descriptor(M, N, K, transpose_left, transpose_right, relaxed, mode)
+//
+// and the header's own example slices `A.slice(0, tgid.y*64)` for the M offset
+// and `B.slice(tgid.x*32, 0)` for the N offset, which is only consistent with
+// A = (K, M) and B = (N, K) for NN.  Our `q4_mpp_probe` passed A as (rows, K)
+// (i.e. (M, K)) and B as (out_f, K) (i.e. (N, K)) while declaring NT, so the op
+// read K off the wrong axis and produced zeros - which is what "MPP never
+// executes on this machine" was actually measuring.
+//
+// This kernel is the smallest thing that can be checked against a CPU reference,
+// so the pattern is proved before anything is built on it.
+//
+// llama.cpp's tensor GEMM (ggml/src/ggml-metal/kernels/mul_mm.metal, guarded by
+// GGML_METAL_HAS_TENSOR) uses exactly this shape: tile M(tokens)=128,
+// N(rows)=64, K=32, 128 threads, and only the *weight* tile goes through shared
+// memory - the activations are read straight out of device memory by the tensor
+// op.  That is the whole reason its kernel needs 4 KB of threadgroup memory
+// where ours needs 9.28 KB, and why it never stages activations at all.
+// ---------------------------------------------------------------------------
+// NOTE: the operands must be NON-const.  `get_destination_cooperative_tensor`
+// static_asserts on the operand element type and `const half` is not in its
+// accepted list (half is), so a `device const half*` operand fails to compile
+// with a message about the *destination* data type, which is misleading.
+kernel void mpp_test_mm(
+    device half*       a [[buffer(0)]],   // left  [M][K] row-major (activations)
+    device half*       b [[buffer(1)]],   // right [N][K] row-major (weights)
+    device float*      c [[buffer(2)]],   // dest  [M][N] row-major (tokens x rows)
+    constant int&      M [[buffer(3)]],
+    constant int&      N [[buffer(4)]],
+    constant int&      K [[buffer(5)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint  tiitg [[thread_index_in_threadgroup]])
+{
+    constexpr int KT  = 32;    // N_MM_NK_TOTAL
+    constexpr int NRA = 64;    // weight rows per threadgroup  (descriptor N)
+    constexpr int NRB = 128;   // tokens per threadgroup       (descriptor M)
+    constexpr int NT  = 128;
+
+    threadgroup half sa[NRA * KT];   // [row][k] row-major, stride KT
+
+    const int row0 = (int)tgid.y * NRA;
+    const int tok0 = (int)tgid.x * NRB;
+    const int mExt = min(NRB, M - tok0);
+
+    auto mm = mpp::tensor_ops::matmul2d<
+        mpp::tensor_ops::matmul2d_descriptor(
+            NRB, NRA, static_cast<int>(dynamic_extent), false, true, true,
+            mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate),
+        execution_simdgroups<4>>();
+
+    auto tA = tensor(a, dextents<int32_t, 2>(K, M), array<int32_t, 2>({1, K}));
+    auto tB = tensor(b, dextents<int32_t, 2>(K, N), array<int32_t, 2>({1, K}));
+    auto cT = mm.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>();
+
+    for (int k0 = 0; k0 < K; k0 += KT) {
+        for (int i = (int)tiitg; i < NRA * KT; i += NT) {
+            const int row = i / KT;
+            const int kk  = i - row * KT;
+            const int gr  = row0 + row;
+            const int gk  = k0 + kk;
+            sa[row * KT + kk] = (gr < N && gk < K) ? b[(size_t)gr * (size_t)K + (size_t)gk] : (half)0;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        const int kExt = min(KT, K - k0);
+        auto tAv = tensor(a + (size_t)tok0 * (size_t)K + (size_t)k0,
+                          dextents<int32_t, 2>(kExt, mExt), array<int32_t, 2>({1, K}));
+        auto tBv = tensor(sa, dextents<int32_t, 2>(kExt, NRA), array<int32_t, 2>({1, KT}));
+        mm.run(tAv, tBv, cT);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // dest is (N, M) with dim0 = rows: element (row, tok) lives at c[tok*N + row].
+    auto tD = tensor(c, dextents<int32_t, 2>(N, M), array<int32_t, 2>({1, N}));
+    cT.store(tD.slice(row0, tok0));
+}
+
+// ---------------------------------------------------------------------------
+// The affine 4-bit GEMM through the MetalPerformancePrimitives tensor op.
+//
+// Same tile as llama.cpp's tensor-path `kernel_mul_mm`: M(tokens)=128,
+// N(weight rows)=64, K=32, 128 threads, and ONLY the weight tile goes through
+// shared memory - the tensor op reads the activations straight out of device
+// memory.  That is the structural difference from `q4_gemm_tile`, which stages
+// both operands and therefore re-reads a 32x32 activation tile once per 32-row
+// block of the output.  With NRA=64/NRB=128 the weight tile is dequantised
+// 602/128 = 5 times per pass instead of 602/32 = 19, and the activation staging
+// loop disappears entirely.
+//
+// The per-group scale and bias of the MLX affine format are applied while
+// dequantising into the shared tile, so the tensor op itself is a plain fp16
+// product and the bias needs no separate `sum_g b[n,g]*G[m,g]` correction.
+//
+//   run(left, right, dest)
+//     left  (K, M)   x        - dim0 is the reduction dimension
+//     right (K, N)   sa       - transpose_right = true
+//     dest  (N, M)   y        - dim0 is N (weight rows), dim1 is M (tokens)
+// ---------------------------------------------------------------------------
+kernel void q4_mpp_mm(
+    device const uint*   w      [[buffer(0)]],   // [out_f][K/8]
+    device const ushort* scales [[buffer(1)]],   // [out_f][K/64] bf16
+    device const ushort* biases [[buffer(2)]],   // [out_f][K/64] bf16
+    device half*         x      [[buffer(3)]],   // [k][K]
+    device half*         y      [[buffer(4)]],   // [k][out_f]
+    constant int&        K      [[buffer(5)]],
+    constant int&        k      [[buffer(6)]],
+    constant int&        out_f  [[buffer(7)]],
+    constant int&        mode   [[buffer(8)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint  tiitg [[thread_index_in_threadgroup]])
+{
+    constexpr int KT  = Q4_MPP_KT;
+    constexpr int NRA = Q4_MPP_NRA;
+    constexpr int NRB = Q4_MPP_NRB;
+    constexpr int NT  = Q4_MPP_NT;
+
+    threadgroup half sa[NRA * KT];   // [row][k] row-major, stride KT
+
+    const int row0   = (int)tgid.y * NRA;
+    const int tok0   = (int)tgid.x * NRB;
+    const int mExt   = min(NRB, k - tok0);
+    const int nwords = KT / 8;
+    const int kw     = K >> 3;
+    const int ngroups = K / GROUP_SIZE;
+
+    auto mm = mpp::tensor_ops::matmul2d<
+        mpp::tensor_ops::matmul2d_descriptor(
+            NRB, NRA, static_cast<int>(dynamic_extent), false, true, (Q4_MPP_RELAXED != 0),
+            mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate),
+        execution_simdgroups<4>>();
+
+    auto tA  = tensor(x, dextents<int32_t, 2>(K, k), array<int32_t, 2>({1, K}));
+    auto tB0 = tensor(sa, dextents<int32_t, 2>(KT, NRA), array<int32_t, 2>({1, KT}));
+    auto cT  = mm.get_destination_cooperative_tensor<decltype(tA), decltype(tB0), float>();
+
+    for (int k0 = 0; k0 < K; k0 += KT) {
+        // One uint per thread per row-chunk, expanded to its eight nibbles: the
+        // na"ive per-element loop reloads the same uint eight times and the
+        // useful bandwidth lands at an eighth of what the memory system is asked
+        // for.
+        for (int idx = (int)tiitg; idx < NRA * nwords; idx += NT) {
+            const int row = idx / nwords;
+            const int wd  = idx - row * nwords;
+            const int gr  = row0 + row;
+            const int g0  = k0 + wd * 8;
+            half v[8];
+            if (gr < out_f && g0 < K) {
+                // KT=32 and GROUP_SIZE=64, so a whole K tile lives inside one
+                // group and the eight nibbles share the scale and the bias.
+                const size_t gi = (size_t)gr * (size_t)ngroups + (size_t)(g0 / GROUP_SIZE);
+                const float s  = as_type<float>((uint)scales[gi] << 16);
+                const float bb = as_type<float>((uint)biases[gi] << 16);
+                const uint word = w[(size_t)gr * (size_t)kw + (size_t)(g0 >> 3)];
+                _Pragma("unroll") for (int i = 0; i < 8; ++i) {
+                    v[i] = (half)((float)((word >> (4 * i)) & 0xFu) * s + bb);
+                }
+            } else {
+                _Pragma("unroll") for (int i = 0; i < 8; ++i) v[i] = (half)0;
+            }
+            _Pragma("unroll") for (int i = 0; i < 8; ++i) {
+                sa[row * KT + wd * 8 + i] = (mode == 1) ? (half)0.01 : v[i];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (mode == 2) { threadgroup_barrier(mem_flags::mem_threadgroup); continue; }
+
+        const int kExt = min(KT, K - k0);
+        auto tAv = tensor(x + (size_t)tok0 * (size_t)K + (size_t)k0,
+                          dextents<int32_t, 2>(kExt, mExt), array<int32_t, 2>({1, K}));
+        auto tBv = tensor(sa, dextents<int32_t, 2>(kExt, NRA), array<int32_t, 2>({1, KT}));
+        mm.run(tAv, tBv, cT);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // cT is (N, M) = (weight rows, tokens).  Reading it back element by element
+    // rather than using `cT.store()` keeps the destination in fp16 (the tensor
+    // op accumulates in fp32, and `store` requires the destination element type
+    // to match) and lets us bound both edges ourselves, which is what makes an
+    // out_f of 48 safe.
+    _Pragma("unroll") for (uint16_t i = 0; i < cT.get_capacity(); ++i) {
+        if (!cT.is_valid_element(i)) continue;
+        auto ids = cT.get_multidimensional_index(i);
+        const int row = row0 + (int)ids[0];
+        const int tok = tok0 + (int)ids[1];
+        if (row < out_f && tok < k) {
+            y[(size_t)tok * (size_t)out_f + (size_t)row] = (half)cT.get(i);
+        }
+    }
+}
+
 // The tensor op accumulates in float and its store requires a matching element
 // type, so the result lands in a float scratch and this narrows it to the half
 // output.  The round trip is about 2.6 GB per pass, roughly 0.03 s.
@@ -1416,3 +1633,52 @@ kernel void q4_store_half(
     if ((int)tid < n) dst[tid] = (half)src[tid];
 }
 "#;
+
+/// The tensor-op GEMM tile: `[KT, NRA, NRB, NT]`.
+///
+/// `NRA` is the weight-row tile (the descriptor's N) and `NRB` the token tile
+/// (the descriptor's M).  Weight traffic is `weights * tokens / NRB`, so `NRB`
+/// is the one that decides how many times the 14.4 GB of weights is dequantised
+/// in a pass: 128 gives five sweeps for a 602-token prompt, 256 gives three.
+/// `NRA` costs `NRA * KT * 2` bytes of threadgroup memory and nothing else.
+pub fn mpp_tiles() -> [i32; 4] {
+    // Read once: this is consulted for every linear of every pass.
+    static T: std::sync::OnceLock<[i32; 4]> = std::sync::OnceLock::new();
+    *T.get_or_init(mpp_tiles_uncached)
+}
+
+fn mpp_tiles_uncached() -> [i32; 4] {
+    fn one(k: &str, d: i32) -> i32 {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    }
+    [
+        one("QW_MPP_KT", 64),
+        one("QW_MPP_NRA", 64),
+        one("QW_MPP_NRB", 128),
+        one("QW_MPP_NT", 128),
+    ]
+}
+
+/// The MPP translation unit with the tile constants substituted in.
+pub fn mpp_src() -> String {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    S.get_or_init(mpp_src_uncached).clone()
+}
+
+fn mpp_src_uncached() -> String {
+    let [kt, nra, nrb, nt] = mpp_tiles();
+    MPP.replace("#define Q4_MPP_KT  32", &format!("#define Q4_MPP_KT  {kt}"))
+        .replace("#define Q4_MPP_NRA 64", &format!("#define Q4_MPP_NRA {nra}"))
+        .replace("#define Q4_MPP_NRB 128", &format!("#define Q4_MPP_NRB {nrb}"))
+        .replace("#define Q4_MPP_NT  128", &format!("#define Q4_MPP_NT  {nt}"))
+        .replace(
+            "#define Q4_MPP_RELAXED 1",
+            &format!(
+                "#define Q4_MPP_RELAXED {}",
+                if std::env::var("QW_MPP_RELAXED").ok().as_deref() == Some("1") { 1 } else { 0 }
+            ),
+        )
+}

@@ -553,6 +553,66 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
         // four-row kernel `encode_rows` runs in a loop.  That is the equivalence that
         // matters for the engine: if the GEMM disagrees with this, the engine's answer
         // changes, which is exactly what the end-to-end test showed.
+        // Fifth path: the affine tensor-op GEMM (`q4_mpp_mm`).  Tile
+        // M(tokens)=128, N(rows)=64, K=32, weight tile only in shared memory,
+        // activations read straight from device memory by the tensor op.
+        let nbuf = dev.buffer_from_bytes(&vec![f16::from_f32(0.0); tokens * l.out_f]);
+        let mut nb = qw_metal::CommandBatch::new(&mut dev);
+        {
+            let nk = nb.kernel(&qw_metal::msl::mpp_src(), "q4_mpp_mm")?;
+            let [_, nra, nrb, nt] = qw_metal::msl::mpp_tiles();
+            let (nra, nrb, nt) = (nra as usize, nrb as usize, nt as usize);
+            nb.encode(
+                qw_metal::Dispatch::new(
+                    &nk,
+                    (tokens.div_ceil(nrb) * nt, l.out_f.div_ceil(nra), 1),
+                    (nt, 1, 1),
+                )
+                .buf_offset(0, l.weight.buf, l.weight.offset)
+                .buf_offset(1, l.scales.buf, l.scales.offset)
+                .buf_offset(2, l.biases.buf, l.biases.offset)
+                .buf(3, &xbuf)
+                .buf(4, &nbuf)
+                .scalar(5, l.in_f as i32)
+                .scalar(6, tokens as i32)
+                .scalar(7, l.out_f as i32)
+                .scalar(8, 0),
+            );
+        }
+        nb.finish(true);
+        let ngot: Vec<f16> = nbuf.to_vec(0, tokens * l.out_f);
+        let mut n_abs = 0.0f64;
+        let mut n_ref = 0.0f64;
+        let mut n_bad = 0usize;
+        let mut n_zer = 0usize;
+        for t in 0..tokens {
+            let xr: Vec<f16> = xv[t * l.in_f..(t + 1) * l.in_f].to_vec();
+            let want = l.cpu_reference(&xr)?;
+            for r in 0..l.out_f {
+                let b = want[r] as f64;
+                let nv = ngot[t * l.out_f + r].to_f32() as f64;
+                if nv == 0.0 {
+                    n_zer += 1;
+                }
+                let d = (nv - b).abs();
+                if d > n_abs {
+                    n_abs = d;
+                }
+                if b.abs() > n_ref {
+                    n_ref = b.abs();
+                }
+                if d > 2e-3 * (if n_ref > 0.0 { n_ref } else { 1.0 }) {
+                    n_bad += 1;
+                }
+            }
+        }
+        println!(
+            "      mpp-mm max_abs {:.3e} rel {:.3e}  zero {n_zer}/{}  over-tol {n_bad}",
+            n_abs,
+            if n_ref > 0.0 { n_abs / n_ref } else { n_abs },
+            tokens * l.out_f
+        );
+
         let mut max_abs = 0.0f64;
         let mut max_ref = 0.0f64;
         if gpu_only {
@@ -749,5 +809,90 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
         if all_ok { "PASSED" } else { "FAILED" }
     );
     anyhow::ensure!(all_ok, "the GEMM kernel does not match the CPU reference");
+    Ok(())
+}
+
+/// Prove the MetalPerformancePrimitives matmul call pattern against a CPU
+/// reference, with no model and no quantisation in the way.
+///
+/// `run(left, right, dest)` wants `left` = (K, M), `right` = (K, N) under
+/// `transpose_right = true`, and `dest` = (N, M).  Getting any of those three
+/// axes wrong yields a kernel that runs, produces zeros, and looks exactly like
+/// "this machine cannot execute the tensor op" - which is the conclusion an
+/// earlier round drew.  This is the cheap test that separates the two.
+pub fn mpp_test() -> Result<()> {
+    let mut dev = GpuDevice::new()?;
+
+    // 2x2 threadgroups of (tokens 128 x rows 64), 3 K tiles of 32.
+    let m = 256usize; // tokens
+    let n = 128usize; // weight rows
+    let k = 96usize;
+
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 33) as f32) / ((1u64 << 31) as f32) - 0.5
+    };
+    let av: Vec<f16> = (0..m * k).map(|_| f16::from_f32(next())).collect();
+    let bv: Vec<f16> = (0..n * k).map(|_| f16::from_f32(next())).collect();
+
+    let abuf = dev.buffer_from_bytes(&av);
+    let bbuf = dev.buffer_from_bytes(&bv);
+    let cbuf = dev.buffer_from_bytes(&vec![0.0f32; m * n]);
+
+    let mut batch = qw_metal::CommandBatch::new(&mut dev);
+    let kern = batch.kernel(qw_metal::msl::MPP, "mpp_test_mm")?;
+    const NT: usize = 128;
+    const NRA: usize = 64;
+    const NRB: usize = 128;
+    batch.encode(
+        qw_metal::Dispatch::new(
+            &kern,
+            (m.div_ceil(NRB) * NT, n.div_ceil(NRA), 1),
+            (NT, 1, 1),
+        )
+        .buf(0, &abuf)
+        .buf(1, &bbuf)
+        .buf(2, &cbuf)
+        .scalar(3, m as i32)
+        .scalar(4, n as i32)
+        .scalar(5, k as i32),
+    );
+    batch.finish(true);
+
+    let got: Vec<f32> = cbuf.to_vec(0, m * n);
+    // CPU reference: c[tok][row] = sum_k a[tok][k] * b[row][k], in f64.
+    let mut max_abs = 0.0f64;
+    let mut max_ref = 0.0f64;
+    let mut nzero = 0usize;
+    for tok in 0..m {
+        for row in 0..n {
+            let mut acc = 0.0f64;
+            for kk in 0..k {
+                acc += av[tok * k + kk].to_f64() * bv[row * k + kk].to_f64();
+            }
+            let d = (got[tok * n + row] as f64 - acc).abs();
+            if d > max_abs {
+                max_abs = d;
+            }
+            if acc.abs() > max_ref {
+                max_ref = acc.abs();
+            }
+            if got[tok * n + row] != 0.0 {
+                nzero += 1;
+            }
+        }
+    }
+    println!(
+        "mpp-test: M {m} N {n} K {k}  nonzero {nzero}/{}  max_abs {:.3e}  rel {:.3e}",
+        m * n,
+        max_abs,
+        if max_ref > 0.0 { max_abs / max_ref } else { max_abs }
+    );
+    anyhow::ensure!(nzero > 0, "the tensor op wrote nothing - the call pattern is still wrong");
+    anyhow::ensure!(max_abs / max_ref < 1e-2, "the tensor op produced the wrong values");
+    println!("mpp-test: PASSED");
     Ok(())
 }

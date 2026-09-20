@@ -48,6 +48,9 @@ enum Cmd {
         #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
         model_dir: PathBuf,
     },
+    /// Prove the MetalPerformancePrimitives matmul call pattern against a CPU
+    /// reference.  No model needed; a few hundred milliseconds.
+    MppTest,
     /// Benchmark decode throughput (tok/s).
     Bench {
         #[arg(long, default_value = "models/Qwen3.8-27B-4bit")]
@@ -160,6 +163,7 @@ fn main() -> Result<()> {
             max_ctx,
         } => cmd_serve(model_dir, port, model_id, max_ctx),
         Cmd::GemmCheck { model_dir } => bench::gemm_check(&model_dir),
+        Cmd::MppTest => bench::mpp_test(),
         Cmd::Bench {
             model_dir,
             iters,

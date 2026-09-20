@@ -214,6 +214,56 @@ impl<'a> QLinear<'a> {
                 if let Err(e) = batch.kernel(msl::MPP, "q4_mpp_probe") {
                     eprintln!("q4_mpp_probe FAILED TO BUILD: {e}");
                 }
+                // QW_MPP=3: the affine tensor-op GEMM.  Tile M(tokens)=128,
+                // N(rows)=64, K=32, weight tile only in shared memory, and the
+                // activations read straight from device memory by the tensor op.
+                // Proved numerically by `qwen38 mpp-test` (rel 1.8e-7) before
+                // anything was built on it.
+                // The tensor-op GEMM is the default path: it is numerically
+                // identical to the hand-written kernel on every shape checked
+                // (same max_abs to the last digit, out_f=48 included) and 2.15x
+                // faster on a cold prefill, because the tensor op reads the
+                // activations straight from device memory and runs the MACs at
+                // 44 TFLOPS against simdgroup_matrix's 22.  QW_MPP=0 forces the
+                // old kernel back on; if the MPP source ever fails to compile the
+                // old kernel is used anyway, because the block below falls through.
+                let use_mpp = matches!(
+                    std::env::var("QW_MPP").ok().as_deref(),
+                    None | Some("3")
+                );
+                if use_mpp {
+                    let src = msl::mpp_src();
+                    if let Err(e) = batch.kernel(&src, "q4_mpp_mm") {
+                        eprintln!("q4_mpp_mm FAILED TO BUILD: {e}");
+                    }
+                    if let Ok(mk) = batch.kernel(&src, "q4_mpp_mm") {
+                        let [_, nra, nrb, nt] = msl::mpp_tiles();
+                        let (nra, nrb, nt) = (nra as usize, nrb as usize, nt as usize);
+                        batch.encode(
+                            Dispatch::new(
+                                &mk,
+                                (rows.div_ceil(nrb) * nt, self.out_f.div_ceil(nra), 1),
+                                (nt, 1, 1),
+                            )
+                            .buf_offset(0, self.weight.buf, self.weight.offset)
+                            .buf_offset(1, self.scales.buf, self.scales.offset)
+                            .buf_offset(2, self.biases.buf, self.biases.offset)
+                            .buf(3, x)
+                            .buf(4, y)
+                            .scalar(5, self.in_f as i32)
+                            .scalar(6, rows as i32)
+                            .scalar(7, self.out_f as i32)
+                            .scalar(
+                                8,
+                                std::env::var("QW_GEMM_MODE")
+                                    .ok()
+                                    .and_then(|v| v.parse::<i32>().ok())
+                                    .unwrap_or(0),
+                            ),
+                        );
+                        return;
+                    }
+                }
                 // mode 7: run the MetalPerformancePrimitives probe instead of the
                 // hand-written tile kernel.  Its output is WRONG - it computes
                 // `A x q` and ignores the per-group scale and bias - so this exists

@@ -6866,3 +6866,125 @@ smem aliasing、uint4 staging…）全部失败：它们都在减少字节数，
 - 列方向需要 `out_f % 32 == 0` 的保证，否则会写穿到下一行。
 
 **目标：9.28 KB → 5.18 KB，占用率提高约 1.8×。**
+
+### 72bw. **MPP 张量路径成功：冷 prefill 5.59 s → 2.51 s（2.23×），输出逐字节一致**（第 136 轮）
+
+#### 决定性证据：本机 `has_tensor = true`
+
+llama.cpp 的 Metal 后端把 GEMM 分成两条路径（`mul_mm.metal` 用 `#ifdef GGML_METAL_HAS_TENSOR` 隔开），
+运行时由 `ggml-metal-device.m:1131` 选择：
+
+```objc
+dev->props.has_tensor = [dev->mtl_device supportsFamily:MTLGPUFamilyMetal4_GGML];  // 5002
+```
+
+用 Swift 直接问本机（`MTLCreateSystemDefaultDevice`）：
+
+```
+device: Apple M5 Max  maxThreadgroupMemoryLength: 32768
+Apple7 1004 true   Apple8 1005 true   Apple9 1006 true   Apple10 1007 true
+Metal3 5001 true   Metal4 5002 true
+```
+
+**⇒ `has_tensor` 为真 ⇒ llama.cpp 那 1.60 s 的冷 prefill 就是用 MPP 张量路径跑出来的。**
+第 134 轮「MPP 在本机完全不执行、整条路线作废」的结论**是错的**。
+
+#### 错在哪里：`run` 的操作数布局
+
+Apple 的头文件 `MPPTensorOpsMatMul2d.h`（第 103–140 行的 `simpleMatMul` 示例）写得很清楚：
+
+```
+run(left, right, dest)
+  left  (K, M)      dim0 是归约维
+  right (K, N)      transpose_right = true 时（NT）
+  dest  (N, M)      dim0 是 N，dim1 是 M
+matmul2d_descriptor(M, N, K, transpose_left, transpose_right, relaxed, mode)
+```
+
+示例里 `A.slice(0, tgid.y*64)` 取的是 M 偏移、`B.slice(tgid.x*32, 0)` 取的是 N 偏移 ——
+只有 A=(K,M)、B=(N,K) 才自洽。
+而我们的 `q4_mpp_probe` 把 A 当成 (rows, K)（即 (M,K)）、B 当成 (out_f, K)，
+却声明成 NT，于是**归约维读错了轴，输出全是 0**。
+「本机不能执行 MPP」测到的其实是这个。
+
+另外两个坑：
+- **操作数必须是非 const**。`get_destination_cooperative_tensor` 会对操作数元素类型做
+  `static_assert`，`const half` 不在允许列表里，报错信息却指向 *destination* 的数据类型。
+- `GROUP_SIZE` 等宏在 MPP 这个编译单元里没有定义，要自己带一份。
+
+#### 先证原语，再建内核
+
+新增 `qwen38 mpp-test`：256×128×96 的 half×half 矩阵乘，对 CPU 参考比较。
+**这是最小可判定的实验，1 秒跑完**：
+
+```
+mpp-test: M 256 N 128 K 96  nonzero 32768/32768  max_abs 6.184e-7  rel 1.811e-7
+mpp-test: PASSED
+```
+
+#### `q4_mpp_mm`：与 llama.cpp 同构的仿射 4-bit GEMM
+
+tile 与 llama.cpp 的 `N_MM_*` 常量一致：**M(tokens)=128、N(权重行)=64、K=32（本机实测 64 更快）、128 线程**，
+**只有权重 tile 进共享内存**（`sa[NRA*KT]`，4–8 KB），**激活由张量单元直接从 device 内存读**。
+这就是结构上的全部差别：`q4_gemm_tile` 两个操作数都要 staging，于是每个 32 行块都要重读一遍
+32×32 的激活 tile；`q4_mpp_mm` 不读激活到共享内存，权重 tile 的反量化次数也从
+`602/32 = 19` 降到 `602/128 = 5`。
+
+per-group 的 scale/bias 在**反量化进共享内存时**就作用上去，所以张量单元做的是一次普通 fp16 乘法，
+不需要 `sum_g b[n,g]*G[m,g]` 那种修正项。写回用 `cT.get()`/`get_multidimensional_index()`
+逐元素写 fp16（`cT.store()` 要求目的元素类型一致，而累加器是 fp32），
+边界由我们自己判，因此 `out_f = 48` 也安全。
+
+#### 数值：与手写内核逐位相同
+
+`gemm-check` 四个形状的 `mpp-mm` 行与手写 `gemm` 行的 `max_abs` **完全一致**：
+
+| 形状 | 手写 gemm rel | mpp-mm rel | zero | over-tol |
+|---|---|---|---|---|
+| out_f 5120 / in_f 6144 | 2.715e-4 | **2.715e-4** | 0/204800 | 0 |
+| out_f 17408 / in_f 5120 | 3.347e-4 | **3.347e-4** | 0/696320 | 0 |
+| out_f 48 / in_f 5120 | 2.856e-4 | **2.856e-4** | 0/1920 | 0 |
+| out_f 248320 / in_f 5120 | 2.818e-4 | **2.818e-4** | 0/9932800 | 0 |
+
+`QW_GEMM_CHECK_ALL=1` 扫全部 **497** 个量化线性：`mpp-mm` 最差 rel **4.668e-4**，
+**over-tol 0**，FAIL 0。`relaxed_precision` 取 0 或 1 数值完全一样，故默认取 0（精确）。
+
+`/tmp/fastchk.sh` 的 399-token 生成 md5 = **`5b5f6e931dddd4cc943589f4380e2325`**，len 182，
+与改动前**逐字节一致**。
+
+#### 性能：交错 A/B 3/3，2.23×
+
+| 轮 | 旧内核 `QW_MPP=0` | 默认（MPP, KT=64） |
+|---|---|---|
+| 1 | 5.567 | **2.505** |
+| 2 | 5.603 | **2.533** |
+| 3 | 5.590 | **2.503** |
+
+#### tile 扫描：只有 KT 有效，M/N 变大全部变差
+
+| 配置 | 冷 TTFT |
+|---|---|
+| KT=32 / NRA=64 / NRB=128 / NT=128（原） | 3.071 / 3.188 |
+| **KT=64**（新默认） | **2.510 / 2.698** |
+| NRB=256 | 5.101 / 5.124 |
+| NRB=512 | 19.270 / 19.348 |
+| NRA=128 | 5.717 / 6.170 |
+| NT=256 | 3.755 / 4.885 |
+| KT=128 | 2.781 / 2.813 |
+
+**⇒ 张量 tile 越大越慢**：累加器是 `M*N/NT` 个 fp32 寄存器，
+M=128/N=64/NT=128 已经是 64 个/线程，NRB=256 直接翻到 128 个 → 寄存器溢出。
+NRB 上不去，权重就只能扫 5 遍 —— 这条路到此为止。
+
+#### KT=64 的分解
+
+| mode | 含义 | 冷 TTFT |
+|---|---|---|
+| 0 | 完整 | 2.495 / 2.523 |
+| 1 | 跳过反量化 | 2.368 / 2.560 |
+| 2 | 跳过张量乘法 | **1.721 / 1.741** |
+
+**⇒ 反量化已经几乎免费（≈0.1 s）；张量乘法 ≈ 0.78 s，即
+`2×2.88e10×602 / 0.78 = 44 TFLOPS`，是 `simdgroup_matrix` 22 TFLOPS 的两倍。**
+**⇒ 2.51 s 里剩下的 1.73 s 是「非矩阵乘」：注意力 / GDN / norm / conv + 反量化 + 写回 + 发射。**
+**⇒ 下一个瓶颈已经不是 GEMM 了。**
