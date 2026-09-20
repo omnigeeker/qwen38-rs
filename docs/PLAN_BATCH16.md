@@ -9597,3 +9597,50 @@ if rows.iter().all(|r| r.0 == rows[0].0) {
 
 **未做改动，未验证。这是下一步的方向，而且它是本轮唯一一个
 「代码注释直接给出了收益量级」的目标。**
+
+### 72eo. 多序列 `conv1d_ring_tile` 的可行性评估：**是「加一个按行数组」，不是重写**（第 207 轮）
+
+上一条找到了真凶（批解码走逐行拷贝 + 逐行卷积）。本轮读核本体，评估改动量。
+
+**核本体（msl_ops.rs:361-394）比预想的友好——它已经是按行索引的：**
+
+```c
+const int c   = (int)(gid % (uint)conv_dim);
+const int row = (int)(gid / (uint)conv_dim);
+for (int j = 0; j < 4; ++j) {
+    const int pos = pos0 + row - 3 + j;
+    device const half* src = (pos >= pos0)
+        ? cur + (size_t)(pos - pos0) * conv_dim + c
+        : window + (size_t)(pos & (ring - 1)) * conv_dim + c;
+    acc += (float)w[c * 4 + j] * (float)(*src);
+}
+out[row * conv_dim + c] = silu(acc);
+window[((slot0 + row) & (ring - 1)) * conv_dim + c] = cur[row * conv_dim + c];
+```
+
+**⇒ `row` 已经是从 grid 算出来的。只有三处假设了「单一序列」：**
+
+| 假设 | 现状 | 多序列需要 |
+|---|---|---|
+| `pos0` 标量 | 所有行共用 | 每行各自的 pos0 |
+| `slot0` 标量 | `slot = slot0 + row`（假设连续） | `slot = pos_row & (ring-1)` |
+| window 基址 | 由 host 传 `rows[0].0 * win_stride` | 每行各自的 `seq * win_stride` |
+
+**⇒ 改动设计（有界、明确）：**
+
+1. 新增一个按行的缓冲（例如 `device const int* row_pos`，或 `int2` 存 pos 与 seq），
+   由 host 在编码前填好；
+2. 核内改为 `const int p0 = row_pos0[row]; const int pos = p0 + ...`；
+3. window 读写改用 `rowseq[row] * win_stride + slot * conv_dim`。
+
+**⇒ 这是一个**中等规模、边界清晰**的改动：不是重写核，而是把三个标量换成按行查表。**
+
+**⇒ 正确性上需要注意的一点**：`pos >= pos0` 这个判断是用来区分
+「本 pass 的行在 staging buffer 里」与「更早的行在 ring 里」——
+**多序列时每个序列的 pos0 不同，所以这个判断必须逐行做**（上面第 2 点已覆盖）。
+
+**⇒ 收益**：批解码的 48 层 x 每行一次拷贝 + 每行一次卷积
+⇒ 折成每层一次（约 48 次派发），注释说「12,288 launches per pass become 48」。
+
+**未做改动，未验证。** 下一轮：实现并验证（`gemm-check` + `accept.sh` + 交错 A/B），
+**若单轮内无法完成验证，我会先只做到「能编译且 gate 全绿」再谈性能。**
