@@ -8138,3 +8138,37 @@ median inter-pass gap: 0.00 ms    sum(gaps)=55 ms
 而是**把这 689 个小 kernel 融合掉**（例如把各层的 rmsnorm / ewise_add / silu_mul
 合并成更少的 dispatch，或按层批量）。
 **这是目前唯一有量化支撑的、能同时改善单流和并发的杠杆。**
+
+### 72da. 两个更正：**encoder split 免费**、**1 行 pass 已达 94.5% 带宽**；
+### 且 `QW_STEP_TIME` **不记录 spec 路径**（第 165 轮）
+
+**1. encoder split 免费。** 代码里 `QW_NO_ENC_SPLIT` 的注释自己点明了这个问题
+（"bounds what splitting encoders costs"）。交错实测 1 行 pass：
+
+| | rep1 | rep2 |
+|---|---|---|
+| 正常（1186 次 split） | 31.8 | 31.7 |
+| `QW_NO_ENC_SPLIT=1`（单 encoder） | 31.7 | 32.2 |
+
+**没有差别。1186 次 encoder 切分是免费的。**
+
+**2. 1 行 pass 是 31.7 ms，不是 48.6 ms。**
+**⇒ 14.412 GB / 31.7 ms = 455 GB/s = 481 的 94.5%**，与孤立扫描（31.0 ms）几乎相同。
+
+**⇒ 689 个小 dispatch 的成本约等于零（31.7 vs 31.0 ms）。上一轮那个「17.6 ms 非 GEMM 开销」
+是**在噪声窗口里测出来的**，而且我当时用 481 GB/s 当分母算出 62% 效率也是错的。
+上一轮据此提出的「融合 689 个小 kernel」计划**前提不成立，作废**。
+（48.6 ms 与 31.7 ms 的差异说明：任何单次 pass 测量都必须交错配对，
+这正是第 158 轮定下的规矩。）
+
+**3. `QW_STEP_TIME` 不记录 spec 路径的 pass。**
+一次 spec 运行只记到 2 个 pass（1 个 4 行 + 1 个 41 行），合计 473 ms，
+而墙钟是 3.16 s。**所以「4 行 = 1.25 倍 1 行」是单样本读数，不可信。**
+
+**真正的 spec 成本结构**（由 128 token / 3.16 s = 40.5 tok/s 反推）：
+一次 spec pass 若产出约 4.32 个 token，则约 30 个 pass ⇒ **约 105 ms/pass = 3.3 倍
+于 1 行批处理 pass**。而一次 spec pass = 1 次 verify（4 行，约 32-40 ms）
+**+ 3 次 MTP draft 步进（`TILE-1` 个，每次都是 draft head 的一整层前向）**。
+
+**⇒ spec 的单流成本里，draft head 的开销很可能比 verify 的行摊薄更主要。**
+这是下一个要量的东西，而不是融合小 kernel。
