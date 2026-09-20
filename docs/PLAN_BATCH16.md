@@ -7815,3 +7815,34 @@ pub fn spec_enabled() -> bool { ... var("QW_SPEC") != Some("0") }
 **教训：一个开关被复制到 N 个地方，改其中一处就是把系统切成两半。
 「显式打开时正常」和「默认打开时正常」是两回事——**
 三轮里我一直用 `QW_SPEC=1` 复现，而那恰好是唯一不出问题的配置。
+
+### 72cr. 投机解码为什么只覆盖单请求；扩展到并发需要动什么（第 156 轮）
+
+先确认一件事：**单请求客户端总是落在 slot 0**，所以单流一定吃到投机。
+我上一轮看到的 otps 抖动（36.20 / 22.38 / 27.86）是机器噪声，不是 slot 分配。
+
+并发吃不到，是**架构性的**，代码里写得很清楚（engine.rs:986-992）：
+
+> `spec_step` drafts with the MTP head, which keeps **ONE** k/v cache, and it
+> verifies with `forward2`, which **hardcodes sequence 0**, and rewinds with
+> `commit_row`, which copies into **sequence 0's** recurrent state. So it may run
+> only when exactly one slot is decoding and that slot is slot 0.
+
+**要扩展到多 slot，需要动三处：**
+
+1. **MTP head 的 k/v cache 加 slot 偏移。**
+   好消息：buffer 已经按 `batch * nkv * max_t * hd * 2` 分配（runner.rs:647），
+   布局**已经支持**每 slot 一份；只是 `kv_append` 只拿到 `pos`、没有 slot 偏移
+   （runner.rs:2535-2543），attention 也一样。**这一步是纯加法。**
+2. **`forward2` 的 verify 要按 slot 取行**（现在硬编码 sequence 0）。
+3. **`commit_row(row)` 要加 `seq` 参数**（现在 `pub fn commit_row(&mut self, row: usize)`，
+   复制进 sequence 0 的递归状态）。
+
+**预期收益**：并发聚合从 51.8 往 Splash 的 170 靠。
+现在 4 并发时 `spec_ok` 恒为 false，**投机解码对聚合吞吐贡献为零**，
+而单流已经 36.2 tok/s（Splash 74）。
+
+**优先级判断**：这是目前离目标最远的一项（30% vs Splash），
+但它是一次三处联动的改动，且第 3 步碰的是「draft 被拒后回滚递归状态」——
+正是第 155 轮那个 bug 所在的地方，必须靠 `accept.sh` 的
+`spec==plain` 与 `server==cli` 两条门禁守住。**下一轮从第 1 步开始做，单独验证。**
