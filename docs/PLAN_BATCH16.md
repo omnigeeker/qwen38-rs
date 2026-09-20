@@ -9435,3 +9435,45 @@ fn copy_seq(&mut self, seq: usize, restore: bool) -> Result<()> {
 是否是遗留调用，是下一步要查清的。**
 
 **未做改动，未验证。**
+
+### 72ek. **自我更正：`copy_seq` 没有调用者，§72ej 的结论不成立**（第 203 轮）
+
+上一条（§72ej）我根据「192 = 48 x 2 x 2」推出「`copy_seq` 每 pass 跑两次，
+搬运 2.01 GB」。**本轮查调用链，这个结论站不住。**
+
+**证据：**
+
+```
+$ grep -rn "save_prefix\|load_prefix" crates/ --include=*.rs
+crates/qw-server/src/engine.rs:1075:   // ... 只是注释
+crates/qw-server/src/engine.rs:1102:   // ... 只是注释
+```
+
+**⇒ `save_prefix` 和 `load_prefix` 在整个代码库里**只有定义、没有任何调用点**。**
+**⇒ 而 `copy_seq` 只被这两个函数调用。**
+**⇒ 所以 `copy_seq` 根本不会被执行，`copy_off` x 192 不可能来自它。**
+
+**那 `copy_off` 从哪来？所有 `kernels.copy`（即 `K_COPY` = `"copy_off"`）的派发点：**
+
+| 行 | 位置 | 是否常规路径 |
+|---|---|---|
+| 1599 | `forward_rows` 内 | **否**（在 `if let Some(dbg)` 下） |
+| 2355 | `forward_rows` 内 | **否**（在 `if let Some(dbg)` 下） |
+| 2396 | `promote_hidden` | 是，但**每次调用只有 1 次派发** |
+| 2522 | `mtp_step` | 是，但每 draft 步 1 次 |
+
+**`promote_hidden` 的调用点只有 2861 和 2864（每次 1 个派发），
+`mtp_step` 每步 1 个——都凑不出 192。**
+
+**⇒ 结论：我**找不到**能产生 192 次 `copy_off` 的代码路径。**
+
+**⇒ 因此 §72ej 的「conv 窗口每 pass 被拷两次、值 4.2 ms」是**未被支持的推断**，
+本轮撤回。§72eg 的自我更正也随之作废（我当初证伪 conv 窗口流量是对的，
+只是理由给错了）。**
+
+**⇒ 16.3 ms 的构成重新变为未知，尽管直方图给出了精确的每内核计数。
+「计数对、路径找不到」本身是一个值得记录的异常——
+可能来自 `QW_SKIP_KERNEL`/`QW_ONLY_KERNEL` 之类的调试分支，
+或来自某个我还没读到的循环。**
+
+**未做改动，未验证。**
