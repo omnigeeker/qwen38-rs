@@ -7731,3 +7731,47 @@ KV cache 的访问地址在行与行之间是**分散**的，合并访存被打�
 **下一轮**：拿一个非 GEMM kernel（先 `gdn_step_seq4` 或 `conv1d_silu_ring_tile`）
 单独做 rows=1 vs rows=4（4 个不同 slot 基址）的微基准，确认是不是访存分散，
 再决定是改布局（把 state 按 [row][layer] 交错）还是改 kernel 的遍历顺序。
+
+### 72cp. 「4 行悬崖」是**降频**，不是代码；短 prompt 下并发聚合是 51.8 tok/s（第 154 轮）
+
+**1. 上一轮那个悬崖是热的。** 4 行 pass 的耗时取决于**跑多久**：
+
+| 4 行 pass | 整轮时长 | 中位 |
+|---|---|---|
+| 128 token 那轮 | 30.5 s | 132.2 ms |
+| 32 token 那轮 | 12.9 s | **60.9 ms** |
+
+**同样的 4 行，短跑只要 60.9 ms。** 所以行数**是**摊薄的（4 行 = 1 行 38.5 ms 的 1.58 倍），
+「3 行 57.6 → 4 行 132.2」是持续负载下的 GPU 降频。
+
+**2. 而且墙钟的大头根本不在 decode。** 按 pass 时间乘一下：
+
+```
+n=4, 128 tok: 墙 30.46 s, decode 127×132.2ms = 16.8 s  -> 13.7 s 在别处
+n=4,  32 tok: 墙 12.87 s, decode  30× 60.9ms =  1.8 s  -> 11.0 s 在别处
+n=1, 128 tok: 墙  9.45 s, decode 127× 38.5ms =  4.9 s  ->  4.6 s 在别处
+```
+
+按 60.9 ms/pass 算，4 并发 decode 本身该有 **66 tok/s**。
+
+**3. 我的基准和 Splash 不可比。** Splash 那一行写的是
+"Aggregate decode · **4 concurrent short prompts**"，而我用的是 **602 token 的长 prompt**，
+于是 prefill 主导了墙钟。换成短 prompt（Splash 的口径）：
+
+| 并发 | 墙 | **聚合 otps** | 每流 |
+|---|---|---|---|
+| 1 | 5.73 s | 22.33 | 22.33 |
+| 4 | 9.89 s | **51.77** | 12.94 |
+
+**并发扩展是 2.32×**（不是长 prompt 下的 1.24×）。**聚合 51.8 vs Splash 的 170，我们在 30%。**
+
+**4. 但真正的结论是：想追上 Splash 必须修好投机解码。**
+
+Splash 单流 74 tok/s = 13.5 ms/token。而带宽下限是
+14.4 GB ÷ 481 GB/s = **30 ms/token = 33 tok/s**（M5 Pro 约 19 tok/s）。
+**74 tok/s 比物理上限还快 2.2 倍** —— 只能是投机解码（README 也明说 DFlash 2 draft
+是唯一 decode 路径）。**没有任何 kernel 优化能越过这条线。**
+
+所以 spec 通路从「一个选项」变成「otps 目标的必要条件」。
+下一轮集中攻它：`accept.sh` 里失败、外面复现不出来，就用 `accept.sh` 那个
+`PIN` 用例（`max_tokens=64` 裸补全）逐行对照 CLI，把分叉点定位到具体 kernel。
