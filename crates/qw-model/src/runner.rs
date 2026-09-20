@@ -210,6 +210,13 @@ struct Scratch {
     /// CPU once per pass so `gdn_step_multi` can serve several sequences in one
     /// dispatch instead of one per row.  See the kernel for why that is worth doing.
     gdn_meta: GpuBuffer,
+    /// `[BATCH_MAX][2]` i32: per-row `(pos, cache offset in halfs)`, written from the
+    /// CPU once per pass.  The attention roPE, the KV append and the two attention
+    /// kernels all take `pos0` and one sequence's cache slice, so a pass of several
+    /// sequences had to run them once per ROW.  With this they read each row's own
+    /// position and slice and collapse back to one dispatch per layer.  `pos0 < 0`
+    /// selects the per-row path inside those kernels.
+    attn_meta: GpuBuffer,
     /// Scratch for the keep-warm tick, deliberately NOT `logits`.
     ///
     /// The tick used to write eight halves into `logits`, the buffer the sampler
@@ -648,6 +655,7 @@ impl Qwen38 {
             qkv_cur: dev.buffer(conv_dim * 2 * tile),
             conv_meta: dev.buffer(BATCH_MAX * 4 * 4),
             gdn_meta: dev.buffer(BATCH_MAX * 4),
+            attn_meta: dev.buffer(BATCH_MAX * 2 * 4),
             tick: dev.buffer(16),
         };
 
@@ -1756,6 +1764,35 @@ impl Qwen38 {
 
         let mut b = CommandBatch::new(dev);
 
+        // True when no sequence contributes more than one row to this pass.  A decode
+        // pass of several requests has that shape; a chunked prefill of one request (or
+        // several requests prefilling at once) does not.  The attention roPE, the KV
+        // append, the attention score/out kernels and the GDN step can each collapse
+        // their per-row loop into one dispatch exactly when it holds, because every
+        // row's position and cache slice can then be read from `attn_meta` instead of
+        // being implied by `pos0 + row`.
+        let mut seen_mask: u32 = 0;
+        let mut distinct = true;
+        for r in rows.iter() {
+            let bit = 1u32 << r.0;
+            if seen_mask & bit != 0 {
+                distinct = false;
+                break;
+            }
+            seen_mask |= bit;
+        }
+        let use_meta = distinct && n > 1;
+        if use_meta {
+            // `(pos, cache offset in halfs)` per row.  A few dozen bytes, once per pass,
+            // into a shared buffer: safe without a barrier because the previous pass
+            // ended in `finish(true)` and the dispatches below are encoded after it.
+            let meta: Vec<i32> = rows
+                .iter()
+                .flat_map(|r| [r.1 as i32, (r.0 * kv_stride / 2) as i32])
+                .collect();
+            scratch.attn_meta.copy_from(&meta);
+        }
+
         for (i, layer) in layers.iter().enumerate() {
             // ---- pre-norm ----
             b.encode(
@@ -1872,8 +1909,10 @@ impl Qwen38 {
                     }
                     }
                     b.barrier();
-                    if one_seq && am & 4 != 0 {
-                        let p0 = rows[0].1 as i32;
+                    if (one_seq || use_meta) && am & 4 != 0 {
+                        // `-1` tells the kernel to read each row's position from
+                        // `attn_meta` rather than assume `pos0 + row`.
+                        let p0 = if use_meta { -1 } else { rows[0].1 as i32 };
                         b.encode(
                             Dispatch::new(&kernels.rope_rows, (nh * n * 64, 1, 1), (64, 1, 1))
                                 .buf(0, &scratch.q)
@@ -1883,7 +1922,8 @@ impl Qwen38 {
                                 .scalar(4, rot_dim)
                                 .scalar(5, cfg.rope_theta() as f32)
                                 .scalar(6, p0)
-                                .scalar(7, (nh * hd * 2) as i32),
+                                .scalar(7, (nh * hd * 2) as i32)
+                                .buf(8, &scratch.attn_meta),
                         );
                         b.encode(
                             Dispatch::new(&kernels.rope_rows, (nkv * n * 64, 1, 1), (64, 1, 1))
@@ -1894,7 +1934,8 @@ impl Qwen38 {
                                 .scalar(4, rot_dim)
                                 .scalar(5, cfg.rope_theta() as f32)
                                 .scalar(6, p0)
-                                .scalar(7, (key_dim * 2) as i32),
+                                .scalar(7, (key_dim * 2) as i32)
+                                .buf(8, &scratch.attn_meta),
                         );
                     } else {
                     for (row, &(_, pos)) in rows.iter().enumerate() {
@@ -1922,19 +1963,27 @@ impl Qwen38 {
                     }
                     }
                     b.barrier();
-                    if one_seq && am & 8 != 0 {
+                    if (one_seq || use_meta) && am & 8 != 0 {
+                        // In the per-row path the kernel adds each row's own cache
+                        // slice, so the buffers carry no offset and `pos0` is `-1`.
+                        let (kco, vco) = if use_meta {
+                            (0usize, 0usize)
+                        } else {
+                            (rows[0].0 * kv_stride, rows[0].0 * kv_stride)
+                        };
                         b.encode(
                             Dispatch::new(&kernels.kv_append_rows, (nkv * hd * n, 1, 1), (NT, 1, 1))
                                 .buf(0, &scratch.k)
                                 .buf(1, &scratch.pv)
-                                .buf_offset(2, &a.k_cache, rows[0].0 * kv_stride)
-                                .buf_offset(3, &a.v_cache, rows[0].0 * kv_stride)
-                                .scalar(4, rows[0].1 as i32)
+                                .buf_offset(2, &a.k_cache, kco)
+                                .buf_offset(3, &a.v_cache, vco)
+                                .scalar(4, if use_meta { -1 } else { rows[0].1 as i32 })
                                 .scalar(5, max_t)
                                 .scalar(6, nkv as i32)
                                 .scalar(7, hd as i32)
                                 .scalar(8, key_dim as i32)
-                                .scalar(9, (nkv * hd) as i32),
+                                .scalar(9, (nkv * hd) as i32)
+                                .buf(10, &scratch.attn_meta),
                         );
                     } else {
                     for (row, &(seq, pos)) in rows.iter().enumerate() {
@@ -1958,13 +2007,23 @@ impl Qwen38 {
                     // mask is a shorter loop bound - but that is only the same
                     // computation when the pass is one sequence with consecutive
                     // positions, which is what `contiguous` checks.
+                    // With `attn_meta` every row carries its own position, so the
+                    // causal bound `T` is that row's own length and the pass no longer
+                    // needs one sequence with consecutive positions.  Only the
+                    // one-sequence case still has to check contiguity.
                     let contiguous = attn_rows_enabled()
-                        && one_seq
-                        && rows
-                            .iter()
-                            .enumerate()
-                            .all(|(r, &(_, p))| p == rows[0].1 + r);
+                        && (one_seq || use_meta)
+                        && (!one_seq
+                            || rows
+                                .iter()
+                                .enumerate()
+                                .all(|(r, &(_, p))| p == rows[0].1 + r));
                     if contiguous {
+                        let (kco, vco, apos) = if use_meta {
+                            (0usize, 0usize, -1i32)
+                        } else {
+                            (rows[0].0 * kv_stride, rows[0].0 * kv_stride, rows[0].1 as i32)
+                        };
                         b.encode(
                             Dispatch::new(
                                 &kernels.attn_scores_rows,
@@ -1972,14 +2031,15 @@ impl Qwen38 {
                                 (NT, 1, 1),
                             )
                             .buf(0, &scratch.q)
-                            .buf_offset(1, &a.k_cache, rows[0].0 * kv_stride)
+                            .buf_offset(1, &a.k_cache, kco)
                             .buf(2, &scratch.scores)
                             .scalar(3, max_t)
                             .scalar(4, nh as i32)
                             .scalar(5, nkv as i32)
                             .scalar(6, hd as i32)
                             .scalar(7, scale)
-                            .scalar(8, rows[0].1 as i32),
+                            .scalar(8, apos)
+                            .buf(9, &scratch.attn_meta),
                         );
                         b.barrier();
                         b.encode(
@@ -1989,13 +2049,14 @@ impl Qwen38 {
                                 (hd, 1, 1),
                             )
                             .buf(0, &scratch.scores)
-                            .buf_offset(1, &a.v_cache, rows[0].0 * kv_stride)
+                            .buf_offset(1, &a.v_cache, vco)
                             .buf(2, &scratch.attn_out)
                             .scalar(3, max_t)
                             .scalar(4, nh as i32)
                             .scalar(5, nkv as i32)
                             .scalar(6, hd as i32)
-                            .scalar(7, rows[0].1 as i32),
+                            .scalar(7, apos)
+                            .buf(8, &scratch.attn_meta),
                         );
                     } else {
                     for (row, &(seq, pos)) in rows.iter().enumerate() {
@@ -3091,7 +3152,8 @@ impl Qwen38 {
                 .scalar(4, rot_dim)
                 .scalar(5, theta)
                 .scalar(6, p0)
-                .scalar(7, (nh * hd * 2) as i32),
+                .scalar(7, (nh * hd * 2) as i32)
+                .buf(8, &scratch.attn_meta),
         );
         b.encode(
             Dispatch::new(&kernels.rope_rows, (nkv * n * 64, 1, 1), (64, 1, 1))
@@ -3102,7 +3164,8 @@ impl Qwen38 {
                 .scalar(4, rot_dim)
                 .scalar(5, theta)
                 .scalar(6, p0)
-                .scalar(7, (key_dim * 2) as i32),
+                .scalar(7, (key_dim * 2) as i32)
+                .buf(8, &scratch.attn_meta),
         );
         b.barrier();
         b.encode(
@@ -3116,7 +3179,8 @@ impl Qwen38 {
                 .scalar(6, nkv as i32)
                 .scalar(7, hd as i32)
                 .scalar(8, key_dim as i32)
-                .scalar(9, (nkv * hd) as i32),
+                .scalar(9, (nkv * hd) as i32)
+                .buf(10, &scratch.attn_meta),
         );
         b.barrier();
         b.encode(
@@ -3129,7 +3193,8 @@ impl Qwen38 {
                 .scalar(5, nkv as i32)
                 .scalar(6, hd as i32)
                 .scalar(7, scale)
-                .scalar(8, p0),
+                .scalar(8, p0)
+                .buf(9, &scratch.attn_meta),
         );
         b.barrier();
         b.encode(
@@ -3141,7 +3206,8 @@ impl Qwen38 {
                 .scalar(4, nh as i32)
                 .scalar(5, nkv as i32)
                 .scalar(6, hd as i32)
-                .scalar(7, p0),
+                .scalar(7, p0)
+                .buf(8, &scratch.attn_meta),
         );
         b.barrier();
         b.encode(

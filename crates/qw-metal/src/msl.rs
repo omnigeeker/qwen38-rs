@@ -1260,6 +1260,10 @@ kernel void rope_partial_rows(
     constant float&    base      [[buffer(5)]],
     constant int&      pos0      [[buffer(6)]],
     constant int&      stride_bytes [[buffer(7)]],
+    // `pos0 < 0` selects the per-row path: `meta[token*2]` is that row's position,
+    // which is what a pass of unrelated sequences needs, since their positions are not
+    // `pos0 + token`.
+    device const int*  meta   [[buffer(8)]],
     uint tg   [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_threadgroup]],
     uint nt   [[threads_per_threadgroup]])
@@ -1270,7 +1274,7 @@ kernel void rope_partial_rows(
                             + (size_t)head * head_dim;
     device half*       yr = (device half*)((device char*)y + (size_t)token * stride_bytes)
                             + (size_t)head * head_dim;
-    const int pos = pos0 + (int)token;
+    const int pos = (pos0 < 0) ? meta[(int)token * 2] : pos0 + (int)token;
     const int half_rot = rot_dim / 2;
     for (int i = (int)lane; i < head_dim; i += (int)nt) {
         yr[i] = xr[i];

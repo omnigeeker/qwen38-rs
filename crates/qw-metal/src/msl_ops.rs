@@ -143,6 +143,10 @@ kernel void kv_append_rows(
     // silently walks into the next token, which is what broke the gates.
     constant int&       krow   [[buffer(8)]],
     constant int&       vrow   [[buffer(9)]],
+    // `pos0 < 0` selects the per-row path: each row carries its own position and its
+    // own cache slice in `meta`, which is what lets several unrelated sequences share
+    // one dispatch instead of one per row.
+    device const int*   meta   [[buffer(10)]],
     uint i [[thread_position_in_grid]])
 {
     const int per_row = Hkv * D;
@@ -150,9 +154,11 @@ kernel void kv_append_rows(
     const int j = (int)i - token * per_row;
     const int hk = j / D;
     const int d  = j - hk * D;
-    const size_t dst = ((size_t)hk * maxT + pos0 + token) * D + d;
-    kcache[dst] = k[(size_t)token * krow + j];
-    vcache[dst] = v[(size_t)token * vrow + j];
+    const size_t coff = (pos0 < 0) ? (size_t)meta[token * 2 + 1] : 0;
+    const int rpos = (pos0 < 0) ? meta[token * 2] : pos0 + token;
+    const size_t dst = ((size_t)hk * maxT + rpos) * D + d;
+    kcache[coff + dst] = k[(size_t)token * krow + j];
+    vcache[coff + dst] = v[(size_t)token * vrow + j];
 }
 
 kernel void kv_append(
@@ -197,20 +203,22 @@ kernel void attn_scores_softmax_rows(
     constant int&       D      [[buffer(6)]],
     constant float&     scale  [[buffer(7)]],
     constant int&       pos0   [[buffer(8)]],
+    device const int*   meta   [[buffer(9)]],
     uint gid  [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_threadgroup]],
     uint nt   [[threads_per_threadgroup]])
 {
     const int row = (int)gid / H;
     const int h   = (int)gid - row * H;
-    const int T   = pos0 + row + 1;
+    const int T   = ((pos0 < 0) ? meta[row * 2] : pos0 + row) + 1;
     const int reps = H / Hkv;
     const int hk = h / reps;
     const uint sg = lane / 32;
     const uint sl = lane % 32;
     const int nwarp = (int)(nt / 32);
     device const half* qh = q + ((size_t)row * H + (size_t)h) * D;
-    device const half* kbase = kcache + (size_t)hk * maxT * D;
+    device const half* kbase = kcache
+        + ((pos0 < 0) ? (size_t)meta[row * 2 + 1] : 0) + (size_t)hk * maxT * D;
     device float* sc = scores + ((size_t)row * H + (size_t)h) * maxT;
 
     // ---- pass 1: dot products ----
@@ -270,16 +278,18 @@ kernel void attn_out_rows(
     constant int&       Hkv    [[buffer(5)]],
     constant int&       D      [[buffer(6)]],
     constant int&       pos0   [[buffer(7)]],
+    device const int*   meta   [[buffer(8)]],
     uint gid [[threadgroup_position_in_grid]],
     uint d   [[thread_index_in_threadgroup]])
 {
     const int row = (int)gid / H;
     const int h   = (int)gid - row * H;
-    const int T   = pos0 + row + 1;
+    const int T   = ((pos0 < 0) ? meta[row * 2] : pos0 + row) + 1;
     const int reps = H / Hkv;
     const int hk = h / reps;
     device const float* p = probs + ((size_t)row * H + (size_t)h) * maxT;
-    device const half* vbase = vcache + (size_t)hk * maxT * D + d;
+    device const half* vbase = vcache
+        + ((pos0 < 0) ? (size_t)meta[row * 2 + 1] : 0) + (size_t)hk * maxT * D + d;
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
     float acc4 = 0.0f, acc5 = 0.0f, acc6 = 0.0f, acc7 = 0.0f;
     int t = 0;

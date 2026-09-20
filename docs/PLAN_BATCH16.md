@@ -10674,3 +10674,85 @@ kernel 用 `row = tg / Hv` 定位行、`seq = seqs[row]` 定位状态切片，
 「某序列的连续多行 + 另一序列的行」。
 
 `accept.sh` 现在是 **21 道 gate，21 passed / 0 failed ACCEPTED**。
+
+---
+
+## §72fd 把剩下四个「每序列一个派发」的注意力 kernel 也合起来（1.027× 端到端）
+
+### 派发数：1570 → 1426 → 1186
+
+§72fb 数出解码 pass 里有 5 个 kernel 完全没有行批处理，每个恰好是 prefill 的 4 倍：
+
+| kernel | 合批前 | 合批后 |
+|---|---|---|
+| `gdn_step` | 192 | 48（§72fc） |
+| `rope_partial` | 128 | 32 |
+| `kv_append` | 64 | 16 |
+| `attn_scores_softmax` | 64 | 16 |
+| `attn_out` | 64 | 16 |
+| **4 行 pass 合计** | **1570** | **1186** |
+
+`QW_DISPATCH_HIST=1` 实测 4 行解码 pass：`q4_gemv_k4_flat` 497 + `gdn_step_multi` 48 + … = **1186**，
+和算术完全一致（1570 − 144 − 240 = 1186）。
+
+### 它们为什么是每行一个派发
+
+四个 kernel 都通过 **scalar** 拿 `pos0`，通过 **buffer offset** 拿某一个序列的 KV 切片：
+
+- `rope_partial_rows`：`pos = pos0 + token`
+- `kv_append_rows`：`dst = (hk*maxT + pos0 + token)*D + d`，且 buffer 已经偏移到该序列的切片
+- `attn_scores_softmax_rows` / `attn_out_rows`：`T = pos0 + row + 1`，buffer 同样已偏移
+
+所以「一个 pass 一个序列、位置连续」时它们能合批（`one_seq`），
+而多序列解码时每个序列的 `pos` 和 cache 切片都不同，就只能退回逐行。
+
+**修法和 `gdn_meta` / `conv_meta` 一样：每 pass 写一次每行的元数据。**
+
+新增 `Scratch::attn_meta`，`[BATCH_MAX][2]` i32 = 每行 `(pos, cache 偏移，单位 half)`。
+判据是**每行一个派发真正需要的东西**：**一个 pass 里没有哪个序列出现两次**（`distinct`），
+而不是「全部行都属于同一序列」（`one_seq`）。
+
+四个 kernel 各加一个 `meta` buffer，用 **`pos0 < 0` 作哨兵**：
+为真时 `pos` 从 `meta[row*2]` 读、cache 基址从 `meta[row*2+1]` 加。
+合批路径传 `pos0 = -1` 且 buffer 不带 offset；`one_seq` 路径原样不动。
+这样既不需要新 kernel，也不改动已被验证的 prefill 路径。
+
+`contiguous` 的判据也跟着放宽：`one_seq` 时仍要求位置连续，
+`use_meta` 时每行自带 `pos`，`T` 就是它自己的长度，**不再需要连续**。
+
+### 结果
+
+4 行解码 pass，冷却 300 s，顺序 old,new,new,old，每格 n=126（合并 n=252）：
+
+| build | min | p25 | median | mean |
+|---|---|---|---|---|
+| 旧（只有 GDN 合批） | 45.30 | 47.12 | 48.15 | 49.59 |
+| **新（+注意力合批）** | **44.60** | **45.40** | **46.60** | **47.92** |
+
+**min 1.016×，p25 1.038×，median 1.033×，mean 1.035×。**
+
+端到端 n=4 聚合（同样冷却 + 交替）：
+
+| build | 聚合 tok/s |
+|---|---|
+| 旧 | 62.8 |
+| **新** | **64.9** |
+| **新** | **64.3** |
+| 旧 | 63.0 |
+
+**两次新都胜过两次旧，1.027×。**
+
+### 一个诚实的修正：派发代价并不均匀
+
+§72fc 用「144 次派发 × 13 µs」准确预测了 GDN 的 1.9 ms，所以这次按
+「240 × 11.6 µs ≈ 2.8 ms」外推。**实测只有 0.7–1.7 ms**（min 0.7，p25 1.7，median 1.25，mean 1.3）。
+
+原因大概是这两类 kernel 的边际代价不同：`gdn_step` 每行只处理一个 head 的
+`dv=128` 递推，派发本身的开销占主导；而 `rope_partial` / `attn_*` 每个派发
+覆盖的并行工作量大得多，GPU 在 CPU 编码下一个派发时还在忙上一个，
+**删掉一个派发并不总能省下一份 CPU 编码时间**。
+
+结论：**「派发数 × 单位代价」只能用来定上界，不能直接当预测**。
+（这条和 §72fb 里 `bench --rows` 的教训是同一个：孤立测量定瓶颈，真实 pass 才定好坏。）
+
+`accept.sh` 仍是 **21 道 gate，21 passed / 0 failed ACCEPTED**。
