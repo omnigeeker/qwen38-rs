@@ -8661,3 +8661,35 @@ prefill 分块宽度确定性（chunk 4 与 chunk 32 同答案）。
 
 **所以目标的 TTFT 一半是「一半达标」**：暖达标，冷未完全达标。
 之前几轮我把 TTFT 一半整体记为「达标」，**这个说法需要修正**。
+
+### 72do. **冷 TTFT 的 31% 是一个 375 ms 的 CPU 侧空隙**（第 181 轮）
+
+用 `QW_STEP_TIME` 拆解冷请求（~2000 字符 prompt）：
+
+```
+cold TTFT 1201 ms
+  prefill 439 rows : started   4 ms, took 761.5 ms, ended  766 ms
+  <<< 空隙 >>>                                        766 -> 1141 ms = 375 ms
+  decode 4 rows    : started 1141 ms, took  49.6 ms, ended 1190 ms
+```
+
+**⇒ 分解：**
+
+| 部分 | 耗时 | 占比 |
+|---|---|---|
+| prefill GEMM（439 行） | 761.5 ms | 63% |
+| **prefill 与 decode 之间的空隙** | **375 ms** | **31%** |
+| decode pass（4 行） | 49.6 ms | 4% |
+| 其余 | ~15 ms | 1% |
+
+**⇒ 375 ms 里没有任何 pass 在跑，是纯 CPU 侧开销。**
+
+**关键推论：如果消掉这个空隙，冷 TTFT 就是 1201 - 375 = 826 ms，
+比 llama.cpp 的 863 ms 还快 1.04 倍 —— 冷 TTFT 直接达标。**
+
+**而且这个目标的风险极低**：不碰 `rows>4` 路径、不碰 kernel、不影响已经达标的暖 TTFT。
+它就在 prefill 结束到 decode 开始之间，是请求编排代码。
+
+**下一轮（若继续）**：定位这 375 ms。候选：248320 宽词表的 argmax / logits 回读、
+采样、SSE 建立、或 prefill 尾部的一次隐式同步。
+用二分法（在 prefill 结束后、decode 前加打点）即可定位，不需要改任何 kernel。
