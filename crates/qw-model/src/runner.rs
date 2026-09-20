@@ -42,6 +42,7 @@ struct Kernels {
     gdn_seq4: Kernel,
     conv1d_ring: Kernel,
     conv1d_ring_tile: Kernel,
+    conv1d_ring_multi: Kernel,
     gdn: Kernel,
     gdn_seq: Kernel,
     rmsnorm_ws_rows: Kernel,
@@ -199,6 +200,11 @@ struct Scratch {
     scores: GpuBuffer,
     /// `[TILE][conv_dim]` raw pre-conv rows of the pass in flight
     qkv_cur: GpuBuffer,
+    /// `[BATCH_MAX][4]` i32: per-row `(p, gp0, gc0, wo)` for the batched
+    /// convolution.  Written from the CPU once per pass - a few hundred bytes -
+    /// so the fused kernel can serve several sequences without a per-row
+    /// dispatch.  See `conv1d_silu_ring_multi`.
+    conv_meta: GpuBuffer,
     /// Scratch for the keep-warm tick, deliberately NOT `logits`.
     ///
     /// The tick used to write eight halves into `logits`, the buffer the sampler
@@ -631,6 +637,7 @@ impl Qwen38 {
             logits: dev.buffer(vocab * 2 * tile),
             scores: dev.buffer(nh * max_t * 4 * tile),
             qkv_cur: dev.buffer(conv_dim * 2 * tile),
+            conv_meta: dev.buffer(BATCH_MAX * 4 * 4),
             tick: dev.buffer(16),
         };
 
@@ -735,6 +742,7 @@ impl Qwen38 {
                 )?,
                 conv1d_ring: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING)?,
                 conv1d_ring_tile: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_TILE)?,
+                conv1d_ring_multi: b.kernel(msl_ops::GDN, msl_ops::K_CONV1D_SILU_RING_MULTI)?,
                 gdn: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP)?,
                 gdn_seq: b.kernel(msl_ops::GDN, msl_ops::K_GDN_STEP_SEQ)?,
                 rmsnorm_ws_rows: b.kernel(msl_ops::GDN, msl_ops::K_RMSNORM_WS_ROWS)?,
@@ -2087,6 +2095,73 @@ impl Qwen38 {
                             .scalar(7, rows[0].1 as i32),
                         );
                     } else {
+                    // A batch pass: several sequences, each with its own ring and
+                    // its own window.  `conv1d_silu_ring_multi` is the same trick as
+                    // the tile kernel above, but it takes `pos0` and the window per
+                    // ROW through `conv_meta`, so it also folds the ring update in.
+                    // It therefore replaces the per-row copy AND the per-row
+                    // convolution: eight dispatches per layer become one.  That is
+                    // worth about 9 ms of a 55 ms four-row pass, measured by running
+                    // the same four rows as one sequence (fused, 46-47 ms) and as
+                    // four sequences (per-row, 55-57 ms).
+                    //
+                    // It relies on each sequence's rows in this pass being
+                    // consecutive positions and contiguous in `rows`.  The engine
+                    // builds them that way - a slot pushes its whole chunk at once -
+                    // and `forward2` uses a single sequence, so the tile branch above
+                    // takes it.  The check below makes that an assumption rather than
+                    // a hope: any other shape still runs the per-row pair, because a
+                    // wrong `gc0` reads another request's row and no gate on this box
+                    // would necessarily see it.
+                    let mut meta: Vec<i32> = Vec::with_capacity(n * 4);
+                    let mut grouped = true;
+                    let mut seen_seq: Vec<usize> = Vec::new();
+                    let mut gi = 0usize;
+                    while gi < n {
+                        let seq = rows[gi].0;
+                        let gp0 = rows[gi].1;
+                        let mut gj = gi + 1;
+                        while gj < n && rows[gj].0 == seq {
+                            gj += 1;
+                        }
+                        if seen_seq.contains(&seq)
+                            || (gi..gj).any(|k| rows[k].1 != gp0 + (k - gi))
+                        {
+                            grouped = false;
+                            break;
+                        }
+                        seen_seq.push(seq);
+                        // `wo` is in ELEMENTS: `win_stride` counts bytes.
+                        let wo = (seq * win_stride / 2) as i32;
+                        for k in gi..gj {
+                            meta.push(rows[k].1 as i32);
+                            meta.push(gp0 as i32);
+                            meta.push(gi as i32);
+                            meta.push(wo);
+                        }
+                        gi = gj;
+                    }
+                    if grouped {
+                        // A few hundred bytes, once per pass, into a shared buffer.
+                        // Safe without a barrier: the previous pass ended in
+                        // `finish(true)` and the dispatches below are encoded after
+                        // this write, so the GPU cannot observe it mid-flight.
+                        scratch.conv_meta.copy_from(&meta);
+                        b.encode(
+                            Dispatch::new(
+                                &kernels.conv1d_ring_multi,
+                                (n * conv_dim, 1, 1),
+                                (NT, 1, 1),
+                            )
+                            .buf(0, &g.window)
+                            .buf(1, &g.conv_w)
+                            .buf(2, &scratch.conv_out)
+                            .buf(3, &scratch.qkv_cur)
+                            .buf(4, &scratch.conv_meta)
+                            .scalar(5, conv_dim as i32)
+                            .scalar(6, conv_ring as i32),
+                        );
+                    } else {
                     for (row, &(seq, pos)) in rows.iter().enumerate() {
                         let slot = pos % conv_ring;
                         let woff = seq * win_stride;
@@ -2108,6 +2183,7 @@ impl Qwen38 {
                                 .scalar(4, slot as i32)
                                 .scalar(5, conv_ring as i32),
                         );
+                    }
                     }
                     }
                     b.barrier();

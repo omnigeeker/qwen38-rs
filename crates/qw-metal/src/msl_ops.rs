@@ -393,6 +393,66 @@ kernel void conv1d_silu_ring_tile(
         cur[(size_t)row * conv_dim + c];
 }
 
+// The same fused convolution for a BATCH pass, where the rows come from several
+// sequences.  One dispatch replaces BOTH the per-row copy into the ring and the
+// per-row convolution, so eight dispatches per layer become one.
+//
+// `conv1d_silu_ring_tile` can fold in the copy for a single sequence because
+// every row shares one `pos0` and one window.  A batch pass has one `pos0` and
+// one window per sequence, so this kernel reads them per row out of `meta`,
+// four ints per row:
+//
+//   meta[row*4 + 0]  p    this row's position
+//   meta[row*4 + 1]  gp0  the first position of this row's sequence in the pass
+//   meta[row*4 + 2]  gc0  the staging row that holds `gp0`
+//   meta[row*4 + 3]  wo   the sequence's window offset, in ELEMENTS
+//
+// A tap at `pos` is another row of this pass - and so comes from the staging
+// buffer - exactly when `pos >= gp0`; otherwise it is history and comes from the
+// ring.  That is the same rule the single-sequence tile kernel applies, and it is
+// why this kernel never derives a staging row from a pass position: `gc0` is
+// handed to it and the offset is added WITHIN the sequence.  The staging buffer
+// is in pass order, which is not position order once two requests share a pass,
+// so `base + offset` there silently reads the wrong request.  (Two earlier
+// versions of this kernel did exactly that and were caught by the concurrency
+// gate, not by the byte-identity gate.)
+//
+// The ring update is folded in as before, so the caller must NOT copy first.
+// No thread reads a slot another thread writes: every ring read is for
+// `pos < gp0` while every ring write is at `p >= gp0`, and `p - pos < 4` against
+// a ring of at least `conv_k + PASS_ROWS_MAX`, so the two can never alias.
+kernel void conv1d_silu_ring_multi(
+    device half*        window   [[buffer(0)]],
+    device const half*  w        [[buffer(1)]],
+    device half*        out      [[buffer(2)]],
+    device const half*  cur      [[buffer(3)]],
+    device const int*   meta     [[buffer(4)]],
+    constant int&       conv_dim [[buffer(5)]],
+    constant int&       ring     [[buffer(6)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const int c   = (int)(gid % (uint)conv_dim);
+    const int row = (int)(gid / (uint)conv_dim);
+    const int p   = meta[row * 4 + 0];
+    const int gp0 = meta[row * 4 + 1];
+    const int gc0 = meta[row * 4 + 2];
+    const int wo  = meta[row * 4 + 3];
+    const int own = gc0 + (p - gp0);
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        // oldest first; j == 3 is `p` itself
+        const int pos = p - 3 + j;
+        device const half* src = (pos >= gp0)
+            ? cur + (size_t)(gc0 + (pos - gp0)) * conv_dim + c
+            : window + (size_t)(wo + (pos & (ring - 1)) * conv_dim) + c;
+        acc += (float)w[c * 4 + j] * (float)(*src);
+    }
+    out[(size_t)row * conv_dim + c] = (half)(acc / (1.0f + exp(-acc)));
+    window[(size_t)(wo + (p & (ring - 1)) * conv_dim) + c] =
+        cur[(size_t)own * conv_dim + c];
+}
+
 // Weightless rms norm for a whole tile: threadgroup (head, tile row).  The
 // per-row form needs a dispatch per row; this needs one for the tile.
 kernel void rmsnorm_nw_tile(
@@ -881,6 +941,7 @@ pub const K_KV_APPEND: &str = "kv_append";
 pub const K_KV_APPEND_ROWS: &str = "kv_append_rows";
 pub const K_CONV1D_SILU_RING: &str = "conv1d_silu_ring";
 pub const K_CONV1D_SILU_RING_TILE: &str = "conv1d_silu_ring_tile";
+pub const K_CONV1D_SILU_RING_MULTI: &str = "conv1d_silu_ring_multi";
 pub const K_RMSNORM_TILE: &str = "rmsnorm_nw_tile";
 pub const K_CONV1D_SILU: &str = "conv1d_silu";
 pub const K_GDN_STEP: &str = "gdn_step";
