@@ -9644,3 +9644,59 @@ window[((slot0 + row) & (ring - 1)) * conv_dim + c] = cur[row * conv_dim + c];
 
 **未做改动，未验证。** 下一轮：实现并验证（`gemm-check` + `accept.sh` + 交错 A/B），
 **若单轮内无法完成验证，我会先只做到「能编译且 gate 全绿」再谈性能。**
+
+### 72ep. 多序列改动的**关键正确性陷阱**：`cur` 的下标语义（第 208 轮）
+
+读 `else` 分支的完整结构（runner.rs:2093-2114）：每一行做两件事——
+`copy_dispatch` 把 `cur[row]` 拷进 `window[slot]`，再派发一次 `conv1d_ring` 从 window 卷积。
+
+**再看 tile 核里这一行，发现一个如果不注意就会写出错误核的陷阱：**
+
+```c
+const int pos = pos0 + row - 3 + j;
+device const half* src = (pos >= pos0)
+    ? cur + (size_t)(pos - pos0) * conv_dim + c      // <-- 注意这里
+    : window + (size_t)(pos & (ring - 1)) * conv_dim + c;
+```
+
+**`cur` 的下标是 `pos - pos0`，即「相对 pass 起点的位置偏移」。
+在单序列情形下，这个偏移**恰好等于行号**（因为 pass 的行是连续位置），
+所以 `cur` 的第 `row` 行正好是这个位置的数据。**
+
+**但在多序列情形下，每个序列的 `pos0` 不同：
+`pos - pos0_of_this_row` 对某个序列的第 R 行来说**不等于 R**。**
+
+**⇒ 具体地，4 个不同序列各 1 行时：
+j=3 的 tap 满足 `pos == row_pos[R]`，走 `cur` 分支，
+而 `pos - pos0` 会算成 `row_pos[R] - pos0`——**这是错的**，
+它应该读 `cur` 的第 **R** 行（该行自己的 qkv）。**
+
+**⇒ 所以多序列版本必须把 `cur` 的下标也改成按行查表，
+而不能沿用 `pos - pos0` 这个「位置偏移即行号」的巧合。**
+
+**⇒ 修正后的设计（三个按行数组 + 一个常量）：**
+
+| 参数 | 含义 |
+|---|---|
+| `row_pos[R]` | 第 R 行的绝对位置（用于算 taps 与 `pos >= row_pos[R]` 判断） |
+| `row_cur[R]` | 第 R 行的**自己在 `cur` 中的行号**（多序列时通常为 R） |
+| `row_woff[R]` | 第 R 行所属序列的 window 元素偏移 |
+| `ring` | 常量 |
+
+**核内：**
+```c
+const int p0  = row_pos[row];
+const int pos = p0 - 3 + j;
+const half* src = (pos >= p0) ? cur + (size_t)row_cur[row] * conv_dim + c
+                              : window + (size_t)(row_woff[row] + (pos & (ring-1)) * conv_dim) + c;
+...
+window[(size_t)(row_woff[row] + ((p0) & (ring-1)) * conv_dim) + c] = cur[(size_t)row*conv_dim + c];
+```
+
+**⇒ 注意 ring 写入用 `p0 & (ring-1)`（该行自己的 slot），不是 `slot0 + row`。**
+
+**⇒ 这是一个**中等规模但语义微妙**的改动。单轮内实现 + 验证（gemm-check + accept.sh + A/B）
+风险偏高，因此本轮只做到「把陷阱写清楚」，**不做半成品改动**——
+半成品一旦留在工作树里，比不改更危险。**
+
+**未做改动，未验证。**
