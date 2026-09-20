@@ -8693,3 +8693,39 @@ cold TTFT 1201 ms
 **下一轮（若继续）**：定位这 375 ms。候选：248320 宽词表的 argmax / logits 回读、
 采样、SSE 建立、或 prefill 尾部的一次隐式同步。
 用二分法（在 prefill 结束后、decode 前加打点）即可定位，不需要改任何 kernel。
+
+### 72dp. 375 ms 空隙的定位：**排除了几个候选，但没找到**（第 182 轮）
+
+按上轮的计划定位 prefill 与 tail pass 之间的空隙。**结果是缩小了范围，但没有定位。**
+
+**已排除：**
+
+| 候选 | 实测 | 结论 |
+|---|---|---|
+| `logits_row` + argmax | **0.5 ms** | ❌ 不是 |
+| 采样（每行采样） | 代码注释记载曾有 **265 ms** 空隙，已修 | ❌ 已修 |
+| prefix 快照导出 | 注释记载 28.6 ms，且我测时已 `QW_PREFIX_SNAPSHOT=0` | ❌ 不是 |
+| 一次性 pipeline 编译 | 第 2、3 个请求仍有 ~1.1 s | ❌ 不是（但该测试有前缀缓存命中的干扰） |
+
+**本次实测：**
+
+```
+step time: 439 rows, started at   8 ms, took 815.3 ms, ended at  823 ms
+step time:   4 rows, started at 1180 ms, took  45.2 ms, ended at 1225 ms
+gap probe: logits_row+argmax took 0.5 / 0.5 / 0.4 / 0.4 ms
+cold TTFT: 1236 ms      -> 空隙 823 -> 1180 = 357 ms
+```
+
+**⇒ 空隙稳定在 357-375 ms，占冷 TTFT 的 29-31%，位置确定
+（在 439 行 prefill pass 结束之后、4 行 tail pass 开始之前），
+但成因**尚未定位**。**
+
+**代码注释里有一条重要线索**：同一个位置曾经有过 **265 ms** 的空隙
+（「measured as a 265 ms gap between the prefill pass and the four-row tail pass
+of a 602-token prompt, 16% of cold time-to-first-token」），
+当时的成因是**每一行都调用 `logits_row` 采样**，已改成只在 ready 行采样。
+**现在这个 357 ms 是同类位置上的第二个空隙，成因不同（因为采样已经只做一次）。**
+
+**诊断代码已还原，交付树保持在第 180 轮验证过的状态（`accept.sh` 19/0）。**
+**下一步需要的是在这个区块里做二分打点**（在 post-pass 块前后各加一个时间戳），
+这是一个纯粹诊断动作，不碰任何 kernel。
