@@ -1660,7 +1660,13 @@ fn mpp_tiles_uncached() -> [i32; 4] {
     [
         one("QW_MPP_KT", 64),
         one("QW_MPP_NRA", 32),
-        one("QW_MPP_NRB", 256),
+        // NRB is the token tile, so it decides how many M blocks a prefill runs and how
+        // many times the weights are streamed.  256 was the default and left the kernel
+        // at 36.5 TFLOPS on a 602-token sweep; 512 measures 52.5 and takes prefill-bench
+        // from 1071.3 ms to 806.5 ms, reproducibly.  Larger NRA values look far faster
+        // still - NRA=128 reports 120 TFLOPS - but that is the tile writing only a
+        // quarter of the output rows, and gemm-check now fails on them.
+        one("QW_MPP_NRB", 512),
         one("QW_MPP_NT", 128),
     ]
 }

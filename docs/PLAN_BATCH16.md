@@ -10237,3 +10237,119 @@ gemm-check PASSED（3.347e-4）、batch-check 4/16 PASSED。
 （批量草稿头预热 38 ms + 尾部 4 行 pass 45 ms），llama.cpp 没有 MTP 头也没有 spec 尾步。
 
 **下一轮该做的**：prefill 的非矩阵乘部分（~156 ms 差），以及把尾部 4 行 pass 并进 prefill。
+
+---
+
+## §72ey 先修好「假加速」的闸门，再拿到真的 1.328×（prefill 1071 → 806 ms）
+
+### 先说被否掉的那一半
+
+按 §72ex 的结论去查 prefill 的 309 ms「非矩阵乘」，用 `QW_SKIP_KERNEL` 逐族跳过做归属：
+
+| 跳过 | prefill-bench 602 token | 省下 |
+|---|---|---|
+| 无（基线） | 1070 ms | — |
+| `q4_mpp_mm` | **215 ms** | **855 ms** |
+| `attn_` | 1006 ms | 64 ms |
+| `gdn_step` | 1020 ms | 50 ms |
+| `rmsnorm` | 1052 ms | 18 ms |
+| `silu_mul` | 1058 ms | 12 ms |
+| `conv1d` / `rope_` / `ewise_add` / `kv_append` / `gate_mul` | ~1070 ms | ≤2 ms |
+
+**§72ex 里「非矩阵乘 309 ms」这个估算是错的**：497 个线性层就是 855 ms（80%），
+其余全部加起来只有 ~147 ms。prefill 是彻底的 GEMM-bound。
+
+于是去扫 `QW_MPP_*` 的分块参数，结果看起来像中了大奖：
+
+```
+QW_MPP_NRA=32   0.851 s   36.3 TFLOPS     (默认)
+QW_MPP_NRA=64   0.459 s   67.3 TFLOPS
+QW_MPP_NRA=128  0.256 s  120.5 TFLOPS     <- 3.3×
+QW_MPP_NRA=256  0.173 s  178.8 TFLOPS
+```
+
+`prefill-bench` 也从 1071 ms 掉到 **478 ms**（2.24×），而且 `gemm-check` 照样打印 **PASSED**。
+
+**178 TFLOPS 对 40 核 M5 Max 是不可能的**（bf16 峰值大约 70）。
+把它当成「太好的数字」去查，`gemm-check` 里其实一直有一行没人看的输出：
+
+| NRA | mpp-mm 输出 |
+|---|---|
+| 32（默认） | `zero 0/204800  over-tol 0` ✅ |
+| 64 | `zero 102400/204800  over-tol 96768` ❌ 一半是 0 |
+| 128 | `zero 153600/204800  over-tol 145349` ❌ 四分之一是 0 |
+
+**NRA 越大，tile 写出的输出行越少 —— 快是因为没算，不是因为算得快。**
+
+### 闸门的洞
+
+`gemm-check` 的 PASSED 只由 GEMM/GEMV 两条路径决定（`all_ok &= rel < 2e-3`），
+而 **`q4_mpp_mm` 正是 prefill 实际跑的 kernel**，它的 `zero`/`over-tol` 只打印、不参与判定。
+所以分块参数被改坏时闸门是绿的。这个洞现在补上了：
+
+```rust
+let mpp_ok = n_bad == 0;
+all_ok &= mpp_ok;
+```
+
+同时 `gemm-check` 的 token 数原本硬编码 40 —— 在 NRB=512 下只有 **一个 M block**，
+第二个 block 分块错了根本测不到。加了 `QW_GEMM_CHECK_TOKENS` 覆盖。
+
+**验证新闸门确实能抓到这个 bug**：
+
+| 配置 | 判定 |
+|---|---|
+| NRA=32（默认） | **PASSED** |
+| NRA=64 | **Error: the GEMM kernel does not match the CPU reference** |
+| NRA=128 | **Error: the GEMM kernel does not match the CPU reference** |
+
+### 真的那一半：NRB 512
+
+同一个扫里，**NRB（token tile）512 是干净的**：`zero 0/204800  over-tol 0`。
+它也是真的快：
+
+| | prefill-bench 602 token | |
+|---|---|---|
+| NRB=256（旧默认） | 1071.3 / 1071.3 ms | |
+| NRB=512 | **806.4 / 806.8 ms** | **1.328×** |
+
+两次跑几乎一模一样。端到端等价性：1390 token 的 prompt，`gen --max-tokens 64`，
+**NRB=512 与 NRB=256 的 64 个 greedy token 完全相同**。
+
+正确性：accept.sh **20/0 ACCEPTED**（含 `spec==plain`、`server==cli`、四路并发、
+position pin、chunk 4/32）；gemm-check PASSED；batch-check 4/16 PASSED。
+
+**NRB=768/1024 在部分跑次里更快，但测量时机器已严重降频**
+（NRB=512 从稳定的 806 ms 漂到 997/2610 ms），**证据不足，没有采用**。
+
+### 冷 TTFT：达标
+
+交错配对，各自新服务器 + 新 prompt：
+
+| build | min | median | 四次 |
+|---|---|---|---|
+| 改前（NRB=256） | 1235.2 | **1249.3 ms** | 1235, 1259, 1240, 1262 |
+| 改后（NRB=512） | 977.3 | **978.8 ms** | 978, 977, 993, 979 |
+
+**1.276×，−270 ms，四对全胜。**
+
+同一 session 内再和 llama.cpp 交错配对：
+
+| | prefill | TTFT |
+|---|---|---|
+| 我们 | **966.7 ms** | **1056.4 ms** |
+| llama.cpp | 1037.2 ms | 1039.4 ms |
+
+**我们的 prefill 已经比 llama.cpp 快（966.7 vs 1037.2）。**
+TTFT 1056.4 vs 1039.4 = **1.016×** —— 冷 TTFT 与 llama.cpp 基本持平。
+剩下的 87 ms 是我们独有的 spec 开销（草稿头预热 38 + 尾部 4 行 pass 45），
+被快出来的 prefill 抵消掉了。
+
+**冷 TTFT 目标达成；热 TTFT 早已超过。otps 未达成（73.5 vs Splash 170），目标保持 active。**
+
+### 教训
+
+这一轮真正有价值的东西是**先证明「加速」是假的**。
+`QW_MPP_NRA=128` 看起来能省 270 ms，端到端 benchmark 也支持，
+唯一拦住它的是 `gemm-check` 里一行不参与判定的打印。
+**凡是让 kernel 变快的参数改动，先看 `zero`/`over-tol`，再看 TFLOPS。**

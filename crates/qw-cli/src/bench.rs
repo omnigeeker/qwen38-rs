@@ -486,7 +486,15 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
         }
     }
 
-    let tokens = 40usize; // deliberately not a multiple of the 32-token tile
+    // 40 is deliberately not a multiple of the 32-token tile.  It is overridable
+    // because the token count also decides how many M blocks the tile kernel runs:
+    // at NRB=512 forty tokens is a single block, so a mis-tiled second block would go
+    // unnoticed, and a tile change cannot be trusted without a run at a real prefill
+    // length.
+    let tokens = std::env::var("QW_GEMM_CHECK_TOKENS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(40usize);
     println!("gemm-check: {} linears, {tokens} tokens per case", picked.len());
 
     let mut worst = 0.0f64;
@@ -612,6 +620,22 @@ pub fn gemm_check(model_dir: &Path) -> Result<()> {
             if n_ref > 0.0 { n_abs / n_ref } else { n_abs },
             tokens * l.out_f
         );
+
+        // The MPP tile-op GEMM is the kernel the prefill path actually runs, so its
+        // result has to gate the verdict.  It did not: `all_ok` below is set from the
+        // GEMM and GEMV paths only, so raising QW_MPP_NRA from 32 to 128 - which makes
+        // the tile write only a quarter of the output rows and report 120 TFLOPS
+        // against the default's 36 - left this check printing PASSED.  Measured at 40
+        // tokens: NRA=32 gives `zero 0/204800 over-tol 0`, NRA=64 gives 102400 zeros,
+        // NRA=128 gives 153600.
+        let mpp_ok = n_bad == 0;
+        all_ok &= mpp_ok;
+        if !mpp_ok {
+            println!(
+                "      ^ FAIL: the MPP tile GEMM put {n_bad} of {} elements outside tolerance",
+                tokens * l.out_f
+            );
+        }
 
         let mut max_abs = 0.0f64;
         let mut max_ref = 0.0f64;
