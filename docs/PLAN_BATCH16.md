@@ -11309,3 +11309,148 @@ pass 内部的阶梯 boundary export（`engine.rs:1118`，在 row 循环里）�
 `QW_PREFIX_BOUNDARY=0` 关掉，看 server prefill step 里那 253 ms 是否就是它
 （本轮测过但被降频毁掉：`boundary off` 三次是 2995 / 2449 / 2444，
 `default` 三次是 2561 / 2414 / 2600 —— 中位数差 112 ms，方向对但噪声太大，不能采信）。
+
+## §72fh 每个 linear 都把整份 MSL 源码哈希了一遍：prefill 少 94 ms
+
+### 一、`QW_ENCODE_TIME` 里那 100 ms
+
+§72fg 结尾说要找 server prefill step 里「多出来的 253 ms」。这一轮先做了两件**不受降频影响**
+的测量，把那个结论推翻了；然后在同一个 `QW_ENCODE_TIME` 输出里找到了真正的东西。
+
+先看这一轮之前的 prefill pass：
+
+```
+batch: CPU encode 99.99 ms | commit+wait 3453.17 ms | 1186 dispatches in 898 encoders
+```
+
+对照一次解码 pass：
+
+```
+batch: CPU encode 0.85 ms | commit+wait 46.94 ms | 1570 dispatches in 1042 encoders
+```
+
+**1570 次派发只要 0.85 ms，1186 次派发要 100 ms。** 每次派发的 CPU 编码成本差了 100 倍，
+而且这 100 ms 是纯 CPU 时间 —— 不受 GPU 降频影响，所以在这台现在 2.7× 降频的机器上
+依然可以精确测量。
+
+### 二、原因：`pipeline()` 用整份源码做哈希，而它在 per-linear 循环里被调用
+
+`crates/qw-metal/src/device.rs:70`：
+
+```rust
+pub fn pipeline(&mut self, source: &str, entry: &str) -> Result<Arc<ComputePipelineState>> {
+    let key = (fxhash(source.as_bytes()), entry.to_string());
+```
+
+缓存键是**整份源码的哈希**。而 `QLinear::encode_rows` 在**每个量化 linear 上**做这些事：
+
+```rust
+let src = msl::mpp_src();                                  // 整份 MPP 源码的 String clone
+if let Err(e) = batch.kernel(&src, "q4_mpp_mm") { ... }     // 哈希 #1
+if let Ok(mk) = batch.kernel(&src, "q4_mpp_mm") { ... }     // 哈希 #2
+...
+if let Err(e) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) { ... }   // 哈希 #3
+```
+
+`msl::mpp_src()` 原本返回 `String`（`OnceLock<String>::clone()`），COMMON 和 MPP 都是
+几十到几百 KB 的翻译单元。497 个 linear × 3 次 = **约 1500 次整份源码哈希 + 994 次
+大字符串 clone，每一个 prefill pass 都做一遍**。
+
+### 三、修法：和其余 497 个 kernel 一样，在 `Kernels` 里解析一次
+
+`Kernels` 结构体里本来就存着所有其他 kernel 的已解析句柄，MPP 是唯一的例外。
+现在多了 `q4_mpp: Option<Kernel>`，在 `load_batch` 里解析一次，`encode_rows` 通过参数拿到。
+编译失败仍然退回到手写 tile kernel，只是从「每个 linear 每个 pass 报一次」变成「load 时报一次」。
+
+`q4_gemm_tile` 那个检查是**直接删掉**的，不是搬走。它解析 kernel、把句柄丢掉、失败时打印 ——
+而下面 fall-through 的 `if let Ok(gk) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE)`
+本来就会再解析一次并在失败时让 `y` 保持 0，结果完全一样。而且 COMMON 在 load 时已经用 `?`
+编译了几十个其他 kernel，它编不过的话模型根本加载不起来。
+
+### 四、测量：交替 A/B，同一份 GPU 工作
+
+两个 binary 交替跑同一个 `prefill-bench --tokens 598`（这样降频同时打到两边）：
+
+| build | CPU encode | commit+wait | total |
+|---|---|---|---|
+| 旧 | 100.15 | 2400.66 | 2501.0 |
+| 旧 | 100.02 | 2383.32 | 2483.5 |
+| 旧 | 99.88 | 2369.12 | 2469.2 |
+| 旧 | 99.98 | 2374.35 | 2474.5 |
+| 新 | 1.36 | 2366.97 | 2368.5 |
+| 新 | 1.83 | 2437.81 | 2439.8 |
+| 新 | 1.81 | 2354.75 | 2356.8 |
+| 新 | 1.71 | 2389.87 | 2391.8 |
+
+| | 旧 median | 新 median | 差 |
+|---|---|---|---|
+| CPU encode | 100.00 ms | 1.77 ms | **−98.2 ms** |
+| commit+wait | 2377 ms | 2378 ms | **±0（GPU 工作没变）** |
+| total | 2474.5 ms | 2380.3 ms | **−94.2 ms** |
+
+两件事同时被证明了：
+
+1. **CPU 编码是完全暴露的**，不是和 GPU 重叠的 —— total 掉的时间和 encode 掉的时间
+   几乎一样（94.2 vs 98.2）。
+2. **GPU 工作一点没变** —— `commit+wait` 的中位数 2377 vs 2378，派发数 1186、encoder 数 898
+   都完全相同。
+
+在冷态（598 行 prefill pass ≈ 1081 ms）这意味着 pass 从 1081 → 约 983 ms，而冷 TTFT
+≈ pass + decode(44) + 约 5 ms，即约 1130 → 约 1032 ms。对 llama.cpp 的 950–1080 ms
+就是 **0.96–1.00×**。
+
+**但这台机器现在是 2.7× 降频的**（同样的 pass 从 1200 涨到 2400–3300 ms），
+8 轮配对 A/B 的端到端 TTFT 中位数比是 0.996×、min 比是 0.950× —— 98 ms 淹没在 ±200 ms
+的降频噪声里。**所以「冷 TTFT 达标」这句话这一轮不能下**，要等机器凉下来再测。
+
+### 五、顺带推翻 §72fg 的「253 ms server 开销」
+
+两件与降频无关的事：
+
+**(1) batch 16 不比 batch 1 慢。** 给 `prefill-bench` 加了 `--batch`，接受逗号列表并在
+**同一个进程里轮流跑**（这台机器几分钟内漂 2–3×，跨进程比较就是在比两个热状态）：
+
+| | best |
+|---|---|
+| batch 1 | 2.5252 s |
+| batch 16 | 2.2747 s |
+| **比值** | **0.901×** |
+
+**(2) server 的 step timer 包的就是 `set_tokens + forward_rows`，和 `prefill-bench` 调的是同一个。**
+（`engine.rs:1287`。）而且 `prepare:` 的逐项分解（`QW_STEP_TIME=1`）在冷请求上是：
+
+```
+prepare: total 1.3–3.6 ms, tokenize+template 0.9–2.9, prefix lookup 0.0,
+         disk lookup 0.0, reset_seq 0.4–0.7, cache report 0.0, rest 0.0
+```
+
+所以 §72fg 那个「server step 比 prefill-bench 多 253 ms」**是拿两个不同热状态的测量相减得到的**，
+不存在。单次请求内部自洽的预算是：
+
+```
+TTFT = prefill step + decode step + 90–130 ms（HTTP/SSE，随负载变化）
+```
+
+（冷态时那 90–130 ms 只有约 5 ms。）
+
+### 六、本轮结论
+
+**交付**：
+
+1. prefill 的 CPU 编码 **100.0 → 1.8 ms**（−98.2 ms），pass 总时间 **−94.2 ms**，
+   GPU 工作完全不变。机制和量级都是直接测出来的，不受降频影响。
+   `accept.sh` 22/22。
+2. `prefill-bench --batch` 支持逗号列表 + 进程内轮流跑，成为这台漂移机器上做宽度对比的工具。
+3. 推翻 §72fg 的「253 ms server 开销」：batch 16 实测 0.901×，step timer 包的调用和
+   prefill-bench 相同，`prepare` 只有 1.3–3.6 ms。
+
+**没做到**：
+
+* 端到端冷 TTFT 的提升**没能在降频的机器上测出来**（中位数比 0.996×，min 0.950×）。
+  按冷态预算推算应该是约 1032 ms，对 llama.cpp 约 0.96–1.00×，但这是推算不是测量。
+* otps 本轮没碰。
+
+**下一轮第一步**：机器凉下来之后重测配对冷 TTFT（预期约 1030 ms）。然后回到 §72fg
+留下的两个真目标：GEMM 的 per-op 成本（20.1 ns/op，与 block 数无关 ——
+1020 行 4 个 block 是 20.4 ns/op，598 行 3 个 block 是 20.1 ns/op，所以
+「36.1 vs 45.7 TFLOPS」只是白算的 FLOP，**不花时间**）和非 GEMM 的 232 ms。
