@@ -1464,16 +1464,30 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 if a.pf != a.ids.len() || a.end_snapshot || a.restored_at == Some(a.pf) {
                     continue;
                 }
+                let _t = std::time::Instant::now();
                 match model.export_prefix_with_logits(slot, a.pf, idx) {
                     Ok(blob) => {
+                        if std::env::var_os("QW_PREFIX_TIME").is_some() {
+                            eprintln!(
+                                "prefix time: prompt-end export {} tok {} MB {:?}",
+                                a.pf,
+                                blob.len() / 1048576,
+                                _t.elapsed()
+                            );
+                        }
                         if blob.len() <= PREFIX_BLOB_MAX_MB * 1024 * 1024 {
-                            cache.record_boundary(slot, a.ids.clone(), Some(blob.clone()));
-                            a.end_snapshot = true;
                             // The disk copy rides along, so the next process starts
                             // warm at the prompt END rather than one chunk short.
                             // Only for a prefix long enough to be a real agent system
                             // prompt: the blob costs about 0.1 MB a token.  This is
                             // the same guard the ladder used.
+                            //
+                            // It runs BEFORE the boundary is recorded because the disk
+                            // store only borrows the blob while the cache takes
+                            // ownership.  Doing it the other way round cost a
+                            // `blob.clone()` of the whole blob - measured at 1141 MB
+                            // for a 585-token prompt, so a second full copy of the
+                            // recurrent state on every request that ends a prompt.
                             if a.pf >= 128 {
                                 if let Some(d) = prefixes::DiskPrefix::from_env() {
                                     match d.store(&a.ids, &blob) {
@@ -1486,6 +1500,8 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                                     }
                                 }
                             }
+                            cache.record_boundary(slot, a.ids.clone(), Some(blob));
+                            a.end_snapshot = true;
                         }
                     }
                     Err(e) => tracing::warn!("prompt-end snapshot failed: {e}"),
