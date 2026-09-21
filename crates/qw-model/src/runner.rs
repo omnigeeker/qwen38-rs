@@ -1083,8 +1083,9 @@ impl Qwen38 {
     }
 
     /// Serialise everything a later *process* needs to resume slot `seq` at
-    /// `pos`: the GDN recurrent state and convolution window of every linear
-    /// layer, and the KV entries for positions `0..pos` of every full layer.
+    /// `pos`: the GDN recurrent state of every linear layer, the last `k-1` rows of
+    /// each convolution ring, and the KV entries for positions `0..pos` of every
+    /// full layer.
     ///
     /// The KV cache is head-major - `k[hk * max_t * hd + t * hd + d]` - so one
     /// head's live prefix is a single contiguous run.  That makes both
@@ -1093,18 +1094,56 @@ impl Qwen38 {
     /// Layers are walked twice, all linear layers then all full ones, and
     /// `import_prefix` must walk them in exactly the same order.
     pub fn export_prefix(&mut self, seq: usize, pos: usize) -> Result<Vec<u8>> {
+        self.export_prefix_impl(seq, pos, false)
+    }
+
+    /// Width of one slot's convolution ring.
+    ///
+    /// `(k + PASS_ROWS_MAX).next_power_of_two()` so a whole pass can be written
+    /// without wrapping into the rows the next pass is about to read, and a power
+    /// of two so the kernel's `& (ring - 1)` is an exact mask.
+    fn conv_ring(&self) -> usize {
+        (self.cfg.linear_conv_kernel_dim + PASS_ROWS_MAX).next_power_of_two()
+    }
+
+    /// Rows of the ring a resume at `pos` can still read: the convolution looks
+    /// back `k-1` rows, so a pass starting at `pos` touches `pos-k+1 .. pos-1`.
+    fn conv_keep(&self) -> usize {
+        self.cfg.linear_conv_kernel_dim.saturating_sub(1)
+    }
+
+    /// The ring slots holding those rows, oldest first.
+    fn conv_slots(&self, pos: usize) -> Vec<usize> {
+        let ring = self.conv_ring();
+        let keep = self.conv_keep().min(pos);
+        (0..keep).map(|i| (pos - keep + i) & (ring - 1)).collect()
+    }
+
+    fn export_prefix_impl(&mut self, seq: usize, pos: usize, logits: bool) -> Result<Vec<u8>> {
         let nkv = self.cfg.num_key_value_heads;
         let hd = self.cfg.head_dim;
+        let ring = self.conv_ring();
+        let keep = self.conv_keep().min(pos);
         let mut out = Vec::new();
-        out.extend_from_slice(b"Q38PFX1\0");
+        // Q38PFX3/4 carry only the `keep` live ring rows.  Q38PFX1/2 carried the
+        // whole ring - 1006 MB of the 1141 MB a 585-token prompt produced - to
+        // preserve the 60 KB that a resume can actually still read.  The magic
+        // changes so `import_prefix` can still read the old ones.
+        out.extend_from_slice(if logits { b"Q38PFX4\0" } else { b"Q38PFX3\0" });
         out.extend_from_slice(&(pos as u64).to_le_bytes());
+        out.extend_from_slice(&(keep as u32).to_le_bytes());
         for layer in &self.layers {
             if let Kind::Gdn(g) = &layer.kind {
-                for (buf, stride) in [(&g.state, self.state_stride), (&g.window, self.win_stride)] {
-                    if stride == 0 {
-                        continue;
+                let st = self.state_stride;
+                if st != 0 {
+                    out.extend_from_slice(&g.state.read_at(seq * st, st));
+                }
+                let wn = self.win_stride;
+                if wn != 0 {
+                    let row = wn / ring;
+                    for slot in self.conv_slots(pos) {
+                        out.extend_from_slice(&g.window.read_at(seq * wn + slot * row, row));
                     }
-                    out.extend_from_slice(&buf.read_at(seq * stride, stride));
                 }
             }
         }
@@ -1132,12 +1171,11 @@ impl Qwen38 {
     /// chunk: one weight sweep, measured at 40-50 ms and half of warm
     /// time-to-first-token.  Carrying the logits removes that.
     ///
-    /// The magic changes to `Q38PFX2` so [`Self::import_prefix`] can tell a blob
+    /// The magic changes to `Q38PFX4` so [`Self::import_prefix`] can tell a blob
     /// that has the tail from one that does not.
     pub fn export_prefix_with_logits(&mut self, seq: usize, pos: usize, row: usize) -> Result<Vec<u8>> {
         anyhow::ensure!(row < TILE, "logits row {row} is past the {TILE}-row tile");
-        let mut blob = self.export_prefix(seq, pos)?;
-        blob[0..8].copy_from_slice(b"Q38PFX2\0");
+        let mut blob = self.export_prefix_impl(seq, pos, true)?;
         blob.extend_from_slice(&self.scratch.logits.read_at(row * self.vocab * 2, self.vocab * 2));
         Ok(blob)
     }
@@ -1146,14 +1184,20 @@ impl Qwen38 {
     /// everything past `pos` is left as it was and is overwritten by the prefill
     /// that follows, which is why the KV cache needs no clearing.
     ///
-    /// A `Q38PFX2` blob also carries the first generated token's logits, which are
-    /// installed at row 0 for the caller to sample.
+    /// A `Q38PFX2` or `Q38PFX4` blob also carries the first generated token's
+    /// logits, which are installed at row 0 for the caller to sample.
+    ///
+    /// `Q38PFX1/2` stored the whole convolution ring in slot order and `Q38PFX3/4`
+    /// store only the live rows at the slots they occupy, so the window is restored
+    /// by two different paths.  The old magics are still accepted because
+    /// `QW_PREFIX_DISK` blobs outlive the process that wrote them.
     pub fn import_prefix(&mut self, seq: usize, pos: usize, blob: &[u8]) -> Result<()> {
         let nkv = self.cfg.num_key_value_heads;
         let hd = self.cfg.head_dim;
         anyhow::ensure!(blob.len() >= 16, "prefix blob: too short");
+        let legacy = &blob[0..8] == b"Q38PFX1\0" || &blob[0..8] == b"Q38PFX2\0";
         anyhow::ensure!(
-            &blob[0..8] == b"Q38PFX1\0" || &blob[0..8] == b"Q38PFX2\0",
+            legacy || &blob[0..8] == b"Q38PFX3\0" || &blob[0..8] == b"Q38PFX4\0",
             "prefix blob: bad magic"
         );
         let stored = u64::from_le_bytes(blob[8..16].try_into().unwrap()) as usize;
@@ -1161,16 +1205,48 @@ impl Qwen38 {
             stored == pos,
             "prefix blob holds position {stored}, asked to restore {pos}"
         );
+        let ring = self.conv_ring();
         let mut o = 16usize;
+        // `legacy` restores the whole ring as one run starting at slot 0; the new
+        // format restores `keep` rows at their own slots.  A mismatch between the
+        // recorded row count and this position means the ring width or `k` changed
+        // under a stored blob, which is exactly when silently writing the wrong
+        // slots would corrupt a resume.
+        let (slots, legacy_rows) = if legacy {
+            (Vec::new(), true)
+        } else {
+            anyhow::ensure!(blob.len() >= 20, "prefix blob: truncated header");
+            let k = u32::from_le_bytes(blob[16..20].try_into().unwrap()) as usize;
+            let want = self.conv_keep().min(pos);
+            anyhow::ensure!(
+                k == want,
+                "prefix blob: {k} window rows, position {pos} needs {want}"
+            );
+            o = 20;
+            (self.conv_slots(pos), false)
+        };
         for layer in &self.layers {
             if let Kind::Gdn(g) = &layer.kind {
-                for (buf, stride) in [(&g.state, self.state_stride), (&g.window, self.win_stride)] {
-                    if stride == 0 {
-                        continue;
+                let st = self.state_stride;
+                if st != 0 {
+                    anyhow::ensure!(o + st <= blob.len(), "prefix blob: truncated state");
+                    g.state.write_at(seq * st, &blob[o..o + st]);
+                    o += st;
+                }
+                let wn = self.win_stride;
+                if wn != 0 {
+                    if legacy_rows {
+                        anyhow::ensure!(o + wn <= blob.len(), "prefix blob: truncated window");
+                        g.window.write_at(seq * wn, &blob[o..o + wn]);
+                        o += wn;
+                    } else {
+                        let row = wn / ring;
+                        for &slot in &slots {
+                            anyhow::ensure!(o + row <= blob.len(), "prefix blob: truncated window");
+                            g.window.write_at(seq * wn + slot * row, &blob[o..o + row]);
+                            o += row;
+                        }
                     }
-                    anyhow::ensure!(o + stride <= blob.len(), "prefix blob: truncated state");
-                    buf.write_at(seq * stride, &blob[o..o + stride]);
-                    o += stride;
                 }
             }
         }
@@ -1199,10 +1275,10 @@ impl Qwen38 {
     ///
     /// True for a blob written by [`Self::export_prefix_with_logits`], which
     /// describes the state *at the prompt end* and can therefore be resumed with
-    /// no prefill at all.  A `Q38PFX1` blob stops one chunk short of the end and
-    /// always needs that chunk recomputed.
+    /// no prefill at all.  A `Q38PFX1`/`Q38PFX3` blob stops one chunk short of the
+    /// end and always needs that chunk recomputed.
     pub fn blob_has_logits(&self, blob: &[u8]) -> bool {
-        blob.len() >= 8 && &blob[0..8] == b"Q38PFX2\0"
+        blob.len() >= 8 && (&blob[0..8] == b"Q38PFX2\0" || &blob[0..8] == b"Q38PFX4\0")
     }
 
     fn copy_seq(&mut self, seq: usize, restore: bool) -> Result<()> {
