@@ -318,6 +318,14 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
         const T44: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T44, 4, 4)];
         const T28: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T28, 8, 2)];
         const T48: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T48, 8, 4)];
+        const T216: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T216, 16, 2)];
+        const T28D: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T28_DIAG, 8, 2)];
+        const T28W: &[(&str, usize, usize)] = &[(qw_metal::msl::K_Q4_GEMV_T28W, 8, 2)];
+        // 12 + 4 = 16 tokens, so this is a like-for-like alternative to t28 x2.
+        const T212T24: &[(&str, usize, usize)] = &[
+            (qw_metal::msl::K_Q4_GEMV_T212, 12, 2),
+            (qw_metal::msl::K_Q4_GEMV_T24, 4, 2),
+        ];
         const K4X2: &[(&str, usize, usize)] = &[
             (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
             (qw_metal::msl::K_Q4_GEMV_K4_FLAT, 4, 1),
@@ -350,6 +358,8 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 ("k8-flat  x1", K8),
                 ("t28 (NR2) x1", T28),
                 ("t48 (NR4) x1", T48),
+                ("t28-DIAG no-hi-unpack (WRONG)", T28D),
+                ("t28w (NK8 NR2, 16B wload)", T28W),
                 ("k4-flat  x2  (dup)", K4X2),
             ],
             16 => vec![
@@ -357,6 +367,9 @@ pub fn run(model_dir: &Path, iters: usize, k: usize, rows: usize) -> Result<()> 
                 ("t44 (NR4) x4", T44X4),
                 ("t48 (NR4) x2", T48X2),
                 ("t28 (NR2) x2", &[(qw_metal::msl::K_Q4_GEMV_T28, 8, 2); 2]),
+                ("t216 (NK16 NR2) x1", T216),
+                ("t28w (NK8 NR2) x2", &[(qw_metal::msl::K_Q4_GEMV_T28W, 8, 2); 2]),
+                ("t212+t24 (NK12+4) =16", T212T24),
                 ("k4-flat  x4  (dup)", K4X4),
             ],
             _ => anyhow::bail!("--rows 21 supports --tokens 4, 8 or 16 (got {k})"),

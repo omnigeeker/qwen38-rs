@@ -810,6 +810,163 @@ Q4_GEMV_KS_FLAT_T(q4_gemv_t44, 4, 4)
 Q4_GEMV_KS_FLAT_T(q4_gemv_t28, 8, 2)
 Q4_GEMV_KS_FLAT_T(q4_gemv_t48, 8, 4)
 
+// NK=16 at NR=2.  The 4-bit unpack is paid once per output row and amortised over
+// NK tokens, so NK is the dimension that makes it cheaper per MAC:
+//   ops/MAC  t28 (8,2) 1.72   t44 (4,4) 2.20   t48 (8,4) 1.69   t216 (16,2) ~1.45
+// The catch is 32 accumulators at NR=2/NK=16, which is exactly the shape that
+// spills in t48.  This exists to find out whether it actually spills here, and
+// what the spilling costs, before anything is built on it.
+Q4_GEMV_KS_FLAT_T(q4_gemv_t216, 16, 2)
+// NK=12 at NR=2: 24 accumulators, between t28's 16 (fits) and t48/t216's 32
+// (spills).  Ops per MAC falls as NK grows because the weight unpack is paid
+// once per output row and amortised over the tokens - 1.23 at NK=8, 1.05 at
+// NK=12, 0.96 at NK=16 - so this is the last point on that curve that might
+// still fit in registers.
+Q4_GEMV_KS_FLAT_T(q4_gemv_t212, 12, 2)
+
+// Diagnostic only: WRONG RESULTS.  Identical to t28 except that the high half of
+// every packed word reuses the low half's unpacked value, which removes four
+// shift+and+cvt triples and four scale/bias applications per row per iteration
+// while keeping every load and every dot product.  Comparing it against t28 on
+// the same sweep is a direct measurement of what the unpack costs, which is the
+// number the "reduce the unpack ALU" plan depends on and has never been measured.
+#define Q4_GEMV_T28_DIAG(NAME)                                                             \
+kernel void NAME(                                                                          \
+    device const uint*   w      [[buffer(0)]],                                             \
+    device const ushort* scales [[buffer(1)]],                                             \
+    device const ushort* biases [[buffer(2)]],                                             \
+    device const half*   x      [[buffer(3)]],                                             \
+    device half*         y      [[buffer(4)]],                                             \
+    constant int&        K      [[buffer(5)]],                                             \
+    constant int&        k      [[buffer(6)]],                                             \
+    constant int&        out_f  [[buffer(7)]],                                             \
+    constant int&        R      [[buffer(8)]],                                             \
+    uint rb   [[threadgroup_position_in_grid]],                                             \
+    uint lane [[thread_index_in_threadgroup]])                                             \
+{                                                                                          \
+    (void)k;                                                                               \
+    (void)R;                                                                               \
+    const int n_u32    = K / 8;                                                            \
+    const int n_groups = K / GROUP_SIZE;                                                   \
+    const int row0     = (int)rb * 2;                                                      \
+    float acc[2][8];                                                                       \
+    _Pragma("unroll") for (int r = 0; r < 2; ++r)                                          \
+        _Pragma("unroll") for (int t = 0; t < 8; ++t) acc[r][t] = 0.0f;                    \
+    for (int j = (int)lane; j < n_u32; j += 32) {                                          \
+        const int g = j >> 3;                                                              \
+        half4 w0[2], w1[2];                                                                \
+        _Pragma("unroll") for (int r = 0; r < 2; ++r) {                                    \
+            const half sh = (half)as_type<float>((uint)scales[(row0 + r) * n_groups + g] << 16); \
+            const half bh = (half)as_type<float>((uint)biases[(row0 + r) * n_groups + g] << 16); \
+            const uint word = w[(size_t)(row0 + r) * (size_t)n_u32 + (size_t)j];           \
+            w0[r] = half4((half)( word        & 0xFu),                                     \
+                          (half)((word >>  4) & 0xFu),                                     \
+                          (half)((word >>  8) & 0xFu),                                     \
+                          (half)((word >> 12) & 0xFu)) * sh + bh;                          \
+            w1[r] = w0[r];                                                                 \
+        }                                                                                  \
+        _Pragma("unroll") for (int t = 0; t < 8; ++t) {                                    \
+            const uint4 xv = *(device const uint4*)(x + (size_t)t * K + (size_t)j * 8);    \
+            const half4 x0 = as_type<half4>(xv.xy);                                        \
+            const half4 x1 = as_type<half4>(xv.zw);                                        \
+            _Pragma("unroll") for (int r = 0; r < 2; ++r) {                                \
+                acc[r][t] += (float)(dot(w0[r], x0) + dot(w1[r], x1));                     \
+            }                                                                              \
+        }                                                                                  \
+    }                                                                                      \
+    _Pragma("unroll") for (int r = 0; r < 2; ++r) {                                        \
+        _Pragma("unroll") for (int t = 0; t < 8; ++t) {                                    \
+            const float a = simd_sum(acc[r][t]);                                           \
+            if (lane == 0) y[(size_t)t * out_f + (size_t)(row0 + r)] = (half)a;            \
+        }                                                                                  \
+    }                                                                                      \
+}
+Q4_GEMV_T28_DIAG(q4_gemv_t28_diag)
+
+// t28 with 16-byte weight loads instead of 4-byte ones.
+//
+// Same tile shape as t28 - NR=2 output rows by NK=8 tokens - and the same
+// arithmetic; the only change is that each lane fetches four packed words per
+// row per iteration instead of one, so the sweep issues a quarter as many
+// weight-load instructions and keeps four times as many weight bytes in
+// flight.  The four words a lane fetches are always inside one 64-weight
+// group: a lane starts at word 4*lane, and 4*lane mod 8 is 0 or 4, so words
+// 4*lane..4*lane+3 never straddle a group boundary and the group's scale and
+// bias are still loaded once.
+//
+// Why expect this to matter: k4-flat already uses 16-byte weight loads and
+// reaches ~7.9 TB/s of load traffic, while t28 reaches ~5.1 TB/s - and t28
+// moves FEWER bytes per (token x output row), 8.5 against 17.0.  A kernel
+// that moves less data and finishes slower is not bandwidth-limited, it is
+// latency-limited, and the remedy for that is more loads in flight.
+#define Q4_GEMV_KS_FLAT_TW(NAME, NK, NR)                                                    \
+kernel void NAME(                                                                           \
+    device const uint*   w      [[buffer(0)]],                                              \
+    device const ushort* scales [[buffer(1)]],                                              \
+    device const ushort* biases [[buffer(2)]],                                              \
+    device const half*   x      [[buffer(3)]],                                              \
+    device half*         y      [[buffer(4)]],                                              \
+    constant int&        K      [[buffer(5)]],                                              \
+    constant int&        k      [[buffer(6)]],                                              \
+    constant int&        out_f  [[buffer(7)]],                                              \
+    constant int&        R      [[buffer(8)]],                                              \
+    uint rb   [[threadgroup_position_in_grid]],                                             \
+    uint lane [[thread_index_in_threadgroup]])                                              \
+{                                                                                           \
+    (void)k;                                                                                \
+    (void)R;                                                                                \
+    const int n_u32    = K / 8;                                                             \
+    const int n_groups = K / GROUP_SIZE;                                                    \
+    const int row0     = (int)rb * NR;                                                      \
+    float acc[NR][NK];                                                                      \
+    _Pragma("unroll") for (int r = 0; r < NR; ++r)                                          \
+        _Pragma("unroll") for (int t = 0; t < NK; ++t) acc[r][t] = 0.0f;                    \
+    for (int j = (int)lane * 4; j < n_u32; j += 128) {                                      \
+        const int g = j >> 3;                                                               \
+        half4 wv[NR][8];                                                                    \
+        _Pragma("unroll") for (int r = 0; r < NR; ++r) {                                    \
+            const half sh = (half)as_type<float>((uint)scales[(row0 + r) * n_groups + g] << 16); \
+            const half bh = (half)as_type<float>((uint)biases[(row0 + r) * n_groups + g] << 16); \
+            const uint4 wd = *(device const uint4*)(w + (size_t)(row0 + r) * (size_t)n_u32 + (size_t)j); \
+            const uint ws[4] = { wd.x, wd.y, wd.z, wd.w };                                  \
+            _Pragma("unroll") for (int q = 0; q < 4; ++q) {                                 \
+                wv[r][2 * q + 0] = half4((half)( ws[q]        & 0xFu),                      \
+                                         (half)((ws[q] >>  4) & 0xFu),                      \
+                                         (half)((ws[q] >>  8) & 0xFu),                      \
+                                         (half)((ws[q] >> 12) & 0xFu)) * sh + bh;           \
+                wv[r][2 * q + 1] = half4((half)((ws[q] >> 16) & 0xFu),                      \
+                                         (half)((ws[q] >> 20) & 0xFu),                      \
+                                         (half)((ws[q] >> 24) & 0xFu),                      \
+                                         (half)((ws[q] >> 28) & 0xFu)) * sh + bh;           \
+            }                                                                               \
+        }                                                                                   \
+        _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                    \
+            const device half* xp = x + (size_t)t * K + (size_t)j * 8;                      \
+            const half4 x0 = as_type<half4>((*(device const uint4*)(xp     )).xy);          \
+            const half4 x1 = as_type<half4>((*(device const uint4*)(xp     )).zw);          \
+            const half4 x2 = as_type<half4>((*(device const uint4*)(xp +  8)).xy);          \
+            const half4 x3 = as_type<half4>((*(device const uint4*)(xp +  8)).zw);          \
+            const half4 x4 = as_type<half4>((*(device const uint4*)(xp + 16)).xy);          \
+            const half4 x5 = as_type<half4>((*(device const uint4*)(xp + 16)).zw);          \
+            const half4 x6 = as_type<half4>((*(device const uint4*)(xp + 24)).xy);          \
+            const half4 x7 = as_type<half4>((*(device const uint4*)(xp + 24)).zw);          \
+            _Pragma("unroll") for (int r = 0; r < NR; ++r) {                                \
+                acc[r][t] += (float)(dot(wv[r][0], x0) + dot(wv[r][1], x1) +                \
+                                     dot(wv[r][2], x2) + dot(wv[r][3], x3) +                \
+                                     dot(wv[r][4], x4) + dot(wv[r][5], x5) +                \
+                                     dot(wv[r][6], x6) + dot(wv[r][7], x7));                \
+            }                                                                               \
+        }                                                                                   \
+    }                                                                                       \
+    _Pragma("unroll") for (int r = 0; r < NR; ++r) {                                        \
+        _Pragma("unroll") for (int t = 0; t < NK; ++t) {                                    \
+            const float a = simd_sum(acc[r][t]);                                            \
+            if (lane == 0) y[(size_t)t * out_f + (size_t)(row0 + r)] = (half)a;             \
+        }                                                                                   \
+    }                                                                                       \
+}
+Q4_GEMV_KS_FLAT_TW(q4_gemv_t28w, 8, 2)
+
 // ---------------------------------------------------------------------------
 // Row-amortising GEMM for prefill.
 //
@@ -1304,6 +1461,10 @@ pub const K_Q4_GEMV_T24: &str = "q4_gemv_t24";
 pub const K_Q4_GEMV_T44: &str = "q4_gemv_t44";
 pub const K_Q4_GEMV_T28: &str = "q4_gemv_t28";
 pub const K_Q4_GEMV_T48: &str = "q4_gemv_t48";
+pub const K_Q4_GEMV_T216: &str = "q4_gemv_t216";
+pub const K_Q4_GEMV_T212: &str = "q4_gemv_t212";
+pub const K_Q4_GEMV_T28_DIAG: &str = "q4_gemv_t28_diag";
+pub const K_Q4_GEMV_T28W: &str = "q4_gemv_t28w";
 pub const K_Q4_GEMM_TILE: &str = "q4_gemm_tile";
 pub const K_Q4_GEMM_REDUCE: &str = "q4_gemm_reduce";
 pub const K_Q4_GEMV_K16_U4HX: &str = "q4_gemv_k16_u4hx";
