@@ -11724,3 +11724,101 @@ NRA 方向的并行度，才有可能把 0.105 s 压到 0.03 s。那才是 otps 
 * otps 没有可测的端到端提升（理论 1.10×，机器太热测不出）。
 * 冷/热 TTFT 本轮没测。33–128 行的 2.1× 应该会改善**并发下的 TTFT**（并发 prefill
   的 chunk 是 67 行），但这一轮没有验证。
+
+## §72fk otps：MPP 的开销是「每次 pass」而不是「每个 token」
+
+### 一、先把 MPP 的时间拆开
+
+`q4_mpp_mm` 里 `mode == 2` 会在 staging 之后 `barrier; continue`，跳过 matmul。
+把它接到 `gemm-bench`（`QW_GEMM_MODE`），同一个 binary、同一次测量：
+
+| tokens | 完整 (mode 0) | 只 staging (mode 2) | tensor 占比 |
+|---|---|---|---|
+| 1020 | 1.3284 s | 0.2127 s | **84%** |
+| 16 | 0.2943 s | 0.0688 s | **77%** |
+
+**所以瓶颈是 tensor op，不是我在 §72fj 结尾猜的 staging。** 那个猜测是错的，
+记在这里。staging 只占 16–23%。
+
+### 二、tensor op 不是常规意义的吞吐受限，这一点没搞清
+
+* **NRA（descriptor 的 N）调大是灾难**：16 token 下 NRA=32 → 0.2943 s，
+  NRA=64 → 0.8132（2.8×），NRA=128 → 2.2171（7.5×），NRA=256 → 4.2436（14×）。
+  1020 token 同样方向。NRA=32 已经是最优，所以「每次 run 做更多活」不是出路。
+* **KT（每次 run 的 K）**：16 token / NRB=32 下 KT=64 → 0.1052，KT=128 → 0.1087，
+  KT=256 → 0.1204（越大越差）；1020 token / NRB=256 下 KT=64 → 1.5475，
+  KT=128 → 1.2780，KT=256 → 1.3333。prefill 上 KT=128 好一点，decode 上没有收益。
+* 单次 `mm.run()` 的成本在两个极端下几乎一样（18.0 ns vs 22.3 ns），
+  但把 run 数量减半（KT 64→128）并没有把时间减半。**所以它也不是 run 数量受限的。**
+  这条没有结论，留作下一轮的入口。
+
+### 三、真正的杠杆：MPP 的下限是「每次 pass」而不是「每个 token」
+
+窄 tile 下（NRB=32），**任何 ≤32 行的 pass 都只占一个 M-block，成本约 0.11–0.12 s**，
+和它装了多少行无关。所以在真实权重上量 pass 宽度对应的吞吐：
+
+| rows | 一个 pass | 吞吐 |
+|---|---|---|
+| 16 | 0.1106 s | 145 tok/s |
+| 32 | 0.1193 s | **268 tok/s** |
+| 64 | 0.1886 s | 339 tok/s |
+| 128 | 0.3847 s | 333 tok/s |
+
+**并发度就是 otps。** 一行 16 行的解码 pass 和一行 32 行的 pass 花一样的钱。
+
+### 四、交付：`MAX_BATCH` 16 → 32
+
+`engine.rs` 的 `MAX_BATCH` 一直是 16，注释写着「它等于模型一次权重 sweep 能带的最大
+row tile」—— 那个理由在 NRB=256 的时代成立，窄 tile 把它消掉了。
+
+`conc4.py`，CGEN=96：
+
+| | CONC=16 | CONC=32 | 比值 |
+|---|---|---|---|
+| 冷态 | 100.6 tok/s | **151.1 tok/s** | **1.50×** |
+| 降频，交替第 1 轮 | 44.8 | 65.5 | 1.46× |
+| 降频，交替第 2 轮 | 45.3 | 69.5 | 1.53× |
+
+**比值与热状态无关（1.46–1.53×），绝对值最好的是 151.1 tok/s。**
+对比 Inco Splash 的 170：**89%**。之前是 87–89 tok/s，约 51%。
+`accept.sh` 22/22（含两个 batch decode gate）。
+
+### 五、为什么不是 64：conv ring 按 1020 行 prefill 分配
+
+batch 64 起不来，`check_memory` 直接拒绝：
+
+```
+max-ctx 8192 does not fit: it needs about 161 GB and this machine has 128 GB.
+15 GB of weights, 33 GB of KV cache, 105 GB of delta-net state.
+```
+
+105 GB / 64 = **1.64 GB 每个 slot**，其中：
+
+* 151 MB 是 delta-net recurrence（48 层 × 48 × 128 × 128 × 4）
+* **1.0 GB 是卷积 ring**：`n_gdn(48) × conv_ring(1024) × conv_dim(10240) × 2`
+* 604 MB 是 TILE 份 rollback 快照
+
+`conv_ring = (4 + PASS_ROWS_MAX).next_power_of_two() = 1024`，
+**它是按「一次 prefill 最多 1020 行」分配的，而解码一行只需要 4 个 entry。**
+
+按 64 行算吞吐是 339 tok/s，比 32 行的 268 高 1.26×，所以这条值得走。
+**下一轮的入口**：把 ring 按每个 slot 的实际需要分配（解码 4+1，prefill 才要 1024），
+或者把 prefill 的 chunk 压小让 ring 跟着小；再顺手看 `TILE` 份快照
+——`spec_slot = if decoding == 1` 说明 batch>1 时根本没有 spec，那 604 MB 是白占的。
+
+### 六、本轮结论
+
+**交付**：
+
+1. `MAX_BATCH` 16 → 32：**otps 100.6 → 151.1 tok/s（1.50×）**，
+   降频下交替复测比值一致（1.46/1.53×）。
+2. 用 `mode == 2` 把 MPP 拆成 staging / tensor：tensor 占 77–84%。
+3. 否掉了 NRA 调大、KT 调大两条路（都实测变差），并记录 KT 那条的反常。
+4. `accept.sh` 22/22。
+
+**没做到 / 没测**：
+
+* otps 151.1 对 170，**还差 11%**，不能说达标。
+* 冷/热 TTFT 这一轮没测。
+* tensor op 为什么在 16 行上只有 ~7 TFLOPS、1020 行上有 47 TFLOPS，机理没搞清。
+* batch 64 被 conv ring 挡住，这条路径已定位但没实现。
