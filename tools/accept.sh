@@ -12,7 +12,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
-BIN=./target/release/qwen38
+BIN=${BIN:-./target/release/qwen38}
 ORACLE=loop/artifacts/oracle.json
 MODEL=models/Qwen3.8-27B-4bit
 PORT=8199
@@ -22,12 +22,25 @@ PERF=0
 COOL=${ACCEPT_COOL:-240}
 TOKENS=${ACCEPT_TOKENS:-300}
 TMP=$(mktemp -d)
-trap 'pkill -f "qwen38 serve --port $PORT" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap 'stop_serve; rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
 no()   { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
 head1(){ printf '\n\033[1m== %s\033[0m\n' "$1"; }
+
+# Stop whatever is listening on $PORT.  `pkill -f "qwen38 serve"` does NOT do that:
+# it matches the process's argv, so any binary not named `qwen38` - which is every
+# A/B build kept in /tmp - survives it, the next `serve_up` succeeds against the
+# STALE server, and two "different" configurations silently return the same answer.
+# That is exactly how the wide-prefill gate below first reported PASS on a build it
+# was written to fail.  Kill by port instead; that cannot miss.
+stop_serve() {
+  local pids
+  pids=$(lsof -ti :"$PORT" 2>/dev/null)
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  sleep 2
+}
 
 ids() { # ids <outfile> <extra env...>  -- generate and keep only the token ids
   local out=$1; shift
@@ -122,7 +135,7 @@ fi
 
 # ---------------------------------------------------------------- endpoint
 head1 "endpoint (OpenAI + Anthropic)"
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null
+stop_serve
 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve.log" 2>&1 &
 for _ in $(seq 1 60); do
   curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1 && break
@@ -174,7 +187,7 @@ for want in message_start content_block_start content_block_stop message_stop; d
 done
 [ -n "$EV" ] && ok "anthropic stream -> $EV"
 
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null
+stop_serve
 
 # ------------------------------------------------- a hit must not change the answer
 head1 "prefix cache determinism"
@@ -197,15 +210,15 @@ serve_up() {
   done
   return 1
 }
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_cache.log" 2>&1 &
 serve_up
 A=$(ask_once); B=$(ask_once); C=$(ask_once)
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_nocache.log" 2>&1 &
 serve_up
 D=$(ask_once)
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null
+stop_serve
 if [ -n "$A" ] && [ "$A" = "$B" ] && [ "$B" = "$C" ]; then
   ok "cache on: three identical requests agree"
 else
@@ -230,13 +243,13 @@ head1 "generation position determinism"
 # job is to fail the moment the convention moves, which is what silently happened once.
 PIN=loop/artifacts/position_pin.json
 if [ -f "$PIN" ]; then
-  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  stop_serve
   QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_pin.log" 2>&1 &
   serve_up
   PIN_BODY=$(python3 -c 'import json;print(json.dumps({"model":"qwen3.8-27b-fp4","temperature":0,"max_tokens":64,"messages":[{"role":"user","content":json.load(open("'"$PIN"'"))["prompt"]}]}))')
   curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'content-type: application/json' \
     -d "$PIN_BODY" > "$TMP/pin.json"
-  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  stop_serve
   python3 - "$PIN" "$TMP/pin.json" <<'PY'
 import json, sys
 want = json.load(open(sys.argv[1]))["server_text"]
@@ -275,13 +288,13 @@ head1 "server generation matches the CLI"
 # a template that `gen` does not, so the two would not share a token stream.
 SRV_PROMPT=$(python3 -c 'import json;print(json.load(open("'"$PIN"'"))["prompt"])')
 $BIN gen --prompt "$SRV_PROMPT" --max-tokens 64 --no-stop 2>/dev/null > "$TMP/cli_gen.txt"
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_cli.log" 2>&1 &
 serve_up
 SRV_BODY=$(python3 -c 'import json,sys;print(json.dumps({"model":"qwen3.8-27b-fp4","prompt":json.load(open(sys.argv[1]))["prompt"],"max_tokens":64,"temperature":0,"stream":False}))' "$PIN")
 curl -s "http://127.0.0.1:$PORT/v1/completions" -H 'content-type: application/json' \
   -d "$SRV_BODY" > "$TMP/srv_cmp.json"
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 # The same comparison with speculative decoding on.  It has to be the same text:
 # a rejected draft is simply not emitted, and `next` is always the model's own
 # prediction from the row that broke the run.  This is the gate that would have
@@ -296,7 +309,7 @@ QW_PREFIX_SNAPSHOT=0 QW_SPEC=1 $BIN serve --port $PORT --model-dir "$MODEL" > "$
 serve_up
 curl -s "http://127.0.0.1:$PORT/v1/completions" -H 'content-type: application/json' \
   -d "$SRV_BODY" > "$TMP/srv_spec.json"
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 python3 - "$TMP/srv_spec.json" <<'PY'
 import json, sys
 try:
@@ -363,17 +376,69 @@ except Exception: print("")'
 W4=""
 W32=""
 for W in 4 32; do
-  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  stop_serve
   QW_PREFILL_CHUNK=$W QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_w$W.log" 2>&1 &
   serve_up
   R=$(ask_wide)
-  pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+  stop_serve
   if [ "$W" = 4 ]; then W4="$R"; else W32="$R"; fi
 done
 if [ -n "$W4" ] && [ "$W4" = "$W32" ]; then
   ok "chunk 4 and chunk 32 give the same answer"
 else
   no "chunk 4 and chunk 32 disagree (${W4:0:40} vs ${W32:0:40})"
+fi
+
+# ------------------------------------------------- a pass wider than the GEMM tile
+head1 "wide prefill pass"
+# The gate above compares chunk 4 against chunk 32, and both are far below every
+# tile boundary in the prefill path - so it cannot see a kernel that projects only
+# the first NRB rows of a wide pass.  One did exactly that for three rounds: the
+# MPP tile substitution in `mpp_src` was a silent no-op, the grid was built from
+# `QW_MPP_NRB` = 512 while the kernel had 256 compiled in, and every prompt longer
+# than 512 tokens was answered from a prefill whose tail had never been written.
+# The oracle prompts are 5-20 tokens, the position pin is 62, gemm-check defaults
+# to 40, and the prefill chunk default is 1020 - so nothing in this file crossed
+# 512 rows.
+#
+# This prompt is roughly 700 tokens.  Chunk 256 runs the pass as three 256-row
+# blocks and chunk 1020 as one 1020-row block; the two use different grid shapes
+# over the same weights and must produce the same greedy answer.  The expectation
+# is deliberately NOT a stored string - the property under test is that the two
+# widths agree, which stays true across any legitimate kernel change.
+LONG_PROMPT=""
+for i in $(seq 0 15); do
+  LONG_PROMPT="$LONG_PROMPT ($i) The history of the Roman Empire is a long one that begins with the founding of the city and runs through the republic, the principate, the crisis of the third century, and the later empire."
+done
+ask_long() {
+  python3 - "$PORT" "$LONG_PROMPT" <<'PYLONG'
+import json, sys, urllib.request
+port, prompt = sys.argv[1], sys.argv[2]
+body = json.dumps({"model": "qwen3.8-27b-fp4", "temperature": 0, "max_tokens": 24,
+                   "messages": [{"role": "user", "content": prompt}]}).encode()
+try:
+    r = urllib.request.urlopen(urllib.request.Request(
+        "http://127.0.0.1:%s/v1/chat/completions" % port, body,
+        {"Content-Type": "application/json"}), timeout=600)
+    print(json.load(r)["choices"][0]["message"]["content"])
+except Exception:
+    print("")
+PYLONG
+}
+L256=""
+L1020=""
+for W in 256 1020; do
+  stop_serve
+  QW_PREFILL_CHUNK=$W QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_L$W.log" 2>&1 &
+  serve_up
+  R=$(ask_long)
+  stop_serve
+  if [ "$W" = 256 ]; then L256="$R"; else L1020="$R"; fi
+done
+if [ -n "$L256" ] && [ "$L256" = "$L1020" ]; then
+  ok "a ~700-token prompt gives the same answer in 256-row and 1020-row passes"
+else
+  no "a wide prefill pass changes the answer (256: '${L256:0:60}' vs 1020: '${L1020:0:60}')"
 fi
 
 # A four-slot DECODE pass takes a different path from a single-slot one: the
@@ -393,11 +458,11 @@ ask_conc() {
 try: print(json.load(sys.stdin)["choices"][0]["message"]["content"])
 except Exception: print("")'
 }
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_conc.log" 2>&1 &
 serve_up
 ALONE=$(ask_conc)
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_conc2.log" 2>&1 &
 serve_up
 CONC=$(python3 - "$PORT" "$CONC_PROMPT" <<'PYCONC'
@@ -421,7 +486,7 @@ for t in ts: t.join()
 print(json.dumps(out))
 PYCONC
 )
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 CONC_OK=$(python3 - "$ALONE" "$CONC" <<'PYCHK'
 import json, sys
 alone, conc = sys.argv[1], json.loads(sys.argv[2])
@@ -477,15 +542,15 @@ else:
 print(json.dumps(out))
 PYMIX
 }
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_mixed.log" 2>&1 &
 serve_up
 mixed_ask alone > "$TMP/mixed_alone.json"
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 QW_PREFIX_SNAPSHOT=0 $BIN serve --port $PORT --model-dir "$MODEL" > "$TMP/serve_mixed2.log" 2>&1 &
 serve_up
 mixed_ask conc > "$TMP/mixed_conc.json"
-pkill -f "qwen38 serve --port $PORT" 2>/dev/null; sleep 2
+stop_serve
 if python3 -c 'import json,sys
 a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
 sys.exit(0 if (a and a==b) else 1)' "$TMP/mixed_alone.json" "$TMP/mixed_conc.json"; then

@@ -1816,13 +1816,30 @@ fn mpp_tiles_uncached() -> [i32; 4] {
     [
         one("QW_MPP_KT", 64),
         one("QW_MPP_NRA", 32),
-        // NRB is the token tile, so it decides how many M blocks a prefill runs and how
-        // many times the weights are streamed.  256 was the default and left the kernel
-        // at 36.5 TFLOPS on a 602-token sweep; 512 measures 52.5 and takes prefill-bench
-        // from 1071.3 ms to 806.5 ms, reproducibly.  Larger NRA values look far faster
-        // still - NRA=128 reports 120 TFLOPS - but that is the tile writing only a
-        // quarter of the output rows, and gemm-check now fails on them.
-        one("QW_MPP_NRB", 512),
+        // NRB is the token tile (the descriptor's M), so it decides how many M
+        // blocks a prefill runs and how many times the weights are streamed.
+        //
+        // 256, and the 512 that replaced it in round 183 was never in the kernel.
+        // The substitution in `mpp_src_uncached` was a no-op, so the grid ran
+        // rows.div_ceil(512) M-blocks while the kernel wrote tokens tgid.x*256 -
+        // half the work, and the half it wrote was the first half.  The 1.328x
+        // "win" over 256 was that missing work, and a prompt longer than 512
+        // tokens answered from a prefill whose tail had never been projected.
+        //
+        // Honest full-sweep, 1020 tokens, 497 linears, gemm-bench, three iters:
+        //   NRB=256   1.1528 s   45.3 TFLOPS   <- default
+        //   NRB=384   1.9984 s   26.2
+        //   NRB=512   3.3311 s   15.7
+        //   NRB=1024  1.5640 s   33.4
+        // The cooperative tensor holds NRB*NRA/NT floats per thread, so 512 is 128
+        // registers of accumulator and spills.  256 is 64, which fits.
+        //
+        // NRA stays 32 for the same reason the old note gave a false one: the
+        // kernel kept NRA=32 while the grid used the requested value, so NRA=128
+        // wrote exactly a quarter of the output rows and "reported 120 TFLOPS".
+        // Now that the substitution works, NRA is a real knob - and a real tile
+        // change, so gemm-check is the gate, not a TFLOPS printout.
+        one("QW_MPP_NRB", 256),
         one("QW_MPP_NT", 128),
     ]
 }
@@ -1834,10 +1851,37 @@ pub fn mpp_src() -> String {
 }
 
 fn mpp_src_uncached() -> String {
+    // The patterns below have to match the `#define` lines in `MPP` CHARACTER FOR
+    // CHARACTER, whitespace included.  They did not: three of the four named a
+    // value the source no longer carried (`KT  32` against `KT  64`, `NRA 64`
+    // against `NRA 32`, `NRB 128` against `NRB 256`), so only `NT` was ever
+    // substituted and `QW_MPP_KT`/`NRA`/`NRB` were silently dead.
+    //
+    // For NRA that produced a wrong refutation: "NRA=128 reports 120 TFLOPS but
+    // writes only a quarter of the output rows, so gemm-check fails on it".  The
+    // kernel kept NRA=32 while the GRID was built from 128, so exactly 32/128 of
+    // the rows were written - the kernel was never wrong, the knob was.  Measured
+    // coverage against NRA: 64 gives half the rows, 128 a quarter, 256 an eighth.
+    //
+    // For NRB it produced a wrong result in the shipped default.  `mpp_tiles()`
+    // feeds the grid `rows.div_ceil(NRB)` M-blocks while the kernel writes tokens
+    // `tgid.x * NRB` from its own compiled-in NRB, so with the grid on 512 and the
+    // kernel on 256 a prefill pass only ever wrote tokens 0..511 - and the default
+    // prefill chunk is 1020 rows.  A 1798-token prompt answered differently from
+    // the same prompt under NRB=256, repeatably, and reported the wrong count of
+    // numbered items because the tail of the prompt had never been projected.
+    // Every gate missed it: the oracle prompts are five to twenty tokens, the
+    // position pin is 62, `gemm-check` defaults to 40, and the prefill-width gate
+    // compares chunk 4 against chunk 32.  Nothing in the suite crossed 512 rows.
+    //
+    // The fix is to make the substitution real, so the grid and the kernel cannot
+    // disagree, and `tools/accept.sh` now pins a prompt longer than one NRB-wide
+    // pass across two chunk widths.
     let [kt, nra, nrb, nt] = mpp_tiles();
-    MPP.replace("#define Q4_MPP_KT  32", &format!("#define Q4_MPP_KT  {kt}"))
-        .replace("#define Q4_MPP_NRA 64", &format!("#define Q4_MPP_NRA {nra}"))
-        .replace("#define Q4_MPP_NRB 128", &format!("#define Q4_MPP_NRB {nrb}"))
+    let src = MPP
+        .replace("#define Q4_MPP_KT  64", &format!("#define Q4_MPP_KT  {kt}"))
+        .replace("#define Q4_MPP_NRA 32", &format!("#define Q4_MPP_NRA {nra}"))
+        .replace("#define Q4_MPP_NRB 256", &format!("#define Q4_MPP_NRB {nrb}"))
         .replace("#define Q4_MPP_NT  128", &format!("#define Q4_MPP_NT  {nt}"))
         .replace(
             "#define Q4_MPP_RELAXED 1",
@@ -1845,5 +1889,25 @@ fn mpp_src_uncached() -> String {
                 "#define Q4_MPP_RELAXED {}",
                 if std::env::var("QW_MPP_RELAXED").ok().as_deref() == Some("1") { 1 } else { 0 }
             ),
-        )
+        );
+    // A substitution that silently does nothing is the whole bug above, so assert
+    // the substitution happened rather than trusting the pattern to stay in step
+    // with the source.  This is cheap - the function runs once per process.
+    // The needles carry the source's own spacing, two spaces after KT and NT and
+    // one after NRA and NRB, because that is exactly the detail that drifted.
+    for (name, want, sep) in [
+        ("Q4_MPP_KT", kt, "  "),
+        ("Q4_MPP_NRA", nra, " "),
+        ("Q4_MPP_NRB", nrb, " "),
+        ("Q4_MPP_NT", nt, "  "),
+    ] {
+        let needle = format!("#define {name}{sep}{want}");
+        if !src.contains(&needle) {
+            panic!(
+                "mpp_src: {name} was not substituted to {want}; the #define text in MPP \
+                 and the replace pattern in mpp_src_uncached have drifted apart"
+            );
+        }
+    }
+    src
 }
