@@ -11822,3 +11822,130 @@ max-ctx 8192 does not fit: it needs about 161 GB and this machine has 128 GB.
 * 冷/热 TTFT 这一轮没测。
 * tensor op 为什么在 16 行上只有 ~7 TFLOPS、1020 行上有 47 TFLOPS，机理没搞清。
 * batch 64 被 conv ring 挡住，这条路径已定位但没实现。
+
+## §72fl 中间档 tile；以及一个被我自己的测量推翻的推断
+
+### 一、CONC=32 和 prefill-bench 之间那个 2.7× 的差，是热不是结构
+
+上一轮 §72fk 里 32 行的 pass 在服务里要 325 ms，而 `prefill-bench` 只要 119 ms。
+先把引擎自己的 pass 宽度直方图打出来（`QW_STEP_TIME`，CONC=32，CGEN=96）：
+
+```
+  94 次 32 行
+   1 次 493 行   (32 个请求的 prefill 合成一趟)
+   1 次 125 行
+   1 次 31 行
+   1 次 15 行
+```
+
+**94 趟正好 32 行，一趟不多一趟不少。** 没有「请求陆续结束导致 pass 变窄」的尾巴，
+也没有窄 pass 的浪费。引擎在 lockstep 上跑得完全正确。
+
+所以那个 2.7× 就是降频：同一时刻 CONC=16 是 44.8 tok/s，而冷态是 100.6，比值 2.25×。
+**结论：解码环路上没有结构性浪费可捡。** 这一条把「提升并发度」以外的引擎侧可能性关掉了。
+
+### 二、找到 1.1 GB/slot 的死缓冲——然后被自己的测量打脸
+
+`budget()` 报 batch 64 要 161 GB，但实际分配里还有两份它**根本没算**的东西：
+
+```rust
+cache_state:  dev.buffer(hv * dv * dk * 4 * batch),        // 3.0 MB × 48 层 × batch
+cache_window: dev.buffer(conv_ring * conv_dim * 2 * batch), // 20.0 MB × 48 层 × batch
+```
+
+它们只被 `save_prefix` / `load_prefix` / `copy_seq` 使用，而这三个函数
+**全仓库没有任何调用者**——engine.rs 里只有两处注释提到 `save_prefix`，其中一处
+（1129 行）本来就已经写明：
+
+> the blob already carries the recurrent state and the window, so the separate
+> `save_prefix` GPU copy is redundant, and keeping it was what made an in-process
+> boundary hit disagree with a cold run while the byte-identical disk path agreed exactly.
+
+也就是说这套机制不只是多余的，**它曾经是个 bug**，只是引擎已经不用它了。
+我把 `cache_state`、`cache_window`、`save_prefix`、`load_prefix`、`copy_seq` 一起删掉，
+并改写了那两处注释。
+
+**然后我推断 RSS 会掉 37 GB（batch 32：24.1 MB × 32 × 48）。**
+用 `git stash` 把改动收起来、重新编译、量旧 binary：
+
+```
+old RSS = 81.1 GB      (改之前)
+new RSS = 81.1 GB      (改之后)
+```
+
+**一模一样。** 那些 buffer 从来没有被写过，所以从来没有变成驻留页；
+省下的是地址空间，不是内存。**我的推断是错的，记在这里。**
+（顺带说明 `budget()` 模型和 RSS 的关系：batch 32 模型算 94.8 GB，实测 81.1 GB，
+模型高估约 14%。）
+
+**结论：这次删除是代码清理，对内存和 batch 上限都没有可测影响。**
+保留它是因为它删掉的是一段自己注释都承认曾经出错的死代码。
+
+### 三、batch 64 到底差多少（把账算清）
+
+删掉死 buffer 之后，`per_slot` 正好等于 `budget()` 算的 1680 MB：
+state 144 MB + window 960 MB + snap 576 MB。batch 64 时：
+
+| 项 | 大小 |
+|---|---|
+| delta-net（1680 MB × 64） | 107.5 GB |
+| KV cache（4195 KB/token × 8192） | 35.2 GB |
+| 权重 + MEM_OVERHEAD | 23 GB |
+| 合计（模型） | **165.7 GB** |
+| 合计（按实测 0.855 的模型/实际比） | **约 142 GB** |
+
+**两种算法都超过 128 GB。** 剩下能砍的两项，每一项都要拿另一半目标去换：
+
+* **`window` 960 MB/slot**：它是 `conv_ring = (4 + PASS_ROWS_MAX).next_power_of_two() = 1024`，
+  和 prefill chunk 绑死。in_proj 把整趟的行直接写进 ring，conv 再从 ring 读，
+  所以 ring 必须装下一整趟。**要缩小它就得缩小 prefill chunk，也就是更多次权重 sweep，
+  直接拖慢冷 TTFT**——目标的前一半。
+* **`snap` 576 MB/slot**：只在 `decoding == 1`（spec verify）时用。砍掉它 batch 64 就够
+  （1104 MB/slot → 127 GB）。但要动 buffer 13 的序列索引，并把 spec 限制在单个 slot；
+  **它的失效方式是「batch>1 的 spec 模式下答案错」，而这一条 gate 未必覆盖得到。**
+  在时间压力下不做。
+
+### 四、交付：第三档 MPP tile
+
+§72fj 只做了两档（NRB=32 和 256），把 33–128 行全丢给 NRB=32。
+但 descriptor 的 M 是编译期常量，tile 必须跟着行数走。整趟 forward pass，best of 2：
+
+| rows | NRB=32 | NRB=64 | NRB=128 |
+|---|---|---|---|
+| 48 | 0.1754 | **0.1499** | 0.1903 |
+| 64 | 0.1843 | **0.1575** | 0.2022 |
+| 96 | 0.2576 | 0.2347 | **0.2172** |
+| 128 | 0.3327 | 0.2446 | **0.2333** |
+
+**单一 NRB=32 在 48–64 行上白丢 1.17×，在 128 行上白丢 1.43×。**
+
+加了 `mpp_src_mid`（NRB=64），路由改成：
+
+* `rows <= 32` → NRB=32
+* `33..=128` → NRB=64（全区间内距最优不超过 7%，且从不比它替换掉的 32 差）
+* `> 128` → NRB=256
+
+改完实测：48 行 0.1499、64 行 0.1581、96 行 0.2349、128 行 0.2458
+—— **1.17× / 1.17× / 1.10× / 1.35×**。`accept.sh` 22/22。
+
+这条影响的是**并发 prefill**（`chunk = room / prefilling`，16 路并发时约 67 行）
+和前缀缓存续跑的小 chunk，不是 1020 行的冷 prefill（走宽 tile），也不是 32 行的解码。
+
+### 五、本轮结论
+
+**交付**：
+
+1. 三档 MPP tile：48–64 行快 1.17×，96 行 1.10×，128 行 1.35×。
+2. 删掉 1.1 GB/slot 的死缓冲和它那段出过错的机制（**对内存无可测影响，已实测**）。
+3. 证明解码环路没有结构性浪费：94/94 趟正好 32 行。
+4. batch 64 的账算清：模型 165.7 GB / 实测推算 142 GB，都超 128 GB，
+   两条出路各自要牺牲冷 TTFT 或 spec 正确性。
+5. `accept.sh` 22/22。
+
+**没做到**：
+
+* **otps 这一轮没有推进。** 32 行的解码 pass 仍然用 NRB=32，路由没变；
+  复测 CONC=32 106.4 tok/s、CONC=16 74.3（热机），比值 1.43×，
+  和之前的 1.46–1.53× 一致。目标 170，最好成绩仍是 §72fk 的 151.1。
+* 冷/热 TTFT 本轮没测。
+* 我自己「RSS 会掉 37 GB」的推断被实测推翻，已在上面记录。
