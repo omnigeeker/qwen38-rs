@@ -11079,8 +11079,16 @@ llama.cpp 那边同机同轮的读数是 933–1030 ms（它自己的 `prompt ev
 | prefill step（含 GEMM 849） | 1200–1250 | `step time: 581 rows` |
 | 其中 GEMM（MPP，3 个 256 行 block = 768 行计算量） | 849 | gemm-bench 598 token |
 | 其中非 GEMM（GDN / attention / norm） | ~190 | prefill-bench 598 − gemm-bench 598 |
-| prompt-end prefix snapshot | 114.5 | `prefix time: prompt-end export` |
 | 首个 decode pass | 42 | |
+
+> **§72fg 修正**：下面这一行本来是「prompt-end prefix snapshot 114.5」，把它算进了
+> 1336 ms 的冷 TTFT。**这是错的** —— 那次 export 跑在 `emit()` 已经把第一个 token
+> 发出去**之后**，根本不在 TTFT 的关键路径上。直接配对 A/B 新旧 blob 格式得到的
+> 冷 TTFT 比值是 **1.002×**。它在总请求时间里，不在 TTFT 里。
+>
+> | 项 | ms | 来源 |
+> |---|---|---|
+> | prompt-end prefix snapshot（**不在 TTFT 路径上**） | 114.5 | `prefix time: prompt-end export` |
 
 GEMM 这一块**已经在实用极限上**：598 行时 36.1 TFLOPS，1020 行（无尾部浪费）45.7。
 按 598 行扫描 tile 组合，全部落在 1.3% 以内：
@@ -11155,3 +11163,149 @@ prefix time: prompt-end export 585 tok 1141 MB 114.477208ms
 4. **降低解包 ALU**：t28 现在 6.9 ms/token 而 ALU 下限是 5.76，差距来自
    4-bit 解包。把 `(q*s+b)` 做成 16 项 threadgroup 查找表能省掉
    shift/and/cvt/fma 里的三项，代价是每个 group 建一次表。
+
+## §72fg 卷积环只存 3 行，以及推翻 §72ff 自己的一个结论
+
+### 一、1141 MB 的 88% 是没人会再读的
+
+§72ff 用 `QW_PREFIX_TIME` 测到 prompt-end export 是 1141 MB / 114.5 ms。这一轮把它拆开：
+
+| 部分 | MB | 公式 |
+|---|---|---|
+| GDN 卷积窗口 | **1006** | `conv_ring(1024) × conv_dim(10240) × 2 × 48 层` |
+| GDN 递推状态 | 151 | `48 × 128 × 128 × 4 × 48 层` |
+| KV | 38 | `16 层 × 4 head × 585 × 256 × 2 × 2` |
+
+而恢复一个位置只需要其中三行卷积窗口。两个 kernel 都写死了这个事实：
+
+```c
+// conv1d_silu_ring
+const int r = (slot + ring - 3 + j) & (ring - 1);            // j = 0..3
+// conv1d_silu_ring_multi
+const int pos = p - 3 + j;                                    // j = 0..3
+```
+
+`slot(p) = p & (ring-1)`，回看 `k-1 = 3` 行。所以在位置 `pos` 恢复之后，
+下一个 pass 唯一还会读的环行就是 `pos-3 .. pos-1`。
+
+环之所以是 1024 行宽，是**另一个原因**：一整个 `PASS_ROWS_MAX` pass 必须能在
+不绕回「下一个 pass 要读的那几行」的前提下写完（spec 部分接受后回退也要靠这个宽度）。
+这个宽度是必须的，但**把整个环序列化下来不是**。
+
+新的 `Q38PFX3/4` 只存那三行，放在它们各自的环槽里。同一个 prompt、同一个 server：
+
+| | 旧 (`Q38PFX1/2`) | 新 (`Q38PFX3/4`) |
+|---|---|---|
+| blob | 1141 MB | **183 MB** |
+| export | 114.5 ms | **22.2 ms** |
+| import | 113.1 ms | **6.3 ms** |
+
+boundary cache 每槽一个 blob，所以 batch 16 时驻留内存从 **18 GB 降到 2.9 GB**。
+从 prompt-end boundary 恢复的热 TTFT 是 **7.8 ms**，答案与冷 prefill 逐字节相同。
+
+### 二、旧格式仍然能读，而且是跑出来的，不是看出来的
+
+`QW_PREFIX_DISK` 写下的 blob 活得比进程长，所以 `Q38PFX1/2` 必须继续能导入。
+验证方式：把 `crates/qw-model/src/runner.rs` 的改动 `git stash` 掉、重新构建出一个
+**格式是旧的、但 NRB=256 已经修好**的 binary，让它写一个 1197 MB 的 `Q38PFX2` blob
+到磁盘，再让新 build 去读：
+
+```
+prefix time: disk import 595 tok 1141 MB 117.4ms
+prefix cache HIT (disk prefix) - skipped 595 of 595 prompt tokens (100%)
+```
+
+两次答案 `cmp` 逐字节相同。
+
+（第一次尝试用 `/tmp/q_nrbbug` 写的 blob 来比，得到 DIFFERENT —— 那个 build 带着
+NRB=512 的截断 bug，它的 blob 描述的就是一个错的状态，所以这个比较本身是无效的。
+换成正确 build 写的旧格式 blob 才是有效的对照。）
+
+格式里记录的窗口行数如果和恢复位置对不上，是**硬报错**，不是往错的槽里静默写：
+
+```rust
+anyhow::ensure!(k == want, "prefix blob: {k} window rows, position {pos} needs {want}");
+```
+
+### 三、推翻 §72ff 自己的结论：这个 export 根本不在 TTFT 路径上
+
+§72ff 写「这是回到 1.1× 以内最清楚的一条路」。**错的。**
+
+`step time: 4 rows ... ended at 1418 ms` 之后才打印 `prefix time: prompt-end export`，
+而客户端 TTFT 是 1422.7 ms —— export 的 22 ms 放不进 1418→1422.7 这 4.7 ms 里。
+原因是它在 `emit()` **之后**：第一个 token 已经通过 socket 发出去了，服务端才去做快照。
+
+直接配对 A/B（旧格式 vs 新格式，交替顺序，4 轮）：
+
+| build | 冷 TTFT |
+|---|---|
+| 旧格式 | min 1250.2 / median 1340.6 ms |
+| 新格式 | min 1324.2 / median 1337.5 ms |
+| **比值** | **1.002×** |
+
+也就是说这个改动**对冷 TTFT 一点用都没有**。它买到的是驻留内存（-15 GB @ batch 16）
+和约 90 ms 的**总请求时间**。
+
+§72ff 里那个「snapshot 值 157 ms」的墙钟差也是同一个错误：那次量的是
+**读到最后一个 chunk** 的墙钟，所以把 TTFT 之后的 export 算进去了。
+
+### 四、那冷 TTFT 的差距到底在哪里
+
+干净的日志（未降频时，581 行）：
+
+```
+step time: 581 rows, started at 3 ms, took 1.330828917s, ended at 1334 ms
+step time: 4 rows,   started at 1374 ms, took 43.731834ms,  ended at 1418 ms
+TTFT 1422.7 ms
+```
+
+所以 `TTFT ≈ prefill step + decode step + 4.7 ms`。而：
+
+| | ms |
+|---|---|
+| server prefill step（581 行） | 1334 |
+| `prefill-bench --tokens 598`（进程内，batch=1） | 1081 |
+| `gemm-bench --tokens 598`（纯 GEMM） | 849 |
+| 非 GEMM | 232 |
+| **server step − prefill-bench** | **~253** |
+
+llama.cpp 同 prompt 的 `prompt eval time` 是 1011–1036 ms。所以差距 = 那 253 ms
+**加上** GEMM 的尾部浪费（598 行算 768 行）。
+
+这 253 ms 是下一轮的目标。它**不在** export 里（export 在 TTFT 之后），候选是
+pass 内部的阶梯 boundary export（`engine.rs:1118`，在 row 循环里）或者 batch=16
+的 scratch 相对 batch=1 的差异 —— 但这一轮没能测出来，原因见下。
+
+### 五、这一轮后段的测量全部作废
+
+想量那 253 ms 时，同一台机器同一份工作已经变成这样（589 行 prefill step）：
+
+| 时刻 | step |
+|---|---|
+| 本轮早段 | 1200–1334 ms |
+| 本轮后段 | **2414–3204 ms** |
+
+而且「snapshot off」比「default」还慢（3204 vs 2561），这在物理上不可能，
+只能是降频噪声。**所以本节不给出任何新的时间结论。** 机器需要长时间冷却之后才能再测。
+
+### 六、本轮结论
+
+**交付**：
+
+1. `Q38PFX3/4`：prefix blob 1141 MB → **183 MB**，export 114.5 → **22.2 ms**，
+   import 113.1 → **6.3 ms**，boundary cache 驻留 -15 GB @ batch 16。
+2. 旧格式向后兼容，**跨 build 端到端验证**（旧 build 写 1197 MB blob，新 build 读，
+   答案逐字节相同），并加了位置/行数一致性硬校验。
+3. 推翻 §72ff 关于「这条路上 TTFT 能回到 1.1×」的结论，用配对 A/B 的 1.002× 证明
+   export 不在 TTFT 路径上，并修正了 §72ff 的分解表。
+
+**没做到**：
+
+* 冷 TTFT 仍是约 **1.22–1.32×** llama.cpp（配对交替）。差距是 prefill step 里
+  那 253 ms + GEMM 尾部浪费。
+* otps 未变（本轮没有碰解码路径），仍是 16 路 87–89.5 tok/s 对 Splash 的 170。
+
+**下一轮第一步**：机器冷却后，把 `engine.rs:1118` 的阶梯 boundary export 用
+`QW_PREFIX_BOUNDARY=0` 关掉，看 server prefill step 里那 253 ms 是否就是它
+（本轮测过但被降频毁掉：`boundary off` 三次是 2995 / 2449 / 2444，
+`default` 三次是 2561 / 2414 / 2600 —— 中位数差 112 ms，方向对但噪声太大，不能采信）。
