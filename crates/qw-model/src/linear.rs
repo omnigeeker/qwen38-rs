@@ -182,6 +182,7 @@ impl<'a> QLinear<'a> {
         single_k: &Kernel,
         tile_k: &Kernel,
         wide_k: &Kernel,
+        mpp_k: Option<&Kernel>,
         x: &GpuBuffer,
         y: &GpuBuffer,
         rows: usize,
@@ -205,15 +206,15 @@ impl<'a> QLinear<'a> {
             // instead of rows/4, and the MACs go through the matrix units: the
             // MMA runs at 36 TFLOPS against the scalar path's 5.4.
             if rows >= gemm_min_rows() && self.out_f >= gemm_min_out_f() {
-                if let Err(e) = batch.kernel(msl::COMMON, msl::K_Q4_GEMM_TILE) {
-                    eprintln!("q4_gemm_tile FAILED TO BUILD ({e:?}); its dispatch is skipped and y stays zero");
-                }
-                // Compile check for the MetalPerformancePrimitives tensor-op path.
-                // Silent when it works; loud if a future edit breaks it, because
-                // that path is the way out of the sixteen refuted staging ideas.
-                if let Err(e) = batch.kernel(msl::MPP, "q4_mpp_probe") {
-                    eprintln!("q4_mpp_probe FAILED TO BUILD: {e}");
-                }
+                // The `q4_gemm_tile` compile check that used to sit here is gone.
+                // It resolved the kernel, threw the handle away and printed on
+                // failure - once per quantised linear, on every pass.  That is 497
+                // full `fxhash`es of the COMMON translation unit per prefill, for
+                // a result nothing read, and `QW_ENCODE_TIME` priced it at 62.9 ms
+                // of CPU encode on a 598-row pass.  The fall-through below still
+                // resolves and dispatches the kernel, and still degrades to a
+                // zeroed `y` if it does not build, which is the same outcome the
+                // check could produce.
                 // QW_MPP=3: the affine tensor-op GEMM.  Tile M(tokens)=128,
                 // N(rows)=64, K=32, weight tile only in shared memory, and the
                 // activations read straight from device memory by the tensor op.
@@ -227,16 +228,19 @@ impl<'a> QLinear<'a> {
                 // 44 TFLOPS against simdgroup_matrix's 22.  QW_MPP=0 forces the
                 // old kernel back on; if the MPP source ever fails to compile the
                 // old kernel is used anyway, because the block below falls through.
+                //
+                // The kernel handle arrives resolved.  It used to be looked up
+                // here - twice, with a `String` clone of the source each time -
+                // and `pipeline()` hashes the whole source to key its cache, so
+                // 497 linears meant ~994 full hashes of the MPP translation unit
+                // per pass.  `QW_ENCODE_TIME` priced that at 100 ms of CPU encode
+                // on a 598-row prefill, against 0.85 ms for a whole decode pass.
                 let use_mpp = matches!(
                     std::env::var("QW_MPP").ok().as_deref(),
                     None | Some("3")
                 );
                 if use_mpp {
-                    let src = msl::mpp_src();
-                    if let Err(e) = batch.kernel(&src, "q4_mpp_mm") {
-                        eprintln!("q4_mpp_mm FAILED TO BUILD: {e}");
-                    }
-                    if let Ok(mk) = batch.kernel(&src, "q4_mpp_mm") {
+                    if let Some(mk) = mpp_k {
                         let [_, nra, nrb, nt] = msl::mpp_tiles();
                         let (nra, nrb, nt) = (nra as usize, nrb as usize, nt as usize);
                         batch.encode(

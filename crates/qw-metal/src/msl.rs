@@ -1845,9 +1845,15 @@ fn mpp_tiles_uncached() -> [i32; 4] {
 }
 
 /// The MPP translation unit with the tile constants substituted in.
-pub fn mpp_src() -> String {
+/// The MPP translation unit, initialised once.
+///
+/// Returns `&'static str` rather than a `String` clone on purpose.  The only
+/// caller used to do `let src = msl::mpp_src();` inside a per-linear loop and
+/// then hash that string twice, which made every prefill pass pay ~994 clones
+/// and ~994 full hashes of a source this size.  See `Kernels::q4_mpp`.
+pub fn mpp_src() -> &'static str {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    S.get_or_init(mpp_src_uncached).clone()
+    S.get_or_init(mpp_src_uncached).as_str()
 }
 
 fn mpp_src_uncached() -> String {

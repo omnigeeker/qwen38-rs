@@ -59,6 +59,14 @@ enum Cmd {
         tokens: usize,
         #[arg(long, default_value_t = 5)]
         iters: usize,
+        /// Sequence slots to allocate, as a comma list.  More than one loads a
+        /// model per width and runs them round-robin in one process, because this
+        /// box drifts by 2-3x over minutes and a comparison across two processes
+        /// is a comparison of two thermal states.  The server runs at 16; this
+        /// used to be pinned at 1, which is why "the server's prefill step is
+        /// 253 ms slower than prefill-bench" looked like server overhead.
+        #[arg(long, default_value = "1")]
+        batch: String,
     },
     /// Replay every quantised linear's prefill GEMM in isolation, to split a
     /// prefill honestly into the GEMMs and everything else.
@@ -192,7 +200,8 @@ fn main() -> Result<()> {
             model_dir,
             tokens,
             iters,
-        } => bench::prefill_bench(&model_dir, tokens, iters),
+            batch,
+        } => bench::prefill_bench(&model_dir, tokens, iters, &batch),
         Cmd::Bench {
             model_dir,
             iters,

@@ -1201,20 +1201,47 @@ pub fn gemm_bench(model_dir: &Path, tokens: usize, iters: usize) -> Result<()> {
 /// Time a real cold prefill in this same process, so it can be compared against
 /// `gemm_bench` without the HTTP request, the tokenizer or the sampler in the way.
 /// The difference between the two is the honest non-GEMM share.
-pub fn prefill_bench(model_dir: &Path, tokens: usize, iters: usize) -> Result<()> {
-    let mut m = qw_model::runner::Qwen38::load_batch(model_dir, 1020, 1)?;
-    let rows: Vec<(usize, usize)> = (0..tokens).map(|i| (0usize, i)).collect();
-    let mut best = f64::MAX;
-    for it in 0..iters {
-        m.reset();
-        let t = Instant::now();
-        m.forward_rows(&rows)?;
-        let s = t.elapsed().as_secs_f64();
-        if s < best {
-            best = s;
-        }
-        println!("  iter {it}: {s:.4} s");
+pub fn prefill_bench(model_dir: &Path, tokens: usize, iters: usize, batch: &str) -> Result<()> {
+    let batches: Vec<usize> = batch
+        .split(',')
+        .map(|x| x.trim().parse::<usize>())
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| anyhow::anyhow!("--batch: {e}"))?;
+    anyhow::ensure!(!batches.is_empty(), "--batch: empty");
+    // One model per width, run round-robin, so a thermal drift between the two
+    // hits both arms instead of whichever ran second.
+    let mut models = Vec::new();
+    for &b in &batches {
+        models.push(qw_model::runner::Qwen38::load_batch(model_dir, 1020, b)?);
     }
-    println!("  best: {best:.4} s for {tokens} tokens");
+    let rows: Vec<(usize, usize)> = (0..tokens).map(|i| (0usize, i)).collect();
+    let mut best = vec![f64::MAX; batches.len()];
+    let mut order: Vec<usize> = (0..batches.len()).collect();
+    for it in 0..iters {
+        if it % 2 == 1 {
+            order.reverse();
+        }
+        for &i in &order {
+            models[i].reset();
+            let t = Instant::now();
+            models[i].forward_rows(&rows)?;
+            let s = t.elapsed().as_secs_f64();
+            if s < best[i] {
+                best[i] = s;
+            }
+            println!("  iter {it} batch {:3}: {s:.4} s", batches[i]);
+        }
+    }
+    println!();
+    let base = best[0];
+    for (i, &b) in batches.iter().enumerate() {
+        println!(
+            "  batch {:3}: best {:.4} s for {tokens} tokens  ({:.3}x batch {})",
+            b,
+            best[i],
+            best[i] / base,
+            batches[0]
+        );
+    }
     Ok(())
 }
