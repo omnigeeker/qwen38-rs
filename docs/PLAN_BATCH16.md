@@ -11602,3 +11602,125 @@ load 流量，而 t28 只有 ~5.1 TB/s —— 而且 t28 每个 (token × 输出
 所以小行数下每行贵 14–20×，嫌疑是 dequantise staging 与行数无关，以及 M=64/128 的
 tile 对 16 行浪费 4–8×）。如果能把 16 行的 MPP pass 压到 40 ms 以内，16 路就是 400+ tok/s。
 在那之前，otps 上限就是 148.4。
+
+## §72fj MPP 的 token tile 是编译期常量：窄 pass 一直在付整块的钱
+
+### 一、先说我这一轮差点交付的一个错
+
+`gemm-bench` 的 grid 是 `tokens.div_ceil(NRB) * NT`，而 kernel 里
+`tok0 = tgid.x * NRB`。我读到 `* NT` 就认定它是多余的（只有前
+`ceil(tokens/NRB)` 个 threadgroup 有输出），于是去掉它，测到 **1024 token
+1.179 s → 0.0798 s，14.8×**，还以为找到了大东西。
+
+**它是错的。** `kernel.rs:177` 用的是 `enc.dispatch_threads(d.grid, d.threadgroup)`
+—— `dispatchThreads`，不是 `dispatchThreadgroups`。所以 grid.x 的单位是**线程**，
+`* NT` 正好把线程数换算回 `ceil(tokens/NRB)` 个 threadgroup。我的改动让 grid.x 变成
+`ceil(tokens/NRB)` 个**线程**，实际只有 1 个 threadgroup，也就是**只算了 1/128 的工作**。
+那 14.8× 是少算出来的。
+
+`accept.sh` 抓住了：**5 个 gate 失败**（position pin、server==cli、chunk 4 vs 32、
+两个 batch decode）。已完整回滚，`linear.rs` 的 diff 是空的。这是那 22 个 gate 存在的意义。
+
+### 二、真正的问题：descriptor 的 M 是编译期常量
+
+`q4_mpp_mm` 里：
+
+```c
+auto mm = mpp::tensor_ops::matmul2d<
+    mpp::tensor_ops::matmul2d_descriptor(
+        NRB, NRA, static_cast<int>(dynamic_extent), ...)>();
+```
+
+**M 是 `NRB`，编译期常量**；只有 K 是 `dynamic_extent`。所以一个 threadgroup 永远处理
+NRB 个 token，哪怕这个 pass 只有 16 行。`mExt = min(NRB, k - tok0)` 只是把越界部分挡掉，
+**tile 本身的宽度照付**。
+
+在真实 497 个 linear 上量（`gemm-bench`，2 iter）：
+
+| tokens | NRB=32 | NRB=64 | NRB=128 | NRB=256 |
+|---|---|---|---|---|
+| 32 | **0.1126** | 0.1409 | 0.2187 | 0.4192 |
+| 128 | 0.4200 | 0.2664 | **0.2313** | 0.4188 |
+| 512 | 1.6957 | 1.2269 | 1.0342 | **0.8751** |
+| 1024 | 3.5037 | 2.3879 | 2.0872 | **1.8320** |
+
+**只要一个 M-block 能覆盖整个 pass，成本就几乎是 `0.10 s + 0.0013 × NRB`**：
+那 0.10 s 是一遍权重的固定开销，剩下的就是 tile 宽出来的浪费。
+所以 16 token 用 NRB=256 要 0.4361 s，用 NRB=32 只要 0.1047 s —— **4.2×**，
+而且这 4.2× 之前**从来没有出现在关键路径上**，因为 `gemm_min_rows()` 默认 32，
+16 行的解码 pass 走的是 GEMV，根本不到 MPP。
+
+最优 NRB 跟着行数走：32 行要 32，128 行要 128，512 行以上要 256
+（block 数增加的开销超过宽度省下的）。
+
+### 三、交付：第二条 MPP pipeline，NRB=32
+
+* `msl::mpp_src_small()` / `msl::mpp_tiles_small()`：同一份 MPP 源码，只改
+  `Q4_MPP_NRB`，编译成第二条 pipeline（`mpp_src_with(nrb)` 现在把 NRB 当参数）。
+* `Kernels::q4_mpp_small`，load 时解析一次，失败就退回宽 tile 并打印一次。
+* `encode_rows` 按 `rows <= MPP_NARROW_MAX_ROWS (128)` 选窄的。
+
+同一个 binary、交替 A/B（`QW_MPP_NRB_SMALL` 在 32/256 之间切），整个 forward pass：
+
+| rows | 宽 (256) | 窄 (32) | 比值 |
+|---|---|---|---|
+| 40 | 0.4012 s | **0.1895 s** | **2.12×** |
+| 64 | 0.3823 s | **0.1863 s** | **2.05×** |
+| 128 | 0.3835 s | 0.3803 s | 1.01×（打平） |
+| 300 | 0.8382 s | 0.8555 s | 走宽 tile，不变 |
+
+**33–128 行的 pass 快 2.1×**，和 NRB 模型预测的一致。这条路径在哪里出现：
+并发 prefill —— `chunk = room / prefilling`，16 路并发时 15 个在 prefill，
+`chunk = (1020-1)/15 = 67` 行，正好在 33–128 里。
+
+### 四、`gemm_min_rows` 32 → 14
+
+16 行（CONC=16 的解码 pass）在窄 tile 下也变快了。近冷态、3 轮交替：
+
+| | t28 (GEMM_MIN_ROWS=32) | MPP 窄 (=14) |
+|---|---|---|
+| 16 行 | 0.1196 / 0.1233 / 0.1203 | **0.1093 / 0.1096 / 0.1089** |
+| 32 行 | 0.1184 / 0.1184 | 0.1182 / 0.1189（相同） |
+
+**1.10×，三轮一致。** MPP 的下限是那遍权重 sweep（约 0.105 s，与行数无关），
+宽 GEMV 约 7.5 ms/token，所以交点在 14 行左右。8 行时 MPP 下限是 GEMV 0.064 s 的 1.66×，
+所以 14 这个值有上下界，不是拍的。
+
+原来 32 这个默认值是**在宽 tile 下定的**，当时的记录写着「8 行的 pass 要 385.4 ms」——
+那正是 256 宽 tile 在 8 行上的浪费。窄 tile 把这个理由消掉了，所以阈值必须跟着改。
+`accept.sh` 22/22（含 oracle 6/6，说明解码路径换 kernel 没有改掉 greedy token）。
+
+### 五、诚实的部分：这没有解决 otps
+
+**MPP 的下限是 0.105 s 的权重 sweep，不是 40 ms。** 16 行的解码 pass 从 120 ms 降到
+109 ms，不是降到 40 ms。所以：
+
+* 16 路解码 pass **1.10×**，理论上限从 148 到 163 tok/s，不是到 400。
+* 端到端 otps 在**降频的机器上测不干净**：同 binary 交替 2 轮得到
+  49.9/40.5（宽）对 52.2/50.1（窄），方向一致但噪声盖过了 10%。
+  （这台机器现在 40–52 tok/s，之前测到过 87.0，热状态差别很大。）
+* 所以**不能声称 otps 达标**。能声称的是：pass 级的 1.10× 是三轮一致的干净测量。
+
+**下一轮的真目标**：那 0.105 s 的 sweep 是 14.4 GB / 0.105 s = **137 GB/s**，
+而 DRAM 是 478 GB/s。staging 循环每个 thread 只做约 6880 条指令、
+每个 threadgroup 80 个 K-tile 里有 160 个 `threadgroup_barrier`，
+而 grid 只有 `ceil(k/NRB) × out_f/NRA` = 544 个 threadgroup —— **并行度太少，
+barrier 延迟藏不住**。把 K 拆到多个 threadgroup（代价是一次归约）或者提高
+NRA 方向的并行度，才有可能把 0.105 s 压到 0.03 s。那才是 otps 的下一个 3×。
+
+### 六、本轮结论
+
+**交付**：
+
+1. `msl::mpp_src_small()` + `Kernels::q4_mpp_small`：NRB=32 的第二条 MPP pipeline。
+2. `rows <= 128` 走窄 tile：**40–64 行快 2.1×**，128 行以上不变。
+3. `gemm_min_rows` 32 → 14：**16 行快 1.10×**（三轮交替一致）。
+4. `accept.sh` 22/22。
+5. 记录并回滚了我自己那个 14.8× 的假结论（`dispatch_threads` vs
+   `dispatch_threadgroups`），以及它是被哪 5 个 gate 抓住的。
+
+**没做到**：
+
+* otps 没有可测的端到端提升（理论 1.10×，机器太热测不出）。
+* 冷/热 TTFT 本轮没测。33–128 行的 2.1× 应该会改善**并发下的 TTFT**（并发 prefill
+  的 chunk 是 67 行），但这一轮没有验证。
