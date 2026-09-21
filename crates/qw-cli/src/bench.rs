@@ -1175,6 +1175,19 @@ pub fn gemm_bench(model_dir: &Path, tokens: usize, iters: usize) -> Result<()> {
         ls.len(),
         flops / 1e9
     );
+    // QW_MPP_GX=1 drops the `* NT` factor from the grid's x dimension.  The grid
+    // launches ceil(tokens/NRB) * NT threadgroups, but a threadgroup's token
+    // block is tok0 = tgid.x * NRB, so only the first ceil(tokens/NRB) of them
+    // have any output; the rest are handed extent min(NRB, tokens - tok0), which
+    // is negative, and still run the tensor op.  Measured cost is linear in that
+    // grid.x (16 tokens 0.295 s, 256 tokens 0.323 s, 1024 tokens 1.183 s at
+    // grid.x 128, 128 and 512), so the empty ones are not free.
+    let gx = if std::env::var_os("QW_MPP_GX").is_some() {
+        tokens.div_ceil(nrb)
+    } else {
+        tokens.div_ceil(nrb) * nt
+    };
+    println!("  grid.x = {gx}");
 
     let mut best = f64::MAX;
     for it in 0..iters {
@@ -1184,7 +1197,7 @@ pub fn gemm_bench(model_dir: &Path, tokens: usize, iters: usize) -> Result<()> {
             b.encode(
                 qw_metal::Dispatch::new(
                     &mk,
-                    (tokens.div_ceil(nrb) * nt, l.out_f.div_ceil(nra), 1),
+                    (gx, l.out_f.div_ceil(nra), 1),
                     (nt, 1, 1),
                 )
                 .buf_offset(0, l.weight.buf, l.weight.offset)

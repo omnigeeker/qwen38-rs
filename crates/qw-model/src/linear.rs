@@ -183,6 +183,7 @@ impl<'a> QLinear<'a> {
         tile_k: &Kernel,
         wide_k: &Kernel,
         mpp_k: Option<&Kernel>,
+        mpp_small_k: Option<&Kernel>,
         x: &GpuBuffer,
         y: &GpuBuffer,
         rows: usize,
@@ -240,8 +241,22 @@ impl<'a> QLinear<'a> {
                     None | Some("3")
                 );
                 if use_mpp {
-                    if let Some(mk) = mpp_k {
-                        let [_, nra, nrb, nt] = msl::mpp_tiles();
+                    // Pick the tile whose M extent actually covers this pass.  The
+                    // descriptor's M is a compile-time constant, so the wide kernel
+                    // spends a 256-token tile on a sixteen-row pass; the narrow one
+                    // spends 32.  Measured over the real 497 linears, cost is
+                    // `0.10 s + 0.0013 * NRB` while one M-block covers the pass, so
+                    // the narrow kernel is worth it up to the point where the extra
+                    // M-blocks cost more than the width saves - which the sweep
+                    // puts at 128 rows.
+                    let narrow = mpp_small_k.is_some() && rows <= MPP_NARROW_MAX_ROWS;
+                    let (mpp_sel, tiles) = if narrow {
+                        (mpp_small_k, msl::mpp_tiles_small())
+                    } else {
+                        (mpp_k, msl::mpp_tiles())
+                    };
+                    if let Some(mk) = mpp_sel {
+                        let [_, nra, nrb, nt] = tiles;
                         let (nra, nrb, nt) = (nra as usize, nrb as usize, nt as usize);
                         batch.encode(
                             Dispatch::new(
@@ -580,6 +595,13 @@ fn wide_min_out_f() -> usize {
     })
 }
 
+/// Largest pass that uses the narrow (NRB=32) MPP tile.
+///
+/// From the NRB sweep on the real weights: 32 rows wants 32, 128 wants 128, and
+/// 512 or more wants 256.  At 128 rows the narrow and wide tiles cost the same
+/// (0.4200 against 0.4188 s), so the switch is placed there.
+pub const MPP_NARROW_MAX_ROWS: usize = 128;
+
 fn gemm_min_rows() -> usize {
     // Read once: this is consulted for every linear of every pass, so a plain
     // `std::env::var` here would be 497 allocations on a prefill's hot path.
@@ -588,7 +610,20 @@ fn gemm_min_rows() -> usize {
         std::env::var("QW_GEMM_MIN_ROWS")
             .ok()
             .and_then(|v| v.parse().ok())
-            // 32 = on by default.  Measured on the same tensors and the same CPU
+            // 14 = on by default.  It was 32 because the MPP tile used to be
+            // NRB=256 wide, so a sixteen-row pass spent a 256-token tile and cost
+            // 0.436 s - far worse than the 0.120 s the wide GEMV takes.  With the
+            // narrow (NRB=32) tile resolved in `Kernels::q4_mpp_small` the same
+            // pass costs 0.109 s, and three alternating rounds on a near-cool box
+            // gave 0.1093 / 0.1096 / 0.1089 against 0.1196 / 0.1233 / 0.1203 for
+            // the wide GEMV: 1.10x, and at 32 rows the two are identical (0.1184
+            // against 0.1182).  The MPP floor is the weight sweep, about 0.105 s
+            // regardless of row count, and the wide GEMV costs about 7.5 ms per
+            // token, so the crossover is ~14 rows.  Below it the scalar path still
+            // wins: at 8 rows the MPP floor is 1.66x the GEMV's 0.064 s.
+            //
+            // The old note here is kept because its failure mode still applies to
+            // the wide tile.  Measured on the same tensors and the same CPU
             // reference, the GEMM is more accurate than the four-row kernel we used
             // to ship (max_abs better by 1.3-1.9x, rel by 1.5-1.8x, on all four
             // checked tensors), and 2.2x faster on a cold prefill.  Set
@@ -602,6 +637,6 @@ fn gemm_min_rows() -> usize {
             // from 19.40 to 59.80 tok/s.  At 32 the GEMM still wins for the shapes
             // it was chosen for, because 1020 (never use it) gives 100.3 ms for the
             // same eight-row pass and only 47.16 aggregate.
-            .unwrap_or(32)
+            .unwrap_or(14)
     })
 }

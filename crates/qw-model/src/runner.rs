@@ -37,6 +37,14 @@ struct Kernels {
     /// 598-row prefill, against 0.85 ms for 1570 dispatches on a decode pass.
     /// `None` when the source does not compile; the tile kernel is used instead.
     q4_mpp: Option<Kernel>,
+    /// The same MPP GEMM compiled with a 32-wide token tile.
+    ///
+    /// The descriptor's M extent is a compile-time constant, so a threadgroup
+    /// always processes NRB tokens even when the pass has fewer.  With NRB=256 a
+    /// sixteen-row decode pass cost the same as a 256-row one - measured
+    /// 0.4361 s against 0.1047 s at NRB=32 on the real 497 linears.  This is the
+    /// pipeline a short pass uses.
+    q4_mpp_small: Option<Kernel>,
     rmsnorm: Kernel,
     rmsnorm_ws: Kernel,
     rmsnorm_nw: Kernel,
@@ -758,6 +766,13 @@ impl Qwen38 {
                 // Resolved here rather than per dispatch.  A failure is not fatal:
                 // `encode_rows` falls through to the hand-written tile kernel, and
                 // the message below is the loud part of that silent fallback.
+                q4_mpp_small: match b.kernel(msl::mpp_src_small(), "q4_mpp_mm") {
+                    Ok(k) => Some(k),
+                    Err(e) => {
+                        eprintln!("q4_mpp_mm (narrow tile) FAILED TO BUILD ({e}); short passes fall back to the wide tile");
+                        None
+                    }
+                },
                 q4_mpp: match b.kernel(msl::mpp_src(), "q4_mpp_mm") {
                     Ok(k) => Some(k),
                     Err(e) => {
@@ -1931,6 +1946,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.h,
                         &scratch.qg,
                         n,
@@ -1942,6 +1958,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.h,
                         &scratch.pk,
                         n,
@@ -1952,6 +1969,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.h,
                         &scratch.pv,
                         n,
@@ -2231,6 +2249,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.attn_gated,
                         &scratch.proj_out,
                         n,
@@ -2243,6 +2262,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.h,
                         &scratch.z,
                         n,
@@ -2253,6 +2273,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.h,
                         &scratch.b,
                         n,
@@ -2263,6 +2284,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.h,
                         &scratch.a,
                         n,
@@ -2279,6 +2301,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.h,
                         &scratch.qkv_cur,
                         n,
@@ -2633,6 +2656,7 @@ impl Qwen38 {
                         &kernels.q4_gemv_tile,
                         &kernels.q4_gemv_wide,
                         kernels.q4_mpp.as_ref(),
+                        kernels.q4_mpp_small.as_ref(),
                         &scratch.gdn_gated,
                         &scratch.proj_out,
                         n,
@@ -2665,6 +2689,7 @@ impl Qwen38 {
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_wide,
                 kernels.q4_mpp.as_ref(),
+                kernels.q4_mpp_small.as_ref(),
                 &scratch.h,
                 &scratch.mlp_gate,
                 n,
@@ -2675,6 +2700,7 @@ impl Qwen38 {
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_wide,
                 kernels.q4_mpp.as_ref(),
+                kernels.q4_mpp_small.as_ref(),
                 &scratch.h,
                 &scratch.mlp_up,
                 n,
@@ -2697,6 +2723,7 @@ impl Qwen38 {
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_wide,
                 kernels.q4_mpp.as_ref(),
+                kernels.q4_mpp_small.as_ref(),
                 &scratch.mlp_act,
                 &scratch.proj_out,
                 n,
@@ -2740,6 +2767,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.h,
             &scratch.logits,
             n,
@@ -3192,6 +3220,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &m.cat,
             &m.hid,
             n,
@@ -3213,6 +3242,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.h,
             &scratch.qg,
             n,
@@ -3224,6 +3254,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.h,
             &scratch.pk,
             n,
@@ -3234,6 +3265,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.h,
             &scratch.pv,
             n,
@@ -3353,6 +3385,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.attn_gated,
             &scratch.proj_out,
             n,
@@ -3382,6 +3415,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.h,
             &scratch.mlp_gate,
             n,
@@ -3392,6 +3426,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.h,
             &scratch.mlp_up,
             n,
@@ -3410,6 +3445,7 @@ impl Qwen38 {
             &kernels.q4_gemv_tile,
             &kernels.q4_gemv_wide,
             kernels.q4_mpp.as_ref(),
+            kernels.q4_mpp_small.as_ref(),
             &scratch.mlp_act,
             &scratch.proj_out,
             n,
@@ -3723,6 +3759,7 @@ impl Qwen38 {
                 &kernels.q4_gemv_tile,
                 &kernels.q4_gemv_wide,
                 kernels.q4_mpp.as_ref(),
+                kernels.q4_mpp_small.as_ref(),
                 &scratch.h,
                 &scratch.q,
                 TILE,

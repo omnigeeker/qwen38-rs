@@ -1967,6 +1967,38 @@ pub fn mpp_tiles() -> [i32; 4] {
     *T.get_or_init(mpp_tiles_uncached)
 }
 
+/// Tile geometry for the narrow-NRB kernel, `[KT, NRA, NRB, NT]`.
+///
+/// The M extent of the tensor descriptor is a compile-time constant, so a
+/// threadgroup always processes a tile NRB tokens wide even when the pass has
+/// fewer tokens than that.  Measured on the real 497 linears, gemm-bench, two
+/// iters, cost is almost exactly `0.10 s + 0.0013 * NRB` while one M-block
+/// covers the pass - the 0.10 s being one unavoidable sweep of the weights and
+/// the rest being the wasted width of the tile:
+///
+///   tokens   NRB=32   NRB=64   NRB=128   NRB=256
+///       32   0.1126   0.1409    0.2187    0.4192
+///      128   0.4200   0.2664    0.2313    0.4188
+///      512   1.6957   1.2269    1.0342    0.8751
+///     1024   3.5037   2.3879    2.0872    1.8320
+///
+/// So the best NRB is the smallest one that still covers the pass in a single
+/// block: 32 rows wants 32, 128 rows wants 128, and 512 or more wants 256 (where
+/// the extra blocks cost more than the width saves).  This is what made a
+/// sixteen-row decode pass cost 0.29 s when it should have cost 0.10 s - the
+/// tile was sixteen times wider than the pass.
+pub fn mpp_tiles_small() -> [i32; 4] {
+    static T: std::sync::OnceLock<[i32; 4]> = std::sync::OnceLock::new();
+    *T.get_or_init(|| {
+        let mut t = mpp_tiles_uncached();
+        t[2] = std::env::var("QW_MPP_NRB_SMALL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(32);
+        t
+    })
+}
+
 fn mpp_tiles_uncached() -> [i32; 4] {
     fn one(k: &str, d: i32) -> i32 {
         std::env::var(k)
@@ -2017,7 +2049,23 @@ pub fn mpp_src() -> &'static str {
     S.get_or_init(mpp_src_uncached).as_str()
 }
 
+/// The MPP translation unit compiled with the narrow token tile.
+///
+/// Same source, one `#define` different, compiled as a second pipeline.  Both
+/// are resolved once at load; the pass picks between them by row count.
+pub fn mpp_src_small() -> &'static str {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    S.get_or_init(|| mpp_src_with(mpp_tiles_small()[2])).as_str()
+}
+
 fn mpp_src_uncached() -> String {
+    mpp_src_with(mpp_tiles()[2])
+}
+
+/// Build the MPP source with the token tile forced to `nrb`.
+fn mpp_src_with(nrb: i32) -> String {
+    let [kt, nra, _nrb_default, nt] = mpp_tiles();
+    let _ = _nrb_default;
     // The patterns below have to match the `#define` lines in `MPP` CHARACTER FOR
     // CHARACTER, whitespace included.  They did not: three of the four named a
     // value the source no longer carried (`KT  32` against `KT  64`, `NRA 64`
@@ -2044,7 +2092,6 @@ fn mpp_src_uncached() -> String {
     // The fix is to make the substitution real, so the grid and the kernel cannot
     // disagree, and `tools/accept.sh` now pins a prompt longer than one NRB-wide
     // pass across two chunk widths.
-    let [kt, nra, nrb, nt] = mpp_tiles();
     let src = MPP
         .replace("#define Q4_MPP_KT  64", &format!("#define Q4_MPP_KT  {kt}"))
         .replace("#define Q4_MPP_NRA 32", &format!("#define Q4_MPP_NRA {nra}"))
