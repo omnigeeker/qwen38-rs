@@ -184,6 +184,7 @@ impl<'a> QLinear<'a> {
         wide_k: &Kernel,
         mpp_k: Option<&Kernel>,
         mpp_small_k: Option<&Kernel>,
+        mpp_mid_k: Option<&Kernel>,
         x: &GpuBuffer,
         y: &GpuBuffer,
         rows: usize,
@@ -249,9 +250,10 @@ impl<'a> QLinear<'a> {
                     // the narrow kernel is worth it up to the point where the extra
                     // M-blocks cost more than the width saves - which the sweep
                     // puts at 128 rows.
-                    let narrow = mpp_small_k.is_some() && rows <= MPP_NARROW_MAX_ROWS;
-                    let (mpp_sel, tiles) = if narrow {
+                    let (mpp_sel, tiles) = if mpp_small_k.is_some() && rows <= MPP_SMALL_MAX_ROWS {
                         (mpp_small_k, msl::mpp_tiles_small())
+                    } else if mpp_mid_k.is_some() && rows <= MPP_NARROW_MAX_ROWS {
+                        (mpp_mid_k, msl::mpp_tiles_mid())
                     } else {
                         (mpp_k, msl::mpp_tiles())
                     };
@@ -595,11 +597,17 @@ fn wide_min_out_f() -> usize {
     })
 }
 
-/// Largest pass that uses the narrow (NRB=32) MPP tile.
+/// Largest pass that uses the NRB=32 MPP tile.
+pub const MPP_SMALL_MAX_ROWS: usize = 32;
+
+/// Largest pass that uses the NRB=64 MPP tile.  Above this the NRB=256 tile wins.
 ///
-/// From the NRB sweep on the real weights: 32 rows wants 32, 128 wants 128, and
-/// 512 or more wants 256.  At 128 rows the narrow and wide tiles cost the same
-/// (0.4200 against 0.4188 s), so the switch is placed there.
+/// The tile has to track the row count, because the descriptor's M is a
+/// compile-time constant: measured over a whole forward pass, 48 and 64 rows are
+/// fastest at NRB=64 (0.1499 and 0.1575 against 0.1754 and 0.1843 at NRB=32) and
+/// 96 and 128 at NRB=128 (0.2172 and 0.2333 against 0.2576 and 0.3327).  64 is
+/// within 7 per cent of the best across the whole range, so one middle tile
+/// covers it.
 pub const MPP_NARROW_MAX_ROWS: usize = 128;
 
 fn gemm_min_rows() -> usize {

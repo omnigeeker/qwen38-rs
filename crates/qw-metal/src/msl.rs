@@ -1988,15 +1988,35 @@ pub fn mpp_tiles() -> [i32; 4] {
 /// sixteen-row decode pass cost 0.29 s when it should have cost 0.10 s - the
 /// tile was sixteen times wider than the pass.
 pub fn mpp_tiles_small() -> [i32; 4] {
-    static T: std::sync::OnceLock<[i32; 4]> = std::sync::OnceLock::new();
-    *T.get_or_init(|| {
-        let mut t = mpp_tiles_uncached();
-        t[2] = std::env::var("QW_MPP_NRB_SMALL")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(32);
-        t
-    })
+    narrow_tiles("QW_MPP_NRB_SMALL", 32)
+}
+
+/// Tile geometry for the middle token tile, `[KT, NRA, NRB, NT]`.
+///
+/// One narrow value is not enough.  Measured over a whole forward pass, best of
+/// two iters, rows against NRB:
+///
+///   rows   NRB=32   NRB=64   NRB=128
+///     48   0.1754   0.1499    0.1903
+///     64   0.1843   0.1575    0.2022
+///     96   0.2576   0.2347    0.2172
+///    128   0.3327   0.2446    0.2333
+///
+/// so 48 and 64 rows want 64, 96 and 128 want 128, and the old single NRB=32 was
+/// leaving 1.17x on 48-64 rows and 1.43x on 128.  64 is the better single choice
+/// for the whole 33..128 range - within 7 per cent of the best everywhere, and
+/// never worse than the 32 it replaces.
+pub fn mpp_tiles_mid() -> [i32; 4] {
+    narrow_tiles("QW_MPP_NRB_MID", 64)
+}
+
+fn narrow_tiles(env: &str, default: i32) -> [i32; 4] {
+    let mut t = mpp_tiles_uncached();
+    t[2] = std::env::var(env)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default);
+    t
 }
 
 fn mpp_tiles_uncached() -> [i32; 4] {
@@ -2056,6 +2076,12 @@ pub fn mpp_src() -> &'static str {
 pub fn mpp_src_small() -> &'static str {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     S.get_or_init(|| mpp_src_with(mpp_tiles_small()[2])).as_str()
+}
+
+/// The MPP translation unit compiled with the middle token tile.
+pub fn mpp_src_mid() -> &'static str {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    S.get_or_init(|| mpp_src_with(mpp_tiles_mid()[2])).as_str()
 }
 
 fn mpp_src_uncached() -> String {

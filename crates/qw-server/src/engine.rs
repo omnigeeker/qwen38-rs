@@ -1099,7 +1099,7 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 // Snapshot the recurrent state *before* the final chunk, not at the
                 // end of the prompt.  At the prompt end the state has already consumed
                 // the last token, but the logits for the first generated token exist
-                // only in a scratch buffer that save_prefix does not copy - so a
+                // only in a scratch buffer that the snapshot does not carry - so a
                 // resumed request would sample from stale logits and never converge.
                 // Stopping one chunk early costs at most `chunk` rows of re-prefill
                 // (about 80 ms) and lets an ordinary prefill rebuild the state, the KV
@@ -1125,11 +1125,14 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
                 {
                     // `export_prefix` reads the live state, window and KV, so it has
                     // to run here, while the live state is at `a.pf`.  It is the ONLY
-                    // thing captured: the blob already carries the recurrent state and
-                    // the window, so the separate `save_prefix` GPU copy is redundant,
-                    // and keeping it was what made an in-process boundary hit disagree
-                    // with a cold run while the byte-identical disk path agreed
-                    // exactly.  One snapshot, one restore, same code either way.
+                    // thing captured.  There used to be a second, separate in-memory
+                    // `save_prefix` GPU copy of the recurrent state and the window, and
+                    // it was both redundant - the blob already carries exactly those -
+                    // and wrong: keeping it was what made an in-process boundary hit
+                    // disagree with a cold run while the byte-identical disk path
+                    // agreed exactly.  It is gone, along with the 1.1 GB per slot of
+                    // dead buffers it needed.  One snapshot, one restore, same code
+                    // either way.
                     let _t = std::time::Instant::now();
                     match model.export_prefix(slot, a.pf) {
                         Ok(blob) => {
