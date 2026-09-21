@@ -252,7 +252,9 @@ impl<'a> QLinear<'a> {
                     // puts at 128 rows.
                     let (mpp_sel, tiles) = if mpp_small_k.is_some() && rows <= MPP_SMALL_MAX_ROWS {
                         (mpp_small_k, msl::mpp_tiles_small())
-                    } else if mpp_mid_k.is_some() && rows <= MPP_NARROW_MAX_ROWS {
+                    } else if mpp_mid_k.is_some()
+                        && (rows <= MPP_NARROW_MAX_ROWS || mpp_mid_wins(rows))
+                    {
                         (mpp_mid_k, msl::mpp_tiles_mid())
                     } else {
                         (mpp_k, msl::mpp_tiles())
@@ -600,7 +602,8 @@ fn wide_min_out_f() -> usize {
 /// Largest pass that uses the NRB=32 MPP tile.
 pub const MPP_SMALL_MAX_ROWS: usize = 32;
 
-/// Largest pass that uses the NRB=64 MPP tile.  Above this the NRB=256 tile wins.
+/// Largest pass that uses the NRB=64 MPP tile unconditionally.  Above this
+/// `mpp_mid_wins` decides, and it may still choose the middle tile.
 ///
 /// The tile has to track the row count, because the descriptor's M is a
 /// compile-time constant: measured over a whole forward pass, 48 and 64 rows are
@@ -609,6 +612,32 @@ pub const MPP_SMALL_MAX_ROWS: usize = 32;
 /// within 7 per cent of the best across the whole range, so one middle tile
 /// covers it.
 pub const MPP_NARROW_MAX_ROWS: usize = 128;
+
+/// Does the NRB=64 tile beat the NRB=256 one for a `rows`-row pass?
+///
+/// A pass costs whole tiles, so `gemm-bench` over the real 497 linears fits
+/// `time ~= 25.4 ms * ceil(rows/nrb) + 0.988 ms * ceil(rows/nrb) * nrb`
+/// (fitted at 300/581/900/1020 rows, worst error 3 per cent).  Counting
+/// capacity alone would be wrong: at 900 rows NRB=64 has the least waste of the
+/// two (960 tile-rows against 1024) and still loses 1.09x, because fifteen
+/// blocks cost more than the rows 64 saves.  So minimise the fitted cost.
+///
+/// The `rows <= 256` guard is not part of the model.  At or below that the wide
+/// tile is a single block and wins outright - the model mispredicts 140 rows by
+/// 1.17x in the wrong direction, because three 64-wide blocks cost more there
+/// than the fit assumes - so it is not consulted.  Above the guard the model was
+/// checked against `gemm-bench` at 300, 320, 340, 400, 520 and 560 rows and
+/// agreed on all six, worth 1.30x, 1.22x, 1.09x, 1.09x, 1.06x and 1.03x.
+fn mpp_mid_wins(rows: usize) -> bool {
+    if rows <= 256 {
+        return false;
+    }
+    let cost = |nrb: usize| {
+        let blocks = rows.div_ceil(nrb);
+        blocks * (2571 + nrb * 100)
+    };
+    cost(64) < cost(256)
+}
 
 fn gemm_min_rows() -> usize {
     // Read once: this is consulted for every linear of every pass, so a plain

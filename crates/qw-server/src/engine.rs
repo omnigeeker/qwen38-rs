@@ -477,7 +477,17 @@ impl Engine {
                 // immediately, and a later pass overwrites every position it reads
                 // because attention is causal.
                 {
-                    let warm_rows = 64usize.min(max_t);
+                    // The row count now selects a compiled MPP tile - 32 rows and
+                    // under use NRB=32, 33..128 use NRB=64, above that NRB=256 - so
+                    // a 64-row warmup compiles the middle tile and leaves the wide
+                    // one to be compiled on the first real prefill.  The note below
+                    // that the kernels are "grid-sized, not row-specialised" was
+                    // written before that split.  QW_WARM_ROWS overrides it.
+                    let warm_rows = std::env::var("QW_WARM_ROWS")
+                        .ok()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(64)
+                        .min(max_t);
                     let rows: Vec<(usize, usize)> =
                         (0..warm_rows).map(|i| (0usize, i)).collect();
                     // Two cycles.  The first reset_seq in a process costs 165 ms and
@@ -1303,13 +1313,22 @@ fn serve(model: &mut Qwen38, tok: &Tokenizer, rx: Receiver<Job>, max_t: usize, b
         } else {
             0
         };
-        let failed = match model
-            .set_tokens(&toks)
-            .and_then(|_| model.forward_rows(&rows))
-        {
+        let _t_st = std::time::Instant::now();
+        let _st = model.set_tokens(&toks);
+        let _st_ms = _t_st.elapsed();
+        let _t_fw = std::time::Instant::now();
+        let failed = match _st.and_then(|_| model.forward_rows(&rows)) {
             Ok(()) => None,
             Err(e) => Some(e.to_string()),
         };
+        if std::env::var_os("QW_SPLIT_TIME").is_some() {
+            eprintln!(
+                "split: {} rows, set_tokens {:?}, forward_rows {:?}",
+                rows.len(),
+                _st_ms,
+                _t_fw.elapsed()
+            );
+        }
         if std::env::var_os("QW_STEP_TIME").is_some() {
             eprintln!(
                 "step time: {} rows, started at {} ms, took {:?}, ended at {} ms",
