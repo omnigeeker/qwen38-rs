@@ -1208,7 +1208,16 @@ pub fn gemm_bench(model_dir: &Path, tokens: usize, iters: usize) -> Result<()> {
                 .scalar(5, l.in_f as i32)
                 .scalar(6, tokens as i32)
                 .scalar(7, l.out_f as i32)
-                .scalar(8, 0),
+                // QW_GEMM_MODE=2 makes the kernel stage the weights and skip the
+                // matmul (`if (mode == 2) { barrier; continue; }`), which splits
+                // this pass into the dequantise staging and the tensor op.
+                .scalar(
+                    8,
+                    std::env::var("QW_GEMM_MODE")
+                        .ok()
+                        .and_then(|v| v.parse::<i32>().ok())
+                        .unwrap_or(0),
+                ),
             );
             b.barrier();
         }

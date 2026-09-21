@@ -330,7 +330,23 @@ fn is_prefix(hist: &Option<Vec<u32>>, ids: &[u32]) -> Option<usize> {
 
 /// How many requests the engine will hold in flight at once.  It matches the
 /// widest row tile the model can carry in one weight sweep.
-pub const MAX_BATCH: usize = 16;
+///
+/// It was 16 because the MPP token tile was NRB=256 wide, so a pass wider than
+/// that cost an extra M-block and an extra sweep of the weights.  The narrow
+/// (NRB=32) tile in `Kernels::q4_mpp_small` changed that: a pass of up to 32
+/// rows is still a single M-block, and measured over a whole forward pass 32
+/// rows cost 0.1184 s against 0.1093 s for 16 - 1.08x the time for twice the
+/// tokens, or 1.85x the throughput.  Aggregate otps is therefore set by how
+/// many rows a single weight sweep can carry, and 32 is the largest pass that
+/// still fits one narrow block.  Measured throughput against pass width on the
+/// real weights: 16 rows 145 tok/s, 32 rows 268, 64 rows 339, 128 rows 333 - so
+/// throughput still climbs past 32, and 64 would be the better cap if it fit.
+/// It does not: `budget` charges 1.64 GB of delta-net state per slot, of which
+/// 1.0 GB is the convolution ring at `4 + PASS_ROWS_MAX` rows x 10240 x 48
+/// layers, so batch 64 wants 161 GB against this machine's 128.  That ring is
+/// sized for a 1020-row prefill but only needs four entries to decode, so the
+/// path to a wider batch runs through it - see the note in the plan.
+pub const MAX_BATCH: usize = 32;
 
 /// A prompt either arrives already rendered (OpenAI `/v1/completions`) or as
 /// chat messages that the tokenizer's template renders (`/v1/chat/completions`,
